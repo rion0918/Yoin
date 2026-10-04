@@ -8,6 +8,9 @@ expo-env.d.ts
 /android/
 .DS_Store
 .env*
+!.env.local.example
+!.envrc
+.direnv/
 npm-debug.*
 *.jks
 *.p8
@@ -15,3 +18,8 @@ npm-debug.*
 *.key
 *.pem
 *.mobileprovision
+.local/
+.dev.vars*
+.wrangler/
+backend/.wrangler/
+backend/.output/

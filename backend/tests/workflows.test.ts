@@ -1,0 +1,245 @@
+import { env, reset } from "cloudflare:test";
+import type { WorkflowStep } from "cloudflare:workers";
+import { beforeEach, expect, it, vi } from "vitest";
+import {
+  createLyrics,
+  generateMusic,
+  transcribeAudio,
+} from "../../pipeline/google.ts";
+import { draftDocument, ownedJob, songDocument } from "../database.ts";
+import { inspectClip, probeSong } from "../media.ts";
+import schema from "../migrations/0001_initial.sql?raw";
+import type { Env } from "../types.ts";
+import { generateSong, prepareDraft } from "../workflows.ts";
+
+vi.mock("../../pipeline/google.ts", async (original) => ({
+  ...(await original<typeof import("../../pipeline/google.ts")>()),
+  transcribeAudio: vi.fn(),
+  createLyrics: vi.fn(),
+  generateMusic: vi.fn(),
+}));
+vi.mock("../media.ts", () => ({ inspectClip: vi.fn(), probeSong: vi.fn() }));
+
+let bindings: Env;
+const blocks = [
+  {
+    id: "verse-1",
+    text: "あの坂道を また歩こう",
+    sourceUtteranceIds: ["clip:u:100:1", "clip:u:1500100:1"],
+  },
+];
+const step = {
+  do: async (
+    _name: string,
+    options: unknown,
+    callback?: () => Promise<unknown>,
+  ) => (typeof options === "function" ? await options() : await callback?.()),
+} as unknown as WorkflowStep;
+
+beforeEach(async () => {
+  await reset();
+  vi.resetAllMocks();
+  bindings = {
+    ...env,
+    OWNER_ID: "private-tester",
+    AI_BUDGET_USD: "10",
+    GEMINI_API_KEY: "test-only",
+  } as unknown as Env;
+  await bindings.DB.batch(
+    schema
+      .split(";")
+      .map((statement) => statement.trim())
+      .filter(Boolean)
+      .map((statement) => bindings.DB.prepare(statement)),
+  );
+  await bindings.DB.prepare(
+    "INSERT INTO drafts (id, owner_id, title, created_at, status, job_id) VALUES ('draft', 'private-tester', '秋の京都', '2026-10-04', 'preparing', 'prepare-job')",
+  ).run();
+  await bindings.DB.prepare(
+    "INSERT INTO clips (id, draft_id, owner_id, mime_type, size_bytes, duration_ms, recorded_at, timezone, place, object_key, status) VALUES ('clip', 'draft', 'private-tester', 'audio/mp4', 10, 1800000, '2026-10-04T01:00:00Z', 'Asia/Tokyo', '京都', 'originals/private-tester/clip', 'uploaded')",
+  ).run();
+  await bindings.DB.prepare(
+    "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, created_at) VALUES ('prepare-job', 'private-tester', 'draft', 'prepare', 'prepare-key', 'source', '2026-10-04')",
+  ).run();
+  const chunks = [
+    {
+      key: "processed/clip/0.m4a",
+      offsetMs: 0,
+      durationMs: 1500000,
+      mimeType: "audio/mp4",
+    },
+    {
+      key: "processed/clip/1.m4a",
+      offsetMs: 1500000,
+      durationMs: 300000,
+      mimeType: "audio/mp4",
+    },
+  ];
+  for (const chunk of chunks)
+    await bindings.AUDIO.put(chunk.key, new Uint8Array([1, 2, 3]));
+  vi.mocked(inspectClip).mockResolvedValue({
+    durationMs: 1800000,
+    sizeBytes: 10,
+    chunks,
+  });
+  vi.mocked(transcribeAudio).mockImplementation(
+    async ({ clipId, offsetMs }) => ({
+      utterances: [
+        {
+          id: `${clipId}:u:${offsetMs + 100}:1`,
+          clipId,
+          startMs: offsetMs + 100,
+          endMs: offsetMs + 500,
+          speaker: "話者 1",
+          text: "また歩こう。",
+        },
+      ],
+      costUsd: 0.1,
+      usage: { model: "gemini-test" },
+    }),
+  );
+  vi.mocked(createLyrics).mockResolvedValue({
+    blocks,
+    costUsd: 0.02,
+    usage: { model: "gemini-test" },
+  });
+  vi.mocked(generateMusic).mockResolvedValue({
+    bytes: new Uint8Array([73, 68, 51, 1, 2]),
+    mimeType: "audio/mpeg",
+    returnedLyrics: blocks[0].text,
+    costUsd: 0.08,
+    usage: { model: "lyria-test" },
+  });
+  vi.mocked(probeSong).mockResolvedValue({
+    durationMs: 123456,
+    sizeBytes: 5,
+    chunks: [],
+  });
+});
+
+async function approveAndGenerate() {
+  await prepareDraft(bindings, "prepare-job", step);
+  await bindings.DB.prepare(
+    "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, created_at) VALUES ('generate-job', 'private-tester', 'draft', 'generate', 'generate-key', 'approved', 1, ?, '2026-10-04')",
+  )
+    .bind(JSON.stringify(blocks))
+    .run();
+  await bindings.DB.prepare(
+    "UPDATE drafts SET status = 'generating', job_id = 'generate-job' WHERE id = 'draft'",
+  ).run();
+  await generateSong(bindings, "generate-job", step);
+}
+
+it("preserves original chunk offsets and source IDs through lyric review", async () => {
+  await prepareDraft(bindings, "prepare-job", step);
+  const draft = await draftDocument(bindings, "draft", "private-tester");
+  expect(draft.status).toBe("waiting_review");
+  expect(draft.clips[0]).toMatchObject({
+    recordedAt: "2026-10-04T01:00:00Z",
+    timezone: "Asia/Tokyo",
+    place: "京都",
+  });
+  expect(draft.utterances.map((utterance) => utterance.startMs)).toEqual([
+    100, 1500100,
+  ]);
+  expect(draft.lyrics).toEqual({ revision: 1, blocks });
+  expect(transcribeAudio).toHaveBeenCalledTimes(2);
+  expect(generateMusic).not.toHaveBeenCalled();
+});
+
+it("persists an approved song with its measured duration and immutable source revision", async () => {
+  await approveAndGenerate();
+  const job = await ownedJob(bindings, "generate-job", "private-tester");
+  expect(job.status).toBe("ready");
+  const song = await songDocument(
+    bindings,
+    "song-generate-job",
+    "private-tester",
+  );
+  expect(song).toMatchObject({
+    title: "秋の京都",
+    durationMs: 123456,
+    audioId: "song-audio-generate-job",
+    lyrics: { revision: 1, blocks },
+  });
+  const bytes = await bindings.AUDIO.get(
+    "songs/private-tester/generate-job.mp3",
+  );
+  if (!bytes) throw new Error("Generated audio missing");
+  expect(new Uint8Array(await bytes.arrayBuffer())).toEqual(
+    new Uint8Array([73, 68, 51, 1, 2]),
+  );
+  const cache = await bindings.AUDIO.get(
+    "results/private-tester/music-generate-job.json",
+  );
+  expect(await cache?.json()).toMatchObject({
+    version: 1,
+    value: { audioId: "song-audio-generate-job", sizeBytes: 5 },
+    costUsd: 0.08,
+  });
+  await generateSong(bindings, "generate-job", step);
+  expect(generateMusic).toHaveBeenCalledTimes(1);
+});
+
+it("retains audio for reconciliation when the provider changes approved lyrics", async () => {
+  vi.mocked(generateMusic).mockResolvedValue({
+    bytes: new Uint8Array([73, 68, 51, 1, 2]),
+    mimeType: "audio/mpeg",
+    returnedLyrics: "別の歌詞",
+    costUsd: 0.08,
+    usage: { model: "lyria-test" },
+  });
+  await approveAndGenerate();
+  expect(
+    await ownedJob(bindings, "generate-job", "private-tester"),
+  ).toMatchObject({
+    status: "needs_reconciliation",
+    error: "generated_lyrics_differ",
+  });
+  expect(
+    await bindings.AUDIO.head("songs/private-tester/generate-job.mp3"),
+  ).not.toBeNull();
+  expect(
+    (await bindings.DB.prepare("SELECT id FROM songs").all()).results,
+  ).toHaveLength(0);
+  expect(probeSong).not.toHaveBeenCalled();
+});
+
+it("stops an ambiguous music job without submitting it again", async () => {
+  vi.mocked(generateMusic).mockRejectedValue(
+    new Error("request accepted before connection dropped"),
+  );
+  await approveAndGenerate();
+  expect(
+    await ownedJob(bindings, "generate-job", "private-tester"),
+  ).toMatchObject({
+    status: "needs_reconciliation",
+    error: "provider_outcome_unconfirmed",
+  });
+  await generateSong(bindings, "generate-job", step);
+  expect(generateMusic).toHaveBeenCalledTimes(1);
+});
+
+it("preserves a safe failure code across Workflow error serialization", async () => {
+  bindings.AI_BUDGET_USD = "0";
+  const transportedStep = {
+    do: async (
+      _name: string,
+      options: unknown,
+      callback?: () => Promise<unknown>,
+    ) => {
+      try {
+        return typeof options === "function"
+          ? await options()
+          : await callback?.();
+      } catch (error) {
+        throw { message: error instanceof Error ? error.message : "unknown" };
+      }
+    },
+  } as unknown as WorkflowStep;
+  await prepareDraft(bindings, "prepare-job", transportedStep);
+  expect(
+    await ownedJob(bindings, "prepare-job", "private-tester"),
+  ).toMatchObject({ status: "failed", error: "ai_budget_exhausted" });
+  expect(transcribeAudio).not.toHaveBeenCalled();
+});

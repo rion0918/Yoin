@@ -1,0 +1,47 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "yoin-private-api",
+  "main": "index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "OWNER_ID": "private-tester",
+    "AI_BUDGET_USD": "0",
+    "PUBLIC_API_URL": "http://localhost:8787"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "yoin",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "AUDIO", "bucket_name": "yoin-private-audio" }],
+  "workflows": [
+    {
+      "name": "yoin-prepare",
+      "binding": "PREPARE",
+      "class_name": "PrepareWorkflow"
+    },
+    {
+      "name": "yoin-generate",
+      "binding": "GENERATE",
+      "class_name": "GenerateWorkflow"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "MEDIA_CONTAINER", "class_name": "MediaContainer" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MediaContainer"] }],
+  "containers": [
+    {
+      "class_name": "MediaContainer",
+      "image": "./media/Dockerfile",
+      "max_instances": 1,
+      "instance_type": "basic"
+    }
+  ],
+  "observability": { "enabled": false }
+}

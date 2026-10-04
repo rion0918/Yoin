@@ -5,28 +5,43 @@ import {
   NavigationContainer,
   StackActions,
   useFocusEffect,
+  usePreventRemove,
 } from "@react-navigation/native";
 import {
   createNativeStackNavigator,
   type NativeStackScreenProps,
 } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
-import { createContext, useCallback, useContext, useState } from "react";
 import {
-  Image,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  ActivityIndicator,
   Keyboard,
-  Share,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import type {
+  AudioClip,
+  DraftDocument,
+  LyricBlock,
+  SongDocument,
+  Utterance,
+} from "./shared/contracts";
 import { ActionButton, useReducedMotion } from "./src/components/ActionButton";
-import { Conversation } from "./src/components/Conversation";
 import { NativeSheet } from "./src/components/NativeSheet";
-import { displayDate, formatTime, savedSeconds } from "./src/domain/session";
-import type { Clip, Draft, Memory, Song } from "./src/domain/types";
+import { formatTime } from "./src/domain/session";
+import { blockContext, sourceContext } from "./src/pipeline/library";
+import { explainError } from "./src/pipeline/messages";
 import { LibraryScreen } from "./src/screens/LibraryScreen";
 import { MusicScreen } from "./src/screens/MusicScreen";
 import { RecordingScreen } from "./src/screens/RecordingScreen";
@@ -38,10 +53,15 @@ type Routes = {
   Music: { songId: string };
 };
 type Overlay =
-  | { kind: "memory"; memory: Memory }
-  | { kind: "clip"; clip: Clip }
-  | { kind: "finish"; draft: Draft }
-  | { kind: "share"; song: Song };
+  | { kind: "finish" | "review" | "progress"; draftId: string }
+  | {
+      kind: "source";
+      document: DraftDocument | SongDocument;
+      clip?: AudioClip;
+      block?: LyricBlock;
+      draftId?: string;
+    }
+  | { kind: "settings" };
 type Controller = ReturnType<typeof useSession> & {
   show: (overlay: Overlay) => void;
 };
@@ -52,13 +72,21 @@ const navigationTheme = {
   ...DefaultTheme,
   colors: { ...DefaultTheme.colors, background: "#fff" },
 };
-const artwork = require("./assets/kyoto-artwork.png");
-
 function useController() {
-  const controller = useContext(SessionContext);
-  if (!controller) throw new Error("SessionContext is required");
-  return controller;
+  const app = useContext(SessionContext);
+  if (!app) throw new Error("SessionContext is required");
+  return app;
 }
+const statusLabel: Record<string, string> = {
+  local: "マイクオフ",
+  uploading: "音声を送信中",
+  preparing: "歌詞を準備中",
+  waiting_review: "歌詞を確かめよう",
+  generating: "曲を作っています",
+  ready: "曲ができました",
+  failed: "処理を続けられませんでした",
+  needs_reconciliation: "受付状況の確認が必要です",
+};
 
 function LibraryRoute({
   navigation,
@@ -68,16 +96,20 @@ function LibraryRoute({
     <LibraryScreen
       songs={app.state.songs}
       drafts={app.state.drafts}
-      onNewRecording={() =>
-        navigation.navigate("Recording", { draftId: app.newRecording() })
-      }
+      onSettings={() => app.show({ kind: "settings" })}
+      onNewRecording={() => {
+        void app.newRecording().then((draftId) => {
+          if (draftId) navigation.navigate("Recording", { draftId });
+        });
+      }}
       onOpenDraft={(draft) => {
-        app.pause();
+        void app.pause();
         navigation.navigate("Recording", { draftId: draft.id });
       }}
       onOpenSong={(song) => {
-        app.openSong(song.id);
-        navigation.navigate("Music", { songId: song.id });
+        void app
+          .openSong(song)
+          .then(() => navigation.navigate("Music", { songId: song.id }));
       }}
     />
   );
@@ -89,35 +121,76 @@ function RecordingRoute({
 }: NativeStackScreenProps<Routes, "Recording">) {
   const app = useController();
   const { draftId } = route.params;
-  const { leave } = app;
-  useFocusEffect(
-    useCallback(
-      () => () => {
-        leave(draftId);
-      },
-      [draftId, leave],
-    ),
-  );
-  const draft = app.state.drafts.find((item) => item.id === draftId);
+  const draft = app.state.drafts.find((value) => value.id === draftId);
+  const recording =
+    app.state.pendingRecording?.draftId === draftId &&
+    app.recorder.recorderState === "recording";
+  const exiting = useRef(false);
+  const saving =
+    app.busy ||
+    app.state.pendingRecording?.draftId === draftId ||
+    ["preparing", "saving"].includes(app.recorder.recorderState);
+  usePreventRemove(saving, ({ data }) => {
+    if (exiting.current || app.busy) return;
+    exiting.current = true;
+    void app
+      .leave(draftId)
+      .then((saved) => {
+        if (saved) navigation.dispatch(data.action);
+      })
+      .finally(() => {
+        exiting.current = false;
+      });
+  });
   if (!draft) return null;
   return (
     <RecordingScreen
       draft={draft}
-      recording={app.state.recorder?.draftId === draftId}
-      liveSeconds={
-        app.state.recorder?.draftId === draftId ? app.liveSeconds : 0
+      recording={recording}
+      busy={
+        app.busy || ["preparing", "saving"].includes(app.recorder.recorderState)
       }
-      onToggle={() => app.toggleRecording(draftId)}
+      liveSeconds={recording ? app.recorder.elapsedMs / 1000 : 0}
+      stateLabel={
+        recording
+          ? "録音中"
+          : app.recorder.recorderState === "saving"
+            ? "音声を保存中"
+            : draft.status === "local"
+              ? undefined
+              : statusLabel[draft.status]
+      }
+      onToggle={() => {
+        void app.toggleRecording(draftId);
+      }}
+      onImport={() => {
+        void app.importClip(draftId);
+      }}
       onBack={() => {
-        app.leave(draftId);
-        navigation.goBack();
+        void app.leave(draftId).then((left) => {
+          if (left) navigation.goBack();
+        });
       }}
       onFinish={() => {
-        const next = app.stop();
-        const saved = next.drafts.find((item) => item.id === draftId);
-        if (saved?.clips.length) app.show({ kind: "finish", draft: saved });
+        void app.finishRecording(draftId).then((saved) => {
+          if (saved?.clips.length)
+            app.show({
+              kind:
+                saved.status === "waiting_review" ||
+                (saved.status === "failed" && saved.lyrics)
+                  ? "review"
+                  : saved.status === "local" ||
+                      saved.status === "uploading" ||
+                      saved.status === "failed"
+                    ? "finish"
+                    : "progress",
+              draftId,
+            });
+        });
       }}
-      onClip={(clip) => app.show({ kind: "clip", clip })}
+      onClip={(clip) =>
+        app.show({ kind: "source", document: draft, clip, draftId })
+      }
     />
   );
 }
@@ -127,9 +200,19 @@ function MusicRoute({
   navigation,
 }: NativeStackScreenProps<Routes, "Music">) {
   const app = useController();
-  const { pause } = app;
-  useFocusEffect(useCallback(() => () => pause(), [pause]));
-  const song = app.state.songs.find((item) => item.id === route.params.songId);
+  const pause = useRef(app.pause);
+  pause.current = app.pause;
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        void pause.current();
+      },
+      [],
+    ),
+  );
+  const song = app.state.songs.find(
+    (value) => value.id === route.params.songId,
+  );
   if (!song) return null;
   return (
     <MusicScreen
@@ -137,14 +220,19 @@ function MusicRoute({
       playing={app.playing}
       position={app.position}
       onBack={() => {
-        app.pause();
+        void app.pause();
         navigation.goBack();
       }}
-      onToggle={app.togglePlayback}
-      onSeek={app.seek}
-      onScrub={app.setScrubbing}
-      onMemory={(memory) => app.show({ kind: "memory", memory })}
-      onShare={() => app.show({ kind: "share", song })}
+      onToggle={() => {
+        void app.togglePlayback();
+      }}
+      onSeek={(seconds) => {
+        void app.seek(seconds);
+      }}
+      onScrub={(scrubbing) => {
+        if (scrubbing) void app.pause();
+      }}
+      onMemory={(block) => app.show({ kind: "source", document: song, block })}
     />
   );
 }
@@ -155,61 +243,111 @@ export default function App() {
   const [overlay, setOverlay] = useState<Overlay | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [finishTitle, setFinishTitle] = useState("");
-  const [shareStatus, setShareStatus] = useState("");
+  const [place, setPlace] = useState("");
+  const [apiUrl, setApiUrl] = useState("");
+  const [token, setToken] = useState("");
+  const [editedBlocks, setEditedBlocks] = useState<LyricBlock[]>([]);
   const close = () => {
     Keyboard.dismiss();
+    void app.closeSource();
     setSheetOpen(false);
   };
   const show = (next: Overlay) => {
     Keyboard.dismiss();
-    if (next.kind === "finish") setFinishTitle(next.draft.title);
-    setShareStatus("");
+    app.clearError();
+    if (next.kind === "finish")
+      setFinishTitle(
+        app.state.drafts.find((draft) => draft.id === next.draftId)?.title ??
+          "",
+      );
+    if (next.kind === "review")
+      setEditedBlocks(
+        app.state.drafts.find((draft) => draft.id === next.draftId)?.lyrics
+          ?.blocks ?? [],
+      );
+    if (next.kind === "source") setPlace(next.clip?.place ?? "");
+    if (next.kind === "settings") {
+      setApiUrl(app.connection.apiUrl);
+      setToken(app.connection.token);
+    }
     setOverlay(next);
     setSheetOpen(true);
   };
-  const finish = () => {
-    if (overlay?.kind !== "finish" || !finishTitle.trim()) return;
-    const next = app.perform({
-      type: "finish",
-      id: overlay.draft.id,
-      title: finishTitle,
-      now: Date.now(),
-    });
-    const song = next.songs.find(
-      (item) => item.id === `song-${overlay.draft.id}`,
-    );
-    if (!song || !sheetOpen) return;
-    close();
-    app.openSong(song.id);
-    navigationRef.dispatch(StackActions.replace("Music", { songId: song.id }));
-  };
-  const share = async () => {
-    if (overlay?.kind !== "share") return;
-    try {
-      await Share.share({
-        title: overlay.song.title,
-        message: `${overlay.song.title}\n${overlay.song.trackTitle}\n${overlay.song.date}`,
-      });
-    } catch {
-      setShareStatus("共有を開けませんでした。もう一度お試しください。");
+  const draft =
+    overlay && "draftId" in overlay
+      ? app.state.drafts.find((value) => value.id === overlay.draftId)
+      : undefined;
+  const overlayKind =
+    overlay?.kind === "progress" && draft?.status === "waiting_review"
+      ? "review"
+      : overlay?.kind;
+  useEffect(() => {
+    if (overlay?.kind === "progress" && draft?.status === "waiting_review") {
+      setEditedBlocks(draft.lyrics?.blocks ?? []);
+      setOverlay({ kind: "review", draftId: draft.id });
     }
+  }, [overlay?.kind, draft?.id, draft?.status, draft?.lyrics]);
+  useEffect(() => {
+    const route = navigationRef.isReady()
+      ? navigationRef.getCurrentRoute()
+      : undefined;
+    if (route?.name !== "Recording") return;
+    const draftId = (route.params as Routes["Recording"]).draftId;
+    const song = app.state.songs.find((value) => value.draftId === draftId);
+    if (!song) return;
+    setSheetOpen(false);
+    void app
+      .openSong(song)
+      .then(() =>
+        navigationRef.dispatch(
+          StackActions.replace("Music", { songId: song.id }),
+        ),
+      );
+  }, [app.state.songs, app.openSong]);
+  const prepare = async () => {
+    if (!draft) return;
+    if (await app.prepare(draft.id, finishTitle))
+      setOverlay({ kind: "progress", draftId: draft.id });
+  };
+  const generate = async () => {
+    if (!draft) return;
+    if (await app.generate(draft.id, editedBlocks))
+      setOverlay({ kind: "progress", draftId: draft.id });
   };
   const title =
-    overlay?.kind === "memory"
-      ? overlay.memory.place
-      : overlay?.kind === "clip"
-        ? overlay.clip.place
-        : overlay?.kind === "share"
-          ? "この旅を届ける"
-          : "思い出を一曲に";
+    overlayKind === "settings"
+      ? "接続設定"
+      : overlayKind === "source"
+        ? "あのときの会話"
+        : overlayKind === "review"
+          ? "この歌詞で、残そう。"
+          : overlayKind === "progress"
+            ? statusLabel[draft?.status ?? "preparing"]
+            : "思い出を一曲に";
   const description =
-    overlay?.kind === "memory"
-      ? `${displayDate(overlay.memory.date)} ${overlay.memory.time}`
-      : overlay?.kind === "clip"
-        ? `${displayDate(overlay.clip.date)} ${overlay.clip.time} · ${formatTime(overlay.clip.seconds)}`
-        : overlay?.kind === "share"
-          ? overlay.song.date
-          : "残した会話を確かめて、名前を付けよう。";
+    overlayKind === "settings"
+      ? "検証用の接続先とトークンを設定します。"
+      : overlayKind === "review"
+        ? "会話を確かめながら、言葉を整えられます。"
+        : overlayKind === "source"
+          ? "歌詞の元になった音声を聴き返せます。"
+          : overlayKind === "progress"
+            ? "この画面を閉じても、記録は残ります。"
+            : "残した音声を確かめて、名前を付けよう。";
+  let sourceUtterances: Utterance[] = [];
+  let sourceClips: AudioClip[] = [];
+  if (overlay?.kind === "source") {
+    sourceUtterances = overlay.document.utterances.filter((value) =>
+      overlay.clip
+        ? value.clipId === overlay.clip.id
+        : overlay.block?.sourceUtteranceIds.includes(value.id),
+    );
+    sourceClips = overlay.clip
+      ? [overlay.clip]
+      : overlay.document.clips.filter((clip) =>
+          sourceUtterances.some((value) => value.clipId === clip.id),
+        );
+  }
 
   return (
     <SafeAreaProvider>
@@ -228,112 +366,385 @@ export default function App() {
             <Stack.Screen name="Music" component={MusicRoute} />
           </Stack.Navigator>
         </NavigationContainer>
+        {!app.ready && (
+          <View style={extra.loading}>
+            <ActivityIndicator color="#493020" />
+            <Text style={styles.summary}>
+              {app.error || "思い出を読み込んでいます"}
+            </Text>
+          </View>
+        )}
+        {!!app.error && app.ready && !sheetOpen && (
+          <ActionButton
+            label="エラーを閉じる"
+            onPress={app.clearError}
+            style={extra.error}
+          >
+            <Text accessibilityLiveRegion="polite" style={styles.summary}>
+              {app.error}
+            </Text>
+          </ActionButton>
+        )}
         <NativeSheet
           open={sheetOpen}
           onClose={close}
           title={title}
           description={description}
-          snap={overlay?.kind === "memory" ? 0.76 : 0.66}
+          snap={
+            overlayKind === "review" || overlayKind === "source" ? 0.84 : 0.72
+          }
         >
-          {overlay?.kind === "memory" && (
-            <View testID="memory-sheet">
-              <Text style={styles.story}>{overlay.memory.story}</Text>
-              <Text style={styles.sectionHeading}>あのときの会話</Text>
-              <Conversation memory={overlay.memory} />
-              <View style={styles.connection}>
-                <Text style={styles.sectionHeading}>ここから生まれた歌詞</Text>
-                {overlay.memory.lyrics.map((line) => (
-                  <Text key={line} style={styles.lyric}>
-                    {line}
-                  </Text>
-                ))}
-              </View>
+          {!!app.error && (
+            <Text accessibilityLiveRegion="polite" style={extra.errorCopy}>
+              {app.error}
+            </Text>
+          )}
+          {!!draft?.error && (
+            <Text accessibilityLiveRegion="polite" style={extra.errorCopy}>
+              {explainError(draft.error)}
+            </Text>
+          )}
+          {overlayKind === "settings" && (
+            <View testID="connection-sheet">
+              <Text style={styles.fieldLabel}>接続先URL</Text>
+              <TextInput
+                value={apiUrl}
+                onChangeText={setApiUrl}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                accessibilityLabel="接続先URL"
+                style={styles.input}
+                testID="api-url"
+              />
+              <Text style={styles.fieldLabel}>検証用トークン</Text>
+              <TextInput
+                value={token}
+                onChangeText={setToken}
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+                accessibilityLabel="検証用トークン"
+                style={styles.input}
+                testID="tester-token"
+              />
               <ActionButton
-                label="この場面を聴く"
-                testID="listen-memory"
-                style={styles.primary}
+                label="接続を保存"
                 onPress={() => {
-                  if (overlay.kind === "memory") {
-                    app.seek(overlay.memory.startsAt);
-                    app.setPlaying(true);
-                    close();
-                  }
+                  void app.configure({ apiUrl, token }).then((success) => {
+                    if (success) close();
+                  });
                 }}
+                disabled={app.busy}
+                style={styles.primary}
+                testID="save-connection"
               >
-                <Feather name="play" size={19} color="#fff8f0" />
-                <Text style={styles.primaryText}>この場面を聴く</Text>
-                <Text style={styles.buttonNote}>
-                  {formatTime(overlay.memory.startsAt)}から
-                </Text>
+                <Text style={styles.primaryText}>接続を保存</Text>
               </ActionButton>
             </View>
           )}
-          {overlay?.kind === "clip" && (
-            <View testID="clip-sheet">
-              <Text style={styles.sectionHeading}>残した会話</Text>
-              <Conversation memory={overlay.clip.memory} />
-            </View>
-          )}
-          {overlay?.kind === "finish" && (
+          {overlayKind === "finish" && draft && (
             <View testID="finish-sheet">
               <Text style={styles.summary}>
-                {overlay.draft.clips.length}件の会話 ·{" "}
-                {formatTime(savedSeconds(overlay.draft))}
+                {draft.clips.length}件の音声 ·{" "}
+                {formatTime(
+                  draft.clips.reduce(
+                    (sum, clip) => sum + clip.durationMs / 1000,
+                    0,
+                  ),
+                )}
               </Text>
               <Text style={styles.fieldLabel}>思い出の名前</Text>
               <TextInput
-                style={styles.input}
-                accessibilityLabel="思い出の名前"
-                testID="finish-title"
                 value={finishTitle}
                 onChangeText={setFinishTitle}
+                editable={draft.status === "local"}
                 maxLength={40}
                 returnKeyType="done"
                 onSubmitEditing={Keyboard.dismiss}
+                accessibilityLabel="思い出の名前"
+                style={styles.input}
+                testID="finish-title"
               />
               <View style={styles.finishClips}>
-                {overlay.draft.clips.map((clip) => (
-                  <View key={clip.id} style={styles.clipRow}>
-                    <Feather name="message-circle" size={18} color="#493020" />
-                    <Text style={styles.clipContext}>
-                      {displayDate(clip.date).slice(5)} {clip.time} ·{" "}
-                      {clip.place}
-                    </Text>
-                    <Text style={styles.clipDuration}>
-                      {formatTime(clip.seconds)}
-                    </Text>
-                  </View>
-                ))}
+                {draft.clips.map((clip) => {
+                  const context = sourceContext(clip);
+                  return (
+                    <ActionButton
+                      key={clip.id}
+                      label={`${context.place}の音声を確認`}
+                      onPress={() =>
+                        show({
+                          kind: "source",
+                          document: draft,
+                          clip,
+                          draftId: draft.id,
+                        })
+                      }
+                      style={styles.clipRow}
+                    >
+                      <Feather
+                        name="message-circle"
+                        size={18}
+                        color="#493020"
+                      />
+                      <Text style={styles.clipContext}>
+                        {context.date} {context.time} · {context.place}
+                      </Text>
+                      <Text style={styles.clipDuration}>
+                        {formatTime(clip.durationMs / 1000)}
+                      </Text>
+                    </ActionButton>
+                  );
+                })}
               </View>
               <ActionButton
-                label="曲に仕上げる"
-                testID="create-song"
-                disabled={!finishTitle.trim()}
+                label="歌詞を準備する"
+                onPress={() => {
+                  void prepare();
+                }}
+                disabled={app.busy || !finishTitle.trim()}
                 style={styles.primary}
-                onPress={finish}
+                testID="prepare-lyrics"
               >
-                <Text style={styles.primaryText}>曲に仕上げる</Text>
+                <Text style={styles.primaryText}>
+                  {app.busy ? "音声を送信中" : "歌詞を準備する"}
+                </Text>
                 <Feather name="chevron-right" size={20} color="#fff8f0" />
               </ActionButton>
             </View>
           )}
-          {overlay?.kind === "share" && (
-            <View style={styles.share} testID="share-sheet">
-              <Image source={artwork} style={styles.shareArtwork} />
-              <Text style={styles.shareTitle}>{overlay.song.trackTitle}</Text>
-              <Text style={styles.summary}>{overlay.song.title}</Text>
-              <ActionButton
-                label="曲の情報を共有"
-                style={styles.primary}
-                onPress={share}
+          {overlayKind === "review" && draft && (
+            <View testID="lyrics-review">
+              <ScrollView
+                keyboardShouldPersistTaps="handled"
+                style={{ maxHeight: 350 }}
               >
-                <Feather name="share" size={20} color="#fff8f0" />
-                <Text style={styles.primaryText}>曲の情報を共有</Text>
+                {editedBlocks.map((block) => {
+                  const context = blockContext(draft, block);
+                  return (
+                    <View key={block.id} style={{ marginBottom: 24 }}>
+                      <TextInput
+                        value={block.text}
+                        onChangeText={(text) => {
+                          setEditedBlocks((blocks) =>
+                            blocks.map((value) =>
+                              value.id === block.id
+                                ? { ...value, text }
+                                : value,
+                            ),
+                          );
+                          void app.editLyrics(draft.id, block.id, text);
+                        }}
+                        multiline
+                        accessibilityLabel="歌詞を編集"
+                        style={[
+                          styles.input,
+                          {
+                            minHeight: 100,
+                            lineHeight: 28,
+                            textAlignVertical: "top",
+                          },
+                        ]}
+                        testID={`lyric-editor-${block.id}`}
+                      />
+                      <ActionButton
+                        label="元の会話を確認"
+                        onPress={() =>
+                          show({
+                            kind: "source",
+                            document: draft,
+                            block,
+                            draftId: draft.id,
+                          })
+                        }
+                        style={styles.clipRow}
+                      >
+                        <Feather
+                          name="message-circle"
+                          size={20}
+                          color="#493020"
+                        />
+                        <Text style={styles.clipContext}>
+                          {context.date} {context.time} · {context.place}
+                        </Text>
+                      </ActionButton>
+                    </View>
+                  );
+                })}
+              </ScrollView>
+              <ActionButton
+                label="この歌詞で曲を作る"
+                onPress={() => {
+                  void generate();
+                }}
+                disabled={
+                  app.busy ||
+                  !editedBlocks.length ||
+                  editedBlocks.some((block) => !block.text.trim())
+                }
+                style={styles.primary}
+                testID="create-song"
+              >
+                <Text style={styles.primaryText}>この歌詞で曲を作る</Text>
               </ActionButton>
-              {!!shareStatus && (
-                <Text accessibilityLiveRegion="polite" style={styles.summary}>
-                  {shareStatus}
-                </Text>
+            </View>
+          )}
+          {overlayKind === "progress" && draft && (
+            <View testID="generation-progress">
+              <Text style={styles.story}>
+                {draft.status === "needs_reconciliation"
+                  ? "生成が受け付けられたか確認できないため、自動では作り直しません。接続を確認してから、実行履歴を確認してください。"
+                  : draft.status === "failed"
+                    ? "音声と歌詞は残っています。ホームからこの記録を開き、もう一度仕上げられます。"
+                    : "思い出の言葉を、一曲にしています。完成したらライブラリに残ります。"}
+              </Text>
+              {["preparing", "generating", "uploading"].includes(
+                draft.status,
+              ) && <ActivityIndicator color="#493020" />}
+              <ActionButton
+                label="閉じる"
+                onPress={close}
+                style={styles.primary}
+              >
+                <Text style={styles.primaryText}>閉じる</Text>
+              </ActionButton>
+            </View>
+          )}
+          {overlay?.kind === "source" && (
+            <View testID="memory-sheet">
+              <ScrollView style={{ maxHeight: 270 }}>
+                {sourceClips.map((clip) => {
+                  const lines = sourceUtterances.filter(
+                    (value) => value.clipId === clip.id,
+                  );
+                  const context = sourceContext(clip, lines[0]?.startMs ?? 0);
+                  return (
+                    <Text
+                      key={clip.id}
+                      style={[styles.summary, { marginBottom: 16 }]}
+                    >
+                      {context.date} {context.time} · {context.place}
+                    </Text>
+                  );
+                })}
+                {sourceUtterances.length ? (
+                  sourceUtterances.map((utterance) => (
+                    <View
+                      key={utterance.id}
+                      style={{
+                        flexDirection: "row",
+                        gap: 16,
+                        marginBottom: 18,
+                      }}
+                    >
+                      <Text
+                        style={{ width: 50, color: "#6f5d4e", fontSize: 12 }}
+                      >
+                        {utterance.speaker}
+                      </Text>
+                      <Text
+                        style={[styles.story, { flex: 1, marginBottom: 0 }]}
+                      >
+                        「{utterance.text}」
+                      </Text>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.story}>
+                    文字起こしは、仕上げるときに行います。
+                  </Text>
+                )}
+              </ScrollView>
+              {overlay.clip &&
+                overlay.draftId &&
+                app.state.drafts.find((value) => value.id === overlay.draftId)
+                  ?.status === "local" && (
+                  <>
+                    <Text style={styles.fieldLabel}>
+                      この録音の場所（任意）
+                    </Text>
+                    <TextInput
+                      value={place}
+                      onChangeText={setPlace}
+                      placeholder="場所不明"
+                      accessibilityLabel="録音の場所"
+                      style={styles.input}
+                    />
+                    <ActionButton
+                      label="場所を保存"
+                      onPress={() => {
+                        if (overlay.clip && overlay.draftId)
+                          void app
+                            .setPlace(overlay.draftId, overlay.clip.id, place)
+                            .then(() => close());
+                      }}
+                      disabled={app.busy}
+                      style={styles.clipRow}
+                    >
+                      <Text style={styles.clipContext}>場所を保存</Text>
+                    </ActionButton>
+                  </>
+                )}
+              {sourceClips.map((clip) => {
+                const lines = sourceUtterances.filter(
+                  (value) => value.clipId === clip.id,
+                );
+                const start = lines.length
+                  ? Math.min(...lines.map((value) => value.startMs))
+                  : 0;
+                const end = lines.length
+                  ? Math.max(...lines.map((value) => value.endMs))
+                  : clip.durationMs;
+                return (
+                  <ActionButton
+                    key={clip.id}
+                    label="元の会話を聴く"
+                    onPress={() => {
+                      void app.playSource(clip.id, start, end, overlay.draftId);
+                    }}
+                    disabled={app.busy}
+                    style={styles.primary}
+                    testID="listen-memory"
+                  >
+                    <Feather name="play" size={19} color="#fff8f0" />
+                    <Text style={styles.primaryText}>元の会話を聴く</Text>
+                    <Text style={styles.buttonNote}>
+                      {formatTime(start / 1000)}から
+                    </Text>
+                  </ActionButton>
+                );
+              })}
+              {app.sourcePlaying && (
+                <ActionButton
+                  label="会話の再生を止める"
+                  onPress={() => {
+                    void app.closeSource();
+                  }}
+                  style={styles.clipRow}
+                >
+                  <Text style={styles.clipContext}>再生を止める</Text>
+                </ActionButton>
+              )}
+              {overlay.draftId && (
+                <ActionButton
+                  label="記録の確認に戻る"
+                  onPress={() => {
+                    void app.closeSource();
+                    const current = app.state.drafts.find(
+                      (value) => value.id === overlay.draftId,
+                    );
+                    if (current)
+                      show({
+                        kind: current.lyrics ? "review" : "finish",
+                        draftId: current.id,
+                      });
+                  }}
+                  style={styles.clipRow}
+                >
+                  <Feather name="chevron-left" size={18} color="#493020" />
+                  <Text style={styles.clipContext}>確認に戻る</Text>
+                </ActionButton>
               )}
             </View>
           )}
@@ -342,6 +753,31 @@ export default function App() {
     </SafeAreaProvider>
   );
 }
+
+const extra = StyleSheet.create({
+  loading: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: "#fff",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 16,
+  },
+  error: {
+    position: "absolute",
+    bottom: 30,
+    left: 16,
+    right: 16,
+    padding: 16,
+    borderRadius: 12,
+    backgroundColor: "#fff4e9",
+  },
+  errorCopy: {
+    color: "#8a3e26",
+    fontSize: 13,
+    lineHeight: 22,
+    marginBottom: 18,
+  },
+});
 
 const styles = StyleSheet.create({
   story: { color: "#493020", fontSize: 15, lineHeight: 26, marginBottom: 24 },

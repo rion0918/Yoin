@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "main": "index.ts",
+  "engines": {
+    "node": ">=24.12.0 <25"
+  },
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
@@ -13,8 +16,14 @@
     "format": "biome format --write .",
     "check": "biome check .",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/domain/*.test.ts",
-    "export": "expo export --platform all"
+    "test": "node --test src/domain/*.test.ts src/pipeline/*.test.ts src/platform/*.test.ts pipeline/*.test.ts scripts/*.test.mjs",
+    "export": "expo export --platform all",
+    "poc": "node --env-file-if-exists=.env.local pipeline/poc.ts",
+    "setup:local": "node scripts/setup-local.mjs",
+    "backend:dev": "npm --prefix backend run dev",
+    "backend:test": "npm --prefix backend test",
+    "backend:typecheck": "npm --prefix backend run typecheck",
+    "android:device": "expo run:android --device"
   },
   "dependencies": {
     "@expo/metro-runtime": "~57.0.16",
@@ -23,7 +32,13 @@
     "@react-navigation/native": "^7.5.0",
     "@react-navigation/native-stack": "^7.20.0",
     "expo": "~57.0.26",
+    "expo-audio": "~57.0.5",
+    "expo-dev-client": "~57.0.19",
+    "expo-document-picker": "~57.0.3",
+    "expo-file-system": "~57.0.7",
     "expo-font": "~57.0.4",
+    "expo-secure-store": "~57.0.4",
+    "expo-sqlite": "~57.0.3",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -34,7 +49,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
-    "@types/node": "^26.6.4",
+    "@types/node": "^24.19.1",
     "@types/react": "~19.2.2",
     "typescript": "~6.0.3"
   }

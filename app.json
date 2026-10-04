@@ -6,14 +6,27 @@
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": false
+      "supportsTablet": false,
+      "bundleIdentifier": "com.rion0918.yoin"
     },
     "android": {
-      "predictiveBackGestureEnabled": true
+      "predictiveBackGestureEnabled": true,
+      "package": "com.rion0918.yoin"
     },
     "web": {
       "name": "Yoin | 思い出のライブラリ"
     },
-    "plugins": ["expo-font"]
+    "plugins": [
+      "expo-font",
+      [
+        "expo-audio",
+        {
+          "enableBackgroundRecording": true,
+          "microphonePermission": "思い出に残したい会話を録音するため、マイクを使用します。"
+        }
+      ],
+      "expo-sqlite",
+      "expo-secure-store"
+    ]
   }
 }

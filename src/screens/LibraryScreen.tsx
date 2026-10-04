@@ -8,24 +8,27 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import type { LocalDraft, SongDocument } from "../../shared/contracts";
 import { ActionButton } from "../components/ActionButton";
-import { formatTime, savedSeconds } from "../domain/session";
-import type { Draft, Song } from "../domain/types";
+import { formatTime } from "../domain/session";
+import { songDate } from "../pipeline/library";
 
 type LibraryScreenProps = {
-  songs: Song[];
-  drafts: Draft[];
+  songs: SongDocument[];
+  drafts: LocalDraft[];
   onNewRecording: () => void;
-  onOpenDraft: (draft: Draft) => void;
-  onOpenSong: (song: Song) => void;
+  onSettings: () => void;
+  onOpenDraft: (draft: LocalDraft) => void;
+  onOpenSong: (song: SongDocument) => void;
 };
 
-const artwork = require("../../assets/kyoto-artwork.png");
+const artwork = require("../../assets/season-background.png");
 
 export function LibraryScreen({
   songs,
   drafts,
   onNewRecording,
+  onSettings,
   onOpenDraft,
   onOpenSong,
 }: LibraryScreenProps) {
@@ -36,14 +39,24 @@ export function LibraryScreen({
     <SafeAreaView style={styles.screen} testID="home">
       <View style={styles.header}>
         <Text style={styles.wordmark}>Yoin</Text>
-        <ActionButton
-          label="新しい記録"
-          onPress={onNewRecording}
-          style={styles.newRecording}
-          testID="new-recording"
-        >
-          <Feather name="plus" size={25} color="#332317" />
-        </ActionButton>
+        <View style={{ flexDirection: "row", gap: 12 }}>
+          <ActionButton
+            label="接続設定"
+            onPress={onSettings}
+            style={styles.newRecording}
+            testID="connection-settings"
+          >
+            <Feather name="settings" size={21} color="#332317" />
+          </ActionButton>
+          <ActionButton
+            label="新しい記録"
+            onPress={onNewRecording}
+            style={styles.newRecording}
+            testID="new-recording"
+          >
+            <Feather name="plus" size={25} color="#332317" />
+          </ActionButton>
+        </View>
       </View>
       <ScrollView
         contentContainerStyle={styles.content}
@@ -74,7 +87,12 @@ export function LibraryScreen({
                   <Text style={styles.draftTitle}>{draft.title}</Text>
                   <Text style={styles.rowDetail}>
                     {draft.clips.length}件の会話 ·{" "}
-                    {formatTime(savedSeconds(draft))}
+                    {formatTime(
+                      draft.clips.reduce(
+                        (sum, clip) => sum + clip.durationMs,
+                        0,
+                      ) / 1000,
+                    )}
                   </Text>
                 </View>
                 <Feather name="chevron-right" size={18} color="#726d69" />
@@ -83,11 +101,16 @@ export function LibraryScreen({
           </View>
         )}
 
+        {!songs.length && (
+          <Text style={styles.subtitle}>
+            右上の＋から、会話を残してみよう。
+          </Text>
+        )}
         <View style={styles.albums}>
           {songs.map((song) => (
             <ActionButton
               key={song.id}
-              label={`${song.title} ${song.date}の曲を開く`}
+              label={`${song.title} ${songDate(song)}の曲を開く`}
               onPress={() => onOpenSong(song)}
               style={[styles.album, { width: albumWidth }]}
               testID={`album-${song.id}`}
@@ -99,10 +122,10 @@ export function LibraryScreen({
                   { width: albumWidth, height: albumWidth },
                 ]}
                 resizeMode="cover"
-                accessibilityLabel="京都の坂道を歩く三人の友だち"
+                accessibilityLabel={`${song.title}の仮ジャケット`}
               />
               <Text style={styles.albumTitle}>{song.title}</Text>
-              <Text style={styles.albumDate}>{song.date}</Text>
+              <Text style={styles.albumDate}>{songDate(song)}</Text>
             </ActionButton>
           ))}
         </View>

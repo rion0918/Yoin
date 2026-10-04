@@ -10,23 +10,30 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
+import type { LocalClip, LocalDraft } from "../../shared/contracts";
 import { ActionButton } from "../components/ActionButton";
-import { displayDate, formatTime, savedSeconds } from "../domain/session";
-import type { Clip, Draft } from "../domain/types";
+import { displayDate, formatTime } from "../domain/session";
+import { sourceContext } from "../pipeline/library";
 
 type RecordingScreenProps = {
-  draft: Draft;
+  draft: LocalDraft;
   recording: boolean;
+  busy: boolean;
+  stateLabel?: string;
+  onImport: () => void;
   liveSeconds: number;
   onToggle: () => void;
   onBack: () => void;
   onFinish: () => void;
-  onClip: (clip: Clip) => void;
+  onClip: (clip: LocalClip) => void;
 };
 
 export function RecordingScreen({
   draft,
   recording,
+  busy,
+  stateLabel,
+  onImport,
   liveSeconds,
   onToggle,
   onBack,
@@ -61,7 +68,7 @@ export function RecordingScreen({
         <ActionButton
           label="仕上げる"
           onPress={onFinish}
-          disabled={!draft.clips.length && !recording}
+          disabled={busy || (!draft.clips.length && !recording)}
           style={styles.finish}
           testID="finish-recording"
         >
@@ -84,7 +91,9 @@ export function RecordingScreen({
         <Text style={styles.heading} accessibilityRole="header">
           {draft.title}
         </Text>
-        <Text style={styles.date}>{displayDate(draft.date)}</Text>
+        <Text style={styles.date}>
+          {displayDate(draft.createdAt.slice(0, 10))}
+        </Text>
 
         <View style={[styles.focus, { paddingTop: focusSpacing }]}>
           <View style={styles.stateCircle}>
@@ -98,16 +107,22 @@ export function RecordingScreen({
             style={[styles.stateLabel, { color: stateColor }]}
             accessibilityLiveRegion="polite"
           >
-            {recording ? "録音中" : "マイクオフ"}
+            {stateLabel || (recording ? "録音中" : "マイクオフ")}
           </Text>
           <View style={styles.duration}>
             <Text style={styles.timer} testID="recorded-duration">
-              {formatTime(savedSeconds(draft) + liveSeconds)}
+              {formatTime(
+                draft.clips.reduce(
+                  (sum, clip) => sum + clip.durationMs / 1000,
+                  0,
+                ) + liveSeconds,
+              )}
             </Text>
             <Text style={styles.durationLabel}>残した音声</Text>
           </View>
           <ActionButton
             label={recordLabel}
+            disabled={busy || draft.status !== "local"}
             onPress={onToggle}
             style={styles.recordToggle}
             testID="record-toggle"
@@ -119,6 +134,15 @@ export function RecordingScreen({
             />
           </ActionButton>
           <Text style={styles.actionLabel}>{recordLabel}</Text>
+          <ActionButton
+            label="音声ファイルを取り込む"
+            onPress={onImport}
+            disabled={busy || recording || draft.status !== "local"}
+            style={{ minHeight: 44, justifyContent: "center" }}
+            testID="import-audio"
+          >
+            <Text style={styles.date}>音声ファイルを取り込む</Text>
+          </ActionButton>
         </View>
 
         <View style={styles.clips}>
@@ -133,7 +157,7 @@ export function RecordingScreen({
               {draft.clips.map((clip) => (
                 <ActionButton
                   key={clip.id}
-                  label={`${displayDate(clip.date)} ${clip.time} ${clip.place}の会話を確認`}
+                  label={`${sourceContext(clip).date} ${sourceContext(clip).time} ${sourceContext(clip).place}の音声を確認`}
                   onPress={() => onClip(clip)}
                   style={styles.clipRow}
                   testID={`clip-${clip.id}`}
@@ -141,13 +165,11 @@ export function RecordingScreen({
                   <Feather name="message-circle" size={22} color="#332317" />
                   <View style={styles.clipInformation}>
                     <Text style={styles.clipContext}>
-                      {clip.date !== draft.date
-                        ? `${displayDate(clip.date).slice(5)} `
-                        : ""}
-                      {clip.time} · {clip.place}
+                      {sourceContext(clip).date} {sourceContext(clip).time} ·{" "}
+                      {sourceContext(clip).place}
                     </Text>
                     <Text style={styles.clipDuration}>
-                      {formatTime(clip.seconds)}
+                      {formatTime(clip.durationMs / 1000)}
                     </Text>
                   </View>
                   <Feather name="chevron-right" size={17} color="#726d69" />

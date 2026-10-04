@@ -13,24 +13,24 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
+import type { LyricBlock, SongDocument } from "../../shared/contracts";
 import { ActionButton } from "../components/ActionButton";
 import { SeekSlider } from "../components/SeekSlider";
-import { displayDate, formatTime } from "../domain/session";
-import type { Memory, Song } from "../domain/types";
+import { formatTime } from "../domain/session";
+import { blockContext, songDate } from "../pipeline/library";
 
-const artwork = require("../../assets/kyoto-artwork.png");
+const artwork = require("../../assets/season-background.png");
 const background = require("../../assets/season-background.png");
 
 type MusicScreenProps = {
-  song: Song;
+  song: SongDocument;
   playing: boolean;
   position: number;
   onBack: () => void;
   onToggle: () => void;
   onSeek: (seconds: number) => void;
   onScrub: (scrubbing: boolean) => void;
-  onMemory: (memory: Memory) => void;
-  onShare: () => void;
+  onMemory: (memory: LyricBlock) => void;
 };
 
 export function MusicScreen({
@@ -42,7 +42,6 @@ export function MusicScreen({
   onSeek,
   onScrub,
   onMemory,
-  onShare,
 }: MusicScreenProps) {
   const insets = useSafeAreaInsets();
   const { height, width } = useWindowDimensions();
@@ -51,11 +50,9 @@ export function MusicScreen({
     160,
     height - insets.top - insets.bottom - 610,
   );
-  const currentPosition = Math.min(song.duration, Math.max(0, position));
-  const activeMemory = song.memories.reduce(
-    (active, memory, index) =>
-      currentPosition >= memory.startsAt ? index : active,
-    0,
+  const currentPosition = Math.min(
+    song.durationMs / 1000,
+    Math.max(0, position),
   );
 
   return (
@@ -76,14 +73,6 @@ export function MusicScreen({
             <Feather name="chevron-left" size={24} color="#332317" />
             <Text style={styles.backLabel}>ホーム</Text>
           </ActionButton>
-          <ActionButton
-            label="この曲を共有"
-            onPress={onShare}
-            style={styles.share}
-            testID="share-song"
-          >
-            <Feather name="share-2" size={24} color="#332317" />
-          </ActionButton>
         </View>
 
         <ScrollView
@@ -97,10 +86,7 @@ export function MusicScreen({
           <Text accessibilityRole="header" style={styles.tripTitle}>
             {song.title}
           </Text>
-          <Text style={styles.tripDate}>{song.date}</Text>
-          {song.members?.length ? (
-            <Text style={styles.members}>{song.members.join("・")}</Text>
-          ) : null}
+          <Text style={styles.tripDate}>{songDate(song)}</Text>
           <Image
             source={artwork}
             resizeMode="cover"
@@ -108,7 +94,7 @@ export function MusicScreen({
             accessibilityLabel={`${song.title}のジャケット`}
           />
           <Text accessibilityRole="header" style={styles.trackTitle}>
-            {song.trackTitle}
+            {song.title}
           </Text>
 
           <View style={styles.lyricSection}>
@@ -116,30 +102,21 @@ export function MusicScreen({
               歌詞の思い出
             </Text>
             <View style={styles.verses}>
-              {song.memories.map((memory, index) => {
-                const date = memory.date
-                  .slice(5)
-                  .split("-")
-                  .map(Number)
-                  .join(".");
+              {song.lyrics.blocks.map((memory) => {
+                const context = blockContext(song, memory);
                 return (
                   <View key={memory.id} style={styles.memory}>
-                    {index === activeMemory ? (
-                      <View style={styles.activeBar} />
-                    ) : null}
                     <View style={styles.lyricCopy}>
-                      <Text style={styles.lyrics}>
-                        {memory.lyrics.join("\n")}
-                      </Text>
+                      <Text style={styles.lyrics}>{memory.text}</Text>
                       <Text
                         style={styles.context}
-                        accessibilityLabel={`${displayDate(memory.date)} ${memory.time} ${memory.place}`}
+                        accessibilityLabel={`${context.date} ${context.time} ${context.place}`}
                       >
-                        {date} {memory.time} · {memory.place}
+                        {context.date} {context.time} · {context.place}
                       </Text>
                     </View>
                     <ActionButton
-                      label={`${memory.place}、${displayDate(memory.date)} ${memory.time}の元の会話を開く`}
+                      label={`${context.place}、${context.date} ${context.time}の元の会話を開く`}
                       onPress={() => onMemory(memory)}
                       style={styles.sourceButton}
                       testID={`memory-${memory.id}`}
@@ -171,13 +148,14 @@ export function MusicScreen({
           />
           <View style={styles.playerInformation}>
             <Text style={styles.playerTitle} numberOfLines={1}>
-              {song.trackTitle}
+              {song.title}
             </Text>
             <Text style={styles.playerTime}>
-              {formatTime(currentPosition)} / {formatTime(song.duration)}
+              {formatTime(currentPosition)} /{" "}
+              {formatTime(song.durationMs / 1000)}
             </Text>
             <SeekSlider
-              duration={song.duration}
+              duration={song.durationMs / 1000}
               position={currentPosition}
               onSeek={onSeek}
               onScrub={onScrub}

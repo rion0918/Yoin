@@ -17,7 +17,13 @@ import {
   songDocument,
   utterances,
 } from "./database.ts";
-import { fixedBody, serveMedia, uploadMediaChunk } from "./media-api.ts";
+import {
+  fixedBody,
+  serveMedia,
+  serveMediaChunk,
+  uploadMediaChunk,
+} from "./media-api.ts";
+import { runtimeCallback } from "./runtime-api.ts";
 import { authenticate, sha256, signedUrl } from "./security.ts";
 import { type Env, HttpError } from "./types.ts";
 import {
@@ -408,12 +414,26 @@ export async function handleRequest(request: Request, env: Env) {
   try {
     const url = new URL(request.url);
     const path = url.pathname;
+    const runtime =
+      /^\/internal\/attempts\/([a-zA-Z0-9_-]{1,200})\/(claim|result|raw|song)$/.exec(
+        path,
+      );
+    if (runtime && request.method === (runtime[2] === "claim" ? "POST" : "PUT"))
+      return await runtimeCallback(request, env, runtime[1], runtime[2]);
     const media = /^\/media\/([a-zA-Z0-9_-]+)$/.exec(path);
     if (media && ["GET", "HEAD"].includes(request.method))
       return await serveMedia(request, env, id(media[1]));
     const chunk =
       /^\/internal\/chunks\/([a-zA-Z0-9_-]+)\/([a-zA-Z0-9_-]+)\/(\d+)$/.exec(
         path,
+      );
+    if (chunk && request.method === "GET")
+      return await serveMediaChunk(
+        request,
+        env,
+        id(chunk[1]),
+        id(chunk[2]),
+        Number(chunk[3]),
       );
     if (chunk && request.method === "PUT")
       return await uploadMediaChunk(

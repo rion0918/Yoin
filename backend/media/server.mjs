@@ -9,6 +9,8 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { GoogleProviderError } from "../../pipeline/google.ts";
+import { runProvider } from "./providers.mjs";
 
 const execFile = promisify(execFileCallback);
 const MAX_BYTES = 100 * 1024 * 1024;
@@ -189,6 +191,8 @@ export function createMediaServer({
   origin,
   ffmpeg = "ffmpeg",
   ffprobe = "ffprobe",
+  apiKey,
+  providerFetch,
 }) {
   if (!token || token.length < 32 || !origin)
     throw new Error("media_service_not_configured");
@@ -206,7 +210,9 @@ export function createMediaServer({
     }
     if (
       request.method !== "POST" ||
-      !["/inspect", "/probe"].includes(request.url)
+      !["/inspect", "/probe", "/transcribe", "/lyrics", "/music"].includes(
+        request.url,
+      )
     ) {
       response.writeHead(404);
       response.end();
@@ -219,21 +225,34 @@ export function createMediaServer({
     }
     busy = true;
     try {
-      let raw = "";
+      const parts = [];
+      let size = 0;
       for await (const part of request) {
-        raw += part.toString();
-        if (raw.length > 16_384) throw new Error("request_too_large");
+        size += part.length;
+        parts.push(part);
+        if (size > 400_000) throw new Error("request_too_large");
       }
-      const body = JSON.parse(raw);
-      const result = await inspect(
-        body,
-        { origin, ffmpeg, ffprobe },
-        request.url === "/inspect",
-      );
+      const body = JSON.parse(Buffer.concat(parts).toString("utf8"));
+      const result = ["/inspect", "/probe"].includes(request.url)
+        ? await inspect(
+            body,
+            { origin, ffmpeg, ffprobe },
+            request.url === "/inspect",
+          )
+        : await runProvider(request.url.slice(1), body, {
+            origin,
+            apiKey,
+            providerFetch,
+          });
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify(result));
-    } catch {
-      response.writeHead(422, { "Content-Type": "application/json" });
+    } catch (error) {
+      response.writeHead(422, {
+        "Content-Type": "application/json",
+        ...(error instanceof GoogleProviderError && error.kind === "input"
+          ? { "X-Provider-Input-Rejected": "true" }
+          : {}),
+      });
       response.end(JSON.stringify({ error: "media_processing_failed" }));
     } finally {
       busy = false;
@@ -245,8 +264,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const server = createMediaServer({
     token: process.env.MEDIA_SERVICE_TOKEN,
     origin: process.env.MEDIA_ORIGIN,
+    apiKey: process.env.GEMINI_API_KEY,
     ffmpeg: process.env.FFMPEG_BIN,
     ffprobe: process.env.FFPROBE_BIN,
   });
-  server.listen(8080, "0.0.0.0");
+  server.listen(Number(process.env.PORT ?? 8080), "0.0.0.0");
 }

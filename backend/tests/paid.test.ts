@@ -2,7 +2,11 @@ import { env, reset } from "cloudflare:test";
 import { beforeEach, expect, it } from "vitest";
 import { GoogleProviderError } from "../../pipeline/google.ts";
 import { type JobRow, ownedJob } from "../database.ts";
-import schema from "../migrations/0001_initial.sql?raw";
+import initialSchema from "../migrations/0001_initial.sql?raw";
+import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
+
+const schema = `${initialSchema}\n${runtimeSchema}`;
+
 import { paidCall } from "../paid.ts";
 import { type Env, ReconciliationError } from "../types.ts";
 

@@ -1,7 +1,11 @@
 import { env, reset } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { handleRequest } from "../api.ts";
-import schema from "../migrations/0001_initial.sql?raw";
+import initialSchema from "../migrations/0001_initial.sql?raw";
+import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
+
+const schema = `${initialSchema}\n${runtimeSchema}`;
+
 import { sha256 } from "../security.ts";
 import type { Env } from "../types.ts";
 

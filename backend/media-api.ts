@@ -91,6 +91,38 @@ export function chunkKey(
   return `processed/${owner}/${jobId}/${clipId}/${index}.m4a`;
 }
 
+export async function serveMediaChunk(
+  request: Request,
+  env: Env,
+  jobId: string,
+  clipId: string,
+  index: number,
+) {
+  await verifySignedUrl(request, env);
+  const job = await ownedJob(env, jobId, env.OWNER_ID);
+  const clip = await ownedClip(env, clipId, env.OWNER_ID);
+  if (
+    job.kind !== "prepare" ||
+    job.draft_id !== clip.draft_id ||
+    job.status !== "running" ||
+    clip.status !== "uploaded" ||
+    index < 0 ||
+    index > 2
+  )
+    throw new HttpError(409, "invalid_media_job");
+  const object = await env.AUDIO.get(
+    chunkKey(env.OWNER_ID, jobId, clipId, index),
+  );
+  if (!object) throw new HttpError(404, "media_chunk_missing");
+  return new Response(object.body, {
+    headers: {
+      "Content-Type": "audio/mp4",
+      "Content-Length": String(object.size),
+      "Cache-Control": "private, no-store",
+    },
+  });
+}
+
 export async function uploadMediaChunk(
   request: Request,
   env: Env,

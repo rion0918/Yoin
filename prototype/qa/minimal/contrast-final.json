@@ -1,0 +1,16 @@
+{
+  "pixel": {
+    "trip_date": 4.67,
+    "section_label": 6.05,
+    "first_context": 6.72,
+    "second_context": 6.26
+  },
+  "iphone": {
+    "trip_date": 4.67,
+    "section_label": 5.37,
+    "first_context": 7.01,
+    "second_context": 6.35
+  },
+  "primary_cta": 11.54,
+  "method": "Conservative minimum across secondary-text background rectangles using the static raster cover at each device geometry; not a physical-display or screenshot-font measurement."
+}

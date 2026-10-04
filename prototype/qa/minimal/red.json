@@ -1,0 +1,13 @@
+{
+  "phase": "RED",
+  "requestedCheck": "Lyrics stay primary with no duplicate quote and icon-only source access",
+  "observed": {
+    "quotedExcerptsVisible": 2,
+    "conversationControl": {
+      "height": 44,
+      "visibleText": "この場面の会話",
+      "width": 118
+    }
+  },
+  "passed": false
+}

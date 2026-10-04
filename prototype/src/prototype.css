@@ -1,0 +1,174 @@
+.yoin {
+  --ink: #332317;
+  --secondary: #544033;
+  --accent: #9c5d2e;
+  --rule: rgb(73 47 28 / 14%);
+  position: absolute;
+  inset: 0;
+  color: var(--ink);
+  background: #fff;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", sans-serif;
+  font-size: 1rem;
+  line-height: 1.5;
+  -webkit-tap-highlight-color: transparent;
+}
+.yoin-background { position: absolute; inset: 0; transform-origin: center 70%; }
+.yoin button { border: 0; color: inherit; background: transparent; touch-action: manipulation; }
+.yoin button:active { opacity: 0.66; transform: scale(0.97); }
+.yoin button:focus-visible, .yoin-player button:focus-visible, .yoin-sheet-content button:focus-visible { outline: 3px solid #764320 !important; outline-offset: 3px; }
+.yoin-header { position: absolute; z-index: 12; top: var(--app-top-inset); right: 0; left: 0; display: flex; align-items: center; justify-content: space-between; height: 80px; max-width: 390px; margin-inline: auto; padding: 22px 14px 0; }
+.library-back { display: flex; align-items: center; gap: 4px; min-height: 44px; padding: 0 2px; font-size: 0.9375rem; font-weight: 550; }
+.library-back svg { width: 24px; height: 24px; }
+.icon-button { display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border-radius: 50%; }
+.share-button svg { width: 25px; height: 25px; }
+.yoin-scroll { top: calc(var(--app-top-inset) + 80px); background: transparent; }
+.yoin-content { width: 100%; max-width: 390px; margin-inline: auto; padding: 24px 16px calc(var(--mobile-safe-area-height) + 132px); }
+.trip-summary h1 { color: var(--ink); font-size: 2rem; font-weight: 750; line-height: 1.22; letter-spacing: -0.04em; }
+.trip-date { margin-top: 6px; color: var(--secondary); font-size: 0.875rem; font-variant-numeric: tabular-nums; }
+.trip-members { margin-top: 4px; color: var(--ink); font-size: 0.8125rem; font-weight: 550; }
+.trip-artwork { display: block; width: 100%; height: var(--artwork-height); object-fit: cover; object-position: center; margin-top: 10px; border-radius: 16px; }
+.song-title { margin-top: 16px; font-size: 1.625rem; font-weight: 720; line-height: 1.35; letter-spacing: -0.035em; }
+.lyric-memories { margin-top: 26px; }
+.lyric-memories > h2 { color: var(--secondary); font-size: 0.875rem; line-height: 1.5; font-weight: 550; }
+.memory-verses { margin-top: 22px; }
+.lyric-moment { position: relative; margin-left: 6px; padding: 0 68px 0 22px; }
+.lyric-moment + .lyric-moment { margin-top: 24px; }
+.lyric-moment.is-current::before { position: absolute; inset: 0 auto 0 0; width: 3px; border-radius: 3px; background: var(--accent); content: ""; }
+.moment-lyrics { color: var(--ink); font-size: 1.375rem; font-weight: 700; line-height: 1.35; letter-spacing: -0.035em; }
+.moment-lyrics span, .lyric-connection p span { display: block; }
+.moment-context { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 5px; color: var(--secondary); font-size: 0.8125rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.yoin .conversation-icon { position: absolute; top: 4px; right: 0; display: grid; place-items: center; width: 52px; height: 52px; padding: 0; border: 1px solid rgb(255 255 255 / 24%); border-radius: 50%; background: rgb(255 255 255 / 28%); }
+.conversation-icon svg { width: 26px; height: 26px; }
+.yoin-player { position: absolute; z-index: 14; left: 16px; right: 16px; display: flex; align-items: center; gap: 12px; max-width: 358px; min-height: 78px; margin-inline: auto; padding: 11px 12px; border: 1px solid rgb(255 255 255 / 48%); border-radius: 20px; background: rgb(249 242 234 / 56%); backdrop-filter: blur(22px) saturate(110%); box-shadow: 0 8px 26px rgb(57 34 17 / 12%); color: #332317; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", sans-serif; }
+.player-artwork { width: 52px; height: 52px; flex: 0 0 52px; object-fit: cover; border-radius: 9px; }
+.player-information { flex: 1; min-width: 0; }
+.player-title { overflow: hidden; color: #332317; font-size: 0.8125rem; font-weight: 650; line-height: 1.35; white-space: nowrap; text-overflow: ellipsis; }
+.player-time { display: block; margin-top: 3px; color: #544033; font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.player-toggle { display: grid; place-items: center; flex: 0 0 48px; width: 48px; height: 48px; padding: 12px; border: 0; border-radius: 50%; background: #493020 !important; color: #fff8f0 !important; }
+.player-toggle svg { width: 24px; height: 24px; }
+.player-toggle:active { opacity: 0.8; transform: scale(0.95); }
+.scrubber-track { position: relative; height: 4px; margin-top: 8px; border-radius: 999px; background: rgb(89 61 42 / 22%); }
+.scrubber-progress { position: absolute; width: var(--progress); height: 4px; border-radius: inherit; background: #9c5d2e; pointer-events: none; }
+.player-scrubber { position: absolute; top: -20px; left: 0; width: 100%; height: 44px; padding: 0; margin: 0; appearance: none; background: transparent; touch-action: none; }
+.player-scrubber::-webkit-slider-runnable-track { height: 4px; background: transparent; }
+.player-scrubber::-webkit-slider-thumb { width: 8px; height: 8px; margin-top: -2px; appearance: none; border: 0; border-radius: 50%; background: #9c5d2e; }
+.player-scrubber:focus-visible { outline: 2px solid #764320 !important; outline-offset: 2px; border-radius: 4px; }
+.player-scrubber:active::-webkit-slider-thumb { width: 12px; height: 12px; margin-top: -4px; }
+.bottom-sheet:has(.yoin-sheet-content) { color: #332317; background: rgb(247 241 235 / 97%); backdrop-filter: blur(24px); font-family: system-ui, -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", sans-serif; border-radius: 26px 26px 0 0; box-shadow: 0 -10px 40px rgb(57 34 17 / 12%); }
+.bottom-sheet:has(.yoin-sheet-content) .sheet-title { font-size: 1.375rem; font-weight: 700; letter-spacing: -0.03em; padding-right: 44px; }
+.bottom-sheet:has(.yoin-sheet-content) .sheet-description { color: #544033; font-size: 0.8125rem; line-height: 1.6; padding-right: 24px; }
+.bottom-sheet:has(.yoin-sheet-content) .sheet-header { padding: 2px 24px 18px; }
+.bottom-sheet:has(.yoin-sheet-content) .sheet-content { padding: 0 24px 28px; overscroll-behavior: contain; }
+.yoin-sheet-content { color: #332317; }
+.yoin-sheet-content .sheet-close { position: absolute; top: 24px; right: 14px; border: 0; color: #544033; background: #e8dfd5; }
+.yoin-sheet-content .sheet-close svg { width: 18px; height: 18px; }
+.yoin-sheet-content button { touch-action: manipulation; }
+.yoin-sheet-content button:active { opacity: 0.7; transform: scale(0.97); }
+.moment-story { color: #544033; font-size: 0.9375rem; line-height: 1.75; }
+.memory-detail h3 { margin: 22px 0 12px; color: #332317; font-size: 0.8125rem; font-weight: 650; }
+.original-conversation { display: grid; gap: 15px; }
+.speaker-name { color: #544033; font-size: 0.75rem; font-weight: 500; }
+.conversation-line p { margin-top: 3px; color: #332317; font-size: 1rem; font-weight: 550; line-height: 1.6; }
+.lyric-connection { margin-top: 20px; border-top: 1px solid rgb(73 47 28 / 14%); }
+.lyric-connection h3 { margin-top: 16px; }
+.lyric-connection p { padding-left: 12px; border-left: 2px solid #9c5d2e; color: #332317; font-size: 1rem; font-weight: 650; line-height: 1.65; }
+.scene-listen { display: flex; align-items: center; justify-content: center; gap: 9px; width: 100%; min-height: 48px; margin-top: 22px; padding: 10px 12px; border: 0; border-radius: 14px; background: #493020; color: #fff8f0; font-size: 0.875rem; font-weight: 600; }
+.scene-listen svg { width: 18px; height: 18px; }
+.scene-listen span { font-size: 0.75rem; font-weight: 450; opacity: 0.85; }
+.yoin-player-in-sheet { position: relative; inset: auto; max-width: none; margin: 20px -8px 0; box-shadow: none; border-radius: 16px; background: #eee5db; backdrop-filter: none; }
+.share-detail { text-align: center; }
+.share-artwork { width: 120px; height: 120px; object-fit: cover; border-radius: 16px; }
+.share-detail h3 { margin: 12px 0 5px; font-size: 1.125rem; }
+.share-detail p { color: #544033; font-size: 0.8125rem; line-height: 1.7; }
+.copy-status { min-height: 24px; margin-top: 8px; }
+.library-memory { display: flex; align-items: center; gap: 14px; width: 100%; padding: 8px 0; border: 0; color: #332317; background: transparent; text-align: left; }
+.library-memory > img { width: 86px; height: 86px; object-fit: cover; border-radius: 12px; }
+.library-memory > span { display: grid; gap: 4px; flex: 1; }
+.library-memory strong { font-size: 1rem; }
+.library-memory small { color: #544033; font-size: 0.75rem; }
+.library-memory > span > span { font-size: 0.8125rem; }
+.library-memory > svg { width: 18px; height: 18px; }
+@media (prefers-reduced-motion: reduce) {
+  .yoin-background, .bottom-sheet:has(.yoin-sheet-content) { transform: none !important; }
+  .yoin button:active, .yoin-sheet-content button:active { transform: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .yoin-header, .yoin-player, .yoin .conversation-icon, .bottom-sheet:has(.yoin-sheet-content) { background: #eee3d6; backdrop-filter: none; }
+}
+@media (prefers-contrast: more) {
+  .yoin { --secondary: #4c392b; }
+  .yoin-header, .yoin-player, .yoin .conversation-icon { background: #f4eadf; backdrop-filter: none; }
+  .yoin-player, .bottom-sheet:has(.yoin-sheet-content) { border: 1px solid #332317; }
+  .player-time, .bottom-sheet:has(.yoin-sheet-content) .sheet-description { color: #4c392b; }
+}
+
+/* Library and recording stay white; color belongs to the finished memory. */
+.yoin:has(.music-header) { background: #e6d4bf url("/assets/yoin/season-background.png") center / cover; }
+.app-toolbar { display: flex; align-items: center; justify-content: space-between; height: 80px; max-width: 390px; margin-inline: auto; padding: 12px 16px 0; }
+.yoin-wordmark { font-size: 2rem; font-weight: 750; line-height: 1; letter-spacing: -0.045em; }
+.yoin .new-record { background: #f1f0ef; }
+.new-record svg { width: 25px; height: 25px; }
+.flow-scroll { top: 0; background: transparent; }
+.home-page, .record-page { background: #fff; }
+.yoin .flow-screen:has(.music-page)::before { position: absolute; top: calc(-1 * var(--flow-header-height)); right: 0; bottom: 0; left: 0; background: #e6d4bf url("/assets/yoin/season-background.png") center / cover; content: ""; pointer-events: none; }
+.library-content { width: 100%; max-width: 390px; margin-inline: auto; padding: 24px 16px calc(var(--mobile-safe-area-height) + 32px); }
+.library-content > h1 { font-size: 2.375rem; font-weight: 750; line-height: 1.25; letter-spacing: -0.045em; }
+.library-subtitle { margin-top: 8px; color: #726d69; font-size: 1rem; }
+.album-section { margin-top: 28px; }
+.album-section > h2, .unfinished-records > h2, .record-clips > h2 { display: flex; align-items: baseline; gap: 10px; font-size: 0.8125rem; font-weight: 600; }
+.album-section > h2 { margin-bottom: 14px; color: #726d69; }
+.album-section > h2 > span, .record-clips > h2 > span { color: #726d69; font-size: 0.75rem; font-weight: 450; }
+.library-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px 16px; }
+.yoin .album-card { display: flex; flex-direction: column; width: 100%; padding: 0; text-align: left; }
+.album-card > img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 14px; }
+.album-card > strong { margin-top: 10px; font-size: 1.0625rem; font-weight: 650; line-height: 1.4; }
+.album-card > span { margin-top: 3px; color: #726d69; font-size: 0.75rem; }
+.album-card > small { margin-top: 5px; color: #726d69; font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+.unfinished-records { margin-top: 28px; }
+.unfinished-records > h2 { color: #726d69; margin-bottom: 8px; }
+.yoin .draft-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 70px; padding: 10px 0; text-align: left; }
+.draft-icon { display: grid; place-items: center; width: 44px; height: 44px; flex-shrink: 0; border-radius: 12px; background: #f2f0ee; }
+.draft-icon svg { width: 21px; height: 21px; }
+.draft-row > span:nth-child(2) { display: grid; gap: 3px; flex: 1; }
+.draft-row strong { font-size: 0.875rem; font-weight: 600; }
+.draft-row small { color: #726d69; font-size: 0.75rem; }
+.draft-row > svg { width: 18px; height: 18px; color: #726d69; }
+.yoin .finish-button { min-width: 72px; min-height: 44px; padding: 8px 0 8px 12px; font-size: 0.9375rem; font-weight: 600; }
+.yoin button:disabled, .yoin-sheet-content button:disabled { color: #99918a; opacity: 0.6; cursor: default; transform: none; }
+.record-content { display: flex; flex-direction: column; width: 100%; max-width: 390px; min-height: var(--record-content-height); margin-inline: auto; padding: 24px 16px 32px; }
+.record-summary h1 { font-size: 2rem; font-weight: 720; line-height: 1.3; letter-spacing: -0.04em; }
+.record-summary > p { margin-top: 8px; color: #726d69; font-size: 0.875rem; font-variant-numeric: tabular-nums; }
+.record-focus { display: flex; flex-direction: column; align-items: center; padding: clamp(32px, calc(var(--record-content-height) - 680px), 80px) 0 0; }
+.record-state { display: flex; flex-direction: column; align-items: center; gap: 10px; color: #6b625a; }
+.record-state > svg { box-sizing: content-box; width: 44px; height: 44px; padding: 34px; border-radius: 50%; background: #f5f3f1; stroke-width: 1.6; }
+.record-state > p { font-size: 0.875rem; font-weight: 550; }
+.record-state.is-recording { color: #9c5d2e; }
+.record-duration { margin-top: 30px; text-align: center; }
+.record-duration > p { font-size: 2.5rem; font-weight: 550; line-height: 1.15; letter-spacing: -0.045em; font-variant-numeric: tabular-nums; }
+.record-duration > span { display: block; margin-top: 7px; color: #726d69; font-size: 0.8125rem; }
+.yoin .record-toggle { display: grid; place-items: center; flex-shrink: 0; width: 144px; height: 144px; padding: 0; margin-top: 38px; border-radius: 50%; background: #493020; color: #fff8f0; box-shadow: 0 7px 18px rgb(57 34 17 / 15%); }
+.record-toggle > svg { width: 52px; height: 52px; stroke-width: 1.6; }
+.record-action-label { min-height: 24px; margin-top: 14px; font-size: 0.875rem; font-weight: 550; }
+.record-clips { margin-top: 28px; }
+.record-clips > h2 { justify-content: space-between; }
+.record-empty { margin-top: 18px; padding: 12px 0; color: #726d69; font-size: 0.8125rem; text-align: center; }
+.clip-list { display: grid; gap: 8px; margin-top: 12px; }
+.yoin .clip-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 64px; padding: 12px 14px; border-radius: 14px; background: #f5f3f1; text-align: left; }
+.clip-row > svg:first-child { width: 22px; height: 22px; flex-shrink: 0; }
+.clip-row > span { display: grid; flex: 1; gap: 3px; }
+.clip-row strong { font-size: 0.8125rem; font-weight: 550; }
+.clip-row small { color: #726d69; font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.clip-row > svg:last-child { width: 17px; height: 17px; color: #726d69; }
+.music-page .yoin-content { padding-bottom: calc(var(--flow-footer-height) + var(--mobile-safe-area-height) + 24px); }
+.finish-summary { color: #544033; font-size: 0.8125rem; }
+.finish-field { display: grid; gap: 10px; margin-top: 24px; font-size: 0.8125rem; font-weight: 600; }
+.finish-field > input { width: 100%; min-height: 52px; padding: 12px 14px; border: 1px solid rgb(73 47 28 / 18%); border-radius: 12px; background: #fffaf5; color: #332317; font: inherit; font-size: 1rem; }
+.finish-field > input:focus { outline: 2px solid #9c5d2e; outline-offset: 2px; }
+.finish-clips { display: grid; gap: 12px; margin-top: 26px; }
+.finish-clips > p { display: flex; align-items: center; gap: 10px; font-size: 0.8125rem; }
+.finish-clips svg { width: 18px; height: 18px; }
+.finish-clips span { flex: 1; }
+.finish-clips small { color: #544033; font-variant-numeric: tabular-nums; }
+.clip-detail > h3 { margin: 4px 0 18px; font-size: 0.875rem; font-weight: 650; }
+.bottom-sheet:has(.finish-detail), .bottom-sheet:has(.clip-detail) { background: #fff; }
+@media (prefers-reduced-motion: reduce) { .yoin .flow-screen { transform: none !important; } }

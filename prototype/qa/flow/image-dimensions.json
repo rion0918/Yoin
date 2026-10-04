@@ -1,0 +1,98 @@
+{
+  "memory-source.png": [
+    390,
+    840
+  ],
+  "iphone-music.png": [
+    390,
+    798
+  ],
+  "source-record.png": [
+    390,
+    843
+  ],
+  "comparison-record.png": [
+    804,
+    880
+  ],
+  "final-flow.png": [
+    1228,
+    896
+  ],
+  "iphone-record.png": [
+    390,
+    798
+  ],
+  "music-final.png": [
+    390,
+    840
+  ],
+  "record-active.png": [
+    390,
+    840
+  ],
+  "record-paused.png": [
+    390,
+    840
+  ],
+  "source-home.png": [
+    390,
+    844
+  ],
+  "comparison-full-final.png": [
+    1228,
+    1792
+  ],
+  "comparison-focused-final.png": [
+    1228,
+    1100
+  ],
+  "library-with-new-song.png": [
+    390,
+    840
+  ],
+  "home.png": [
+    390,
+    840
+  ],
+  "comparison-iteration1.png": [
+    804,
+    880
+  ],
+  "comparison-record-final.png": [
+    804,
+    880
+  ],
+  "source-music.png": [
+    390,
+    839
+  ],
+  "record-iteration1.png": [
+    390,
+    840
+  ],
+  "completed-new-song.png": [
+    390,
+    840
+  ],
+  "record-empty.png": [
+    390,
+    840
+  ],
+  "finish-review.png": [
+    390,
+    840
+  ],
+  "home-final.png": [
+    390,
+    840
+  ],
+  "comparison-home-final.png": [
+    804,
+    880
+  ],
+  "record-empty-final.png": [
+    390,
+    840
+  ]
+}

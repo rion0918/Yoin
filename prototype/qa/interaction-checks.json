@@ -1,0 +1,157 @@
+{
+  "method": "Codex in-app browser manual UI checks",
+  "checks": [
+    {
+      "name": "Baseline lyric memories are absent",
+      "phase": "RED",
+      "passed": true
+    },
+    {
+      "name": "The selected lyric opens the correct place and trip time",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Playback can continue in the conversation sheet",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Closing the memory keeps playback position",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Seeking changes the highlighted memory without changing its 18:40 trip time",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Playback ends at the song boundary",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Backward seeking restores the first lyric memory",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "The conversation sheet dismisses fully",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Playback position survives complete dialog dismissal",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "A downward handle gesture dismisses the conversation",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "The second scene reveals its own location and trip time",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Listen-to-scene seeks to the correct lyric memory",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "QA captures start from the unscrolled device shell",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Close remains reliable after the interrupted-exit fix",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Pointer dragging moves the scrubber continuously to the second scene",
+      "phase": "GREEN",
+      "passed": false
+    },
+    {
+      "name": "Pointer dragging reaches the second lyric scene (native slider value)",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Library navigation opens the memory collection",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Share opens the memory preview",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "The local preview link can be copied",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "The actual song position persists after complete dismissal",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Opening conversation must preserve device viewport scrollTop=0",
+      "phase": "RED",
+      "passed": false,
+      "observed": 181
+    },
+    {
+      "name": "Conversation opens without scrolling the device viewport",
+      "phase": "GREEN",
+      "passed": false
+    },
+    {
+      "name": "Native tap opens the conversation without moving the viewport",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "iPhone keeps full-width content and visible player",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Song end selects the 18:40 scene using the actual native range value",
+      "phase": "GREEN",
+      "passed": true
+    },
+    {
+      "name": "Seeking to the start restores the 17:23 scene",
+      "phase": "GREEN",
+      "passed": true
+    }
+  ],
+  "resolvedHarnessIssues": [
+    {
+      "name": "Pointer dragging moves the scrubber continuously to the second scene",
+      "reason": "The original assertion queried a missing aria-valuenow attribute on a native range. Corrected checks read the input value; dragging reached 145 and selected Kamogawa."
+    },
+    {
+      "name": "Opening conversation must preserve device viewport scrollTop=0",
+      "reason": "Locator actions at an enlarged layout viewport scrolled the device shell during automation. A native tap at normal preview size preserved scrollTop=0; screenshots were captured only after verifying scrollTop=0."
+    },
+    {
+      "name": "Conversation opens without scrolling the device viewport",
+      "reason": "Same enlarged-viewport locator artifact. Native tap was tested and passed."
+    }
+  ],
+  "consoleErrors": [],
+  "limitations": [
+    "No audio file: playback is a simulated time and seek interaction.",
+    "Sample conversations and locations; no recording, location lookup, or backend.",
+    "Copy shares only the local preview URL; no hosted listener page.",
+    "Reduced-motion and reduced-transparency rules inspected in code; actual OS accessibility modes and physical device performance not exercised."
+  ]
+}

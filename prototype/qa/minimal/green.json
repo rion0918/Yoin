@@ -1,0 +1,78 @@
+{
+  "passed": true,
+  "controls": [
+    {
+      "height": 52,
+      "label": "清水坂の元の会話を開く",
+      "text": "",
+      "width": 52
+    },
+    {
+      "height": 52,
+      "label": "鴨川の元の会話を開く",
+      "text": "",
+      "width": 52
+    }
+  ],
+  "quotedExcerptsVisible": 0,
+  "conversationChecks": {
+    "kiyomizuzaka": "17:23 / full dialogue / closed with 0:42 retained",
+    "kamogawa": "18:40 / full dialogue / listen jumped to 1:48"
+  },
+  "nativeSeek": {
+    "currentScene": "moment-kiyomizuzaka",
+    "outerScroll": 0,
+    "range": 47
+  },
+  "layout": [
+    {
+      "class": "",
+      "height": 39.0390625,
+      "left": 16,
+      "top": 104,
+      "width": 358
+    },
+    {
+      "class": "trip-artwork",
+      "height": 230,
+      "left": 16,
+      "top": 202.1796875,
+      "width": 358
+    },
+    {
+      "class": "song-title",
+      "height": 35.09375,
+      "left": 16,
+      "top": 448.1796875,
+      "width": 358
+    },
+    {
+      "class": "",
+      "height": 21,
+      "left": 16,
+      "top": 509.2734375,
+      "width": 358
+    },
+    {
+      "class": "lyric-moment is-current",
+      "height": 83.890625,
+      "left": 22,
+      "top": 552.2734375,
+      "width": 352
+    },
+    {
+      "class": "lyric-moment",
+      "height": 54.1953125,
+      "left": 22,
+      "top": 660.1640625,
+      "width": 352
+    },
+    {
+      "class": "yoin-player",
+      "height": 78,
+      "left": 16,
+      "top": 736,
+      "width": 358
+    }
+  ]
+}

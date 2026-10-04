@@ -39,6 +39,14 @@ npm run export
 
 Biome は本実装と設定を検証します。保護された参照プロトタイプと生成物は対象外です。`npm test` は録音の停止・退出・仕上げ、重複操作、記録の分離、全会話の保持、日付またぎを検証します。
 
+## CodeRabbit による PR レビュー
+
+[CodeRabbit の GitHub App](https://github.com/apps/coderabbitai) を `rion0918/Yoin` にインストールすると、公開リポジトリとして無料レビューを利用できます。インストール時は対象リポジトリに `Yoin` を選択します。公開するだけでは連携は有効になりません。
+
+[`.coderabbit.yaml`](.coderabbit.yaml) で、日本語の自動レビューと追加コミットのレビューを有効にしています。`main` 向けの通常 PR が対象で、Draft PR は自動レビューしません。レビュー基準には、CodeRabbit が標準で検出するルートと `prototype/` の `AGENTS.md` を使います。
+
+連携後は通常 PR を開き、CodeRabbit のレビューが投稿されることを確認します。既存 PR の全差分をレビューし直す場合は、PR に `@coderabbitai full review` とコメントします。詳細は[公式セットアップ手順](https://docs.coderabbit.ai/getting-started/quickstart)と[レビューコマンド](https://docs.coderabbit.ai/guides/commands)を参照してください。
+
 ## 設計の参照
 
 - [ADR 運用ガイド・一覧](docs/adr/README.md)

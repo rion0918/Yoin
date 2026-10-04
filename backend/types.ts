@@ -1,17 +1,14 @@
-import type { MediaContainer } from "./media-container.ts";
-
 export type WorkflowParams = { jobId: string };
 export type Env = {
   DB: D1Database;
   AUDIO: R2Bucket;
   PREPARE: Workflow<WorkflowParams>;
   GENERATE: Workflow<WorkflowParams>;
-  MEDIA_CONTAINER: DurableObjectNamespace<MediaContainer>;
+  MEDIA_SERVICE_URL: string;
   OWNER_ID: string;
   TESTER_TOKEN_SHA256: string;
   MEDIA_SIGNING_SECRET: string;
   MEDIA_SERVICE_TOKEN: string;
-  GEMINI_API_KEY: string;
   AI_BUDGET_USD: string;
   PUBLIC_API_URL: string;
   MEDIA_API_URL?: string;

@@ -1,5 +1,7 @@
 # ADR 運用ガイド・一覧
 
+[ドキュメントの目次](../README.md)へ
+
 ADR（Architecture Decision Record）は、1つの重要な判断について、背景・採用理由・受け入れた欠点を短く残す記録です。開発者とエージェントが変更前に読み、将来その判断を見直すときに使います。
 
 ## 一覧
@@ -12,14 +14,15 @@ ADR（Architecture Decision Record）は、1つの重要な判断について、
 | [0004: 本実装のlintとformatにBiomeを使用する](0004-biome-checks.md) | Accepted | 2026-10-04 |
 | [0005: PR レビューに CodeRabbit を使用する](0005-coderabbit-reviews.md) | Accepted | 2026-10-04 |
 | [0006: Nixで安定版の開発環境を固定する](0006-nix-development-environment.md) | Accepted | 2026-10-04 |
-| [0007: 音声から曲までの非同期処理基盤にCloudflareを使用する](0007-cloudflare-audio-pipeline.md) | Accepted | 2026-10-04 |
+| [0007: 音声から曲までの非同期処理基盤にCloudflareを使用する](0007-cloudflare-audio-pipeline.md) | Superseded | 2026-10-04 |
 | [0008: Expo Audioでバックグラウンド録音と実音声再生を行う](0008-native-audio-capture.md) | Accepted | 2026-10-04 |
 | [0009: 下書きをSQLiteとDocuments内の音声ファイルで永続化する](0009-local-durable-drafts.md) | Accepted | 2026-10-04 |
 | [0010: Google APIを累積10ドル以内の音声品質検証候補に採用する](0010-google-audio-quality-trial.md) | Accepted | 2026-10-04 |
+| [0011: Cloudflare無料プラン向けに音声処理の実行先を分離する](0011-cloudflare-free-audio-runtime.md) | Accepted | 2026-10-04 |
 
 Accepted の記録が現在の採用済み判断です。Proposed は提案段階であり、採用済みとして扱いません。記録の追加・状態変更時には、この一覧も更新します。
 
-番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0011-<short-title>.md` です。
+番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0012-<short-title>.md` です。
 
 ## 作業前に読む
 

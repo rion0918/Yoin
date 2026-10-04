@@ -1,4 +1,3 @@
-import { getContainer } from "@cloudflare/containers";
 import {
   CHUNK_MS,
   MAX_AUDIO_MS,
@@ -9,22 +8,48 @@ import { chunkKey } from "./media-api.ts";
 import { signedUrl } from "./security.ts";
 import { type Env, HttpError } from "./types.ts";
 
-async function callMedia(env: Env, name: string, path: string, body: unknown) {
-  if (!env.MEDIA_SERVICE_TOKEN || env.MEDIA_SERVICE_TOKEN.length < 32)
+export async function callMedia<T>(
+  env: Env,
+  path: string,
+  body: unknown,
+): Promise<T> {
+  if (
+    !env.MEDIA_SERVICE_URL ||
+    !env.MEDIA_SERVICE_TOKEN ||
+    env.MEDIA_SERVICE_TOKEN.length < 32
+  )
     throw new HttpError(503, "media_service_not_configured");
-  const container = getContainer(env.MEDIA_CONTAINER, name);
-  const response = await container.fetch(
-    new Request(`http://media${path}`, {
+  const service = new URL(env.MEDIA_SERVICE_URL);
+  if (
+    service.protocol !== "https:" &&
+    service.hostname !== "127.0.0.1" &&
+    service.hostname !== "localhost"
+  )
+    throw new HttpError(503, "media_service_not_configured");
+  const response = await fetch(
+    new Request(new URL(path, service), {
       method: "POST",
+      redirect: "manual",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${env.MEDIA_SERVICE_TOKEN}`,
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(850_000),
     }),
   );
-  if (!response.ok) throw new HttpError(502, "media_inspection_failed");
-  return (await response.json()) as MediaInspection;
+  if (!response.ok) {
+    if (
+      response.headers.get("X-Provider-Input-Rejected") === "true" &&
+      ["/transcribe", "/lyrics", "/music"].includes(path)
+    )
+      throw new GoogleProviderError(
+        path.slice(1) as "transcribe" | "lyrics" | "music",
+        "input",
+      );
+    throw new HttpError(502, "media_inspection_failed");
+  }
+  return (await response.json()) as T;
 }
 
 export async function inspectClip(env: Env, job: JobRow, clip: ClipRow) {
@@ -49,7 +74,7 @@ export async function inspectClip(env: Env, job: JobRow, clip: ClipRow) {
       ),
     ),
   );
-  const inspection = await callMedia(env, `prepare-${job.id}`, "/inspect", {
+  const inspection = await callMedia<MediaInspection>(env, "/inspect", {
     sourceUrl: source.url,
     uploadUrls: uploads.map((item) => item.url),
   });
@@ -94,7 +119,7 @@ export async function inspectClip(env: Env, job: JobRow, clip: ClipRow) {
   return inspection;
 }
 
-export async function probeSong(env: Env, job: JobRow, audioId: string) {
+export async function probeSong(env: Env, _job: JobRow, audioId: string) {
   const source = await signedUrl(
     env,
     `/media/${audioId}`,
@@ -102,7 +127,7 @@ export async function probeSong(env: Env, job: JobRow, audioId: string) {
     3600,
     env.MEDIA_API_URL ?? env.PUBLIC_API_URL,
   );
-  const inspection = await callMedia(env, `generate-${job.id}`, "/probe", {
+  const inspection = await callMedia<MediaInspection>(env, "/probe", {
     sourceUrl: source.url,
   });
   if (
@@ -115,3 +140,5 @@ export async function probeSong(env: Env, job: JobRow, audioId: string) {
     throw new HttpError(422, "invalid_generated_audio");
   return inspection;
 }
+
+import { GoogleProviderError } from "../pipeline/google.ts";

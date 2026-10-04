@@ -1,0 +1,13 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - backend/media/Dockerfile
+      - -t
+      - asia-northeast1-docker.pkg.dev/$PROJECT_ID/yoin-runtime/audio:latest
+      - .
+images:
+  - asia-northeast1-docker.pkg.dev/$PROJECT_ID/yoin-runtime/audio:latest
+options:
+  machineType: E2_STANDARD_2

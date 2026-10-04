@@ -4,9 +4,11 @@ Date: 2026-10-04
 
 ## Status
 
-Accepted
+Superseded
 
 採用確認: 2026-10-04 のチャットで、ユーザーがCloudflareを使用する実装計画に対して「IMPLEMENT THIS PLAN」と指示した。
+
+後継: [ADR 0011](0011-cloudflare-free-audio-runtime.md)。2026-10-04にCloudflare無料運用のためFFmpeg・Googleアダプターの実行先をCloud Runへ変更した。Workers・D1・R2・Workflowsと単一テスターの範囲は維持する。
 
 ## Context
 

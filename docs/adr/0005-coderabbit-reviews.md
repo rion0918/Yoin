@@ -16,7 +16,7 @@ Yoin は公開 GitHub リポジトリであり、ユーザーが CodeRabbit に�
 
 CodeRabbit の GitHub App を `rion0918/Yoin` に連携し、[`.coderabbit.yaml`](../../.coderabbit.yaml) で日本語の PR 自動レビューを設定する。通常 PR と追加コミットのレビューを有効にし、Draft PR は自動レビューの対象にしない。
 
-既存の `AGENTS.md` は CodeRabbit の標準のコードガイドライン検出を利用し、レビュー指示を別の設定に重複させない。[ADR 0004](0004-biome-checks.md) の Biome・型検査・テストは引き続き実行する。導入手順とレビューの確認方法は [README](../../README.md#coderabbit-による-pr-レビュー) に記載する。
+既存の `AGENTS.md` は CodeRabbit の標準のコードガイドライン検出を利用し、レビュー指示を別の設定に重複させない。[ADR 0004](0004-biome-checks.md) の Biome・型検査・テストは引き続き実行する。導入手順とレビューの確認方法は [開発ガイド](../development.md#prとcoderabbit) に記載する。
 
 採用根拠はユーザーの指定であり、今回ほかのレビューサービスとの比較検討は行っていない。
 

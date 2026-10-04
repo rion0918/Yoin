@@ -1,24 +1,26 @@
 import { env, reset } from "cloudflare:test";
 import type { WorkflowStep } from "cloudflare:workers";
-import { beforeEach, expect, it, vi } from "vitest";
-import {
-  createLyrics,
-  generateMusic,
-  transcribeAudio,
-} from "../../pipeline/google.ts";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { draftDocument, ownedJob, songDocument } from "../database.ts";
 import { inspectClip, probeSong } from "../media.ts";
-import schema from "../migrations/0001_initial.sql?raw";
+import initialSchema from "../migrations/0001_initial.sql?raw";
+import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
+import { createLyrics, generateMusic, transcribeAudio } from "../providers.ts";
+
+const schema = `${initialSchema}\n${runtimeSchema}`;
+
 import type { Env } from "../types.ts";
 import { generateSong, prepareDraft } from "../workflows.ts";
 
-vi.mock("../../pipeline/google.ts", async (original) => ({
-  ...(await original<typeof import("../../pipeline/google.ts")>()),
+vi.mock("../providers.ts", async (original) => ({
+  ...(await original<typeof import("../providers.ts")>()),
   transcribeAudio: vi.fn(),
   createLyrics: vi.fn(),
   generateMusic: vi.fn(),
 }));
 vi.mock("../media.ts", () => ({ inspectClip: vi.fn(), probeSong: vi.fn() }));
+
+afterEach(() => vi.restoreAllMocks());
 
 let bindings: Env;
 const blocks = [
@@ -43,7 +45,6 @@ beforeEach(async () => {
     ...env,
     OWNER_ID: "private-tester",
     AI_BUDGET_USD: "10",
-    GEMINI_API_KEY: "test-only",
   } as unknown as Env;
   await bindings.DB.batch(
     schema
@@ -83,8 +84,8 @@ beforeEach(async () => {
     chunks,
   });
   vi.mocked(transcribeAudio).mockImplementation(
-    async ({ clipId, offsetMs }) => ({
-      utterances: [
+    async (_env, _job, _attempt, { clipId, offsetMs }) => ({
+      value: [
         {
           id: `${clipId}:u:${offsetMs + 100}:1`,
           clipId,
@@ -99,16 +100,30 @@ beforeEach(async () => {
     }),
   );
   vi.mocked(createLyrics).mockResolvedValue({
-    blocks,
+    value: blocks,
     costUsd: 0.02,
     usage: { model: "gemini-test" },
   });
-  vi.mocked(generateMusic).mockResolvedValue({
-    bytes: new Uint8Array([73, 68, 51, 1, 2]),
-    mimeType: "audio/mpeg",
-    returnedLyrics: blocks[0].text,
-    costUsd: 0.08,
-    usage: { model: "lyria-test" },
+  vi.mocked(generateMusic).mockImplementation(async (runtimeEnv, job) => {
+    const audioId = `song-audio-${job.id}`;
+    const key = `songs/${job.owner_id}/${job.id}.mp3`;
+    await runtimeEnv.AUDIO.put(key, new Uint8Array([73, 68, 51, 1, 2]));
+    await runtimeEnv.DB.prepare(
+      "INSERT OR IGNORE INTO audio_objects (id, owner_id, draft_id, object_key, mime_type, size_bytes, duration_ms, kind) VALUES (?, ?, ?, ?, 'audio/mpeg', 5, 0, 'song')",
+    )
+      .bind(audioId, job.owner_id, job.draft_id, key)
+      .run();
+    return {
+      value: {
+        audioId,
+        key,
+        sizeBytes: 5,
+        mimeType: "audio/mpeg",
+        returnedLyrics: blocks[0].text,
+      },
+      costUsd: 0.08,
+      usage: { model: "lyria-test" },
+    };
   });
   vi.mocked(probeSong).mockResolvedValue({
     durationMs: 123456,
@@ -182,12 +197,14 @@ it("persists an approved song with its measured duration and immutable source re
 });
 
 it("retains audio for reconciliation when the provider changes approved lyrics", async () => {
-  vi.mocked(generateMusic).mockResolvedValue({
-    bytes: new Uint8Array([73, 68, 51, 1, 2]),
-    mimeType: "audio/mpeg",
-    returnedLyrics: "別の歌詞",
-    costUsd: 0.08,
-    usage: { model: "lyria-test" },
+  const original = vi.mocked(generateMusic).getMockImplementation();
+  if (!original) throw new Error("Missing runtime fixture");
+  vi.mocked(generateMusic).mockImplementation(async (...args) => {
+    const result = await original(...args);
+    return {
+      ...result,
+      value: { ...result.value, returnedLyrics: "別の歌詞" },
+    };
   });
   await approveAndGenerate();
   expect(
@@ -242,4 +259,30 @@ it("preserves a safe failure code across Workflow error serialization", async ()
     await ownedJob(bindings, "prepare-job", "private-tester"),
   ).toMatchObject({ status: "failed", error: "ai_budget_exhausted" });
   expect(transcribeAudio).not.toHaveBeenCalled();
+});
+
+it("saves long transcripts without one D1 query per utterance on Workers Free", async () => {
+  const batch = bindings.DB.batch.bind(bindings.DB);
+  vi.spyOn(bindings.DB, "batch").mockImplementation(async (statements) => {
+    if (statements.length > 50) throw new Error("free_d1_query_limit");
+    return batch(statements);
+  });
+  vi.mocked(transcribeAudio).mockImplementation(
+    async (_env, _job, _attempt, { clipId, offsetMs }) => ({
+      value: Array.from({ length: 100 }, (_, index) => ({
+        id: `${clipId}:u:${offsetMs + 100 + index * 600}:${index + 1}`,
+        clipId,
+        startMs: offsetMs + 100 + index * 600,
+        endMs: offsetMs + 500 + index * 600,
+        speaker: "話者 1",
+        text: "また歩こう。",
+      })),
+      costUsd: 0.1,
+      usage: {},
+    }),
+  );
+  await prepareDraft(bindings, "prepare-job", step);
+  const draft = await draftDocument(bindings, "draft", "private-tester");
+  expect(draft.status).toBe("waiting_review");
+  expect(draft.utterances).toHaveLength(200);
 });

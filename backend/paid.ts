@@ -84,7 +84,7 @@ export async function paidCall<T>(
   if (!Number.isFinite(budget) || budget < 0 || budget > 10)
     throw new HttpError(503, "invalid_ai_budget");
   const claimed = await env.DB.prepare(
-    "INSERT INTO provider_attempts (id, job_id, owner_id, stage, status, amount_micros, created_at) SELECT ?, ?, ?, ?, 'submitted', ?, ? WHERE (SELECT COALESCE(SUM(amount_micros), 0) FROM provider_attempts WHERE owner_id = ?) + ? <= ? AND NOT EXISTS (SELECT 1 FROM provider_attempts WHERE owner_id = ? AND status = 'cost_overrun') ON CONFLICT(id) DO UPDATE SET job_id = excluded.job_id, status = 'submitted', amount_micros = excluded.amount_micros, created_at = excluded.created_at, error = NULL WHERE provider_attempts.owner_id = excluded.owner_id AND provider_attempts.status = 'failed_before_submission' AND provider_attempts.amount_micros = 0",
+    "INSERT INTO provider_attempts (id, job_id, owner_id, stage, status, amount_micros, created_at) SELECT ?, ?, ?, ?, 'submitted', ?, ? WHERE (SELECT COALESCE(SUM(amount_micros), 0) FROM provider_attempts WHERE owner_id = ?) + ? <= ? AND NOT EXISTS (SELECT 1 FROM provider_attempts WHERE owner_id = ? AND status = 'cost_overrun') ON CONFLICT(id) DO UPDATE SET job_id = excluded.job_id, status = 'submitted', amount_micros = excluded.amount_micros, created_at = excluded.created_at, runtime_claimed_at = NULL, error = NULL WHERE provider_attempts.owner_id = excluded.owner_id AND provider_attempts.status = 'failed_before_submission' AND provider_attempts.amount_micros = 0",
   )
     .bind(
       attemptId,
@@ -113,9 +113,14 @@ export async function paidCall<T>(
     if (!Number.isFinite(output.costUsd) || output.costUsd < 0)
       throw new ReconciliationError();
     const outputKey = `results/${job.owner_id}/${attemptId}.json`;
-    await env.AUDIO.put(outputKey, JSON.stringify({ version: 1, ...output }), {
-      httpMetadata: { contentType: "application/json" },
-    });
+    if (!(await env.AUDIO.head(outputKey)))
+      await env.AUDIO.put(
+        outputKey,
+        JSON.stringify({ version: 1, ...output }),
+        {
+          httpMetadata: { contentType: "application/json" },
+        },
+      );
     return await settle(env, job, attemptId, outputKey, reserve, output);
   } catch (error) {
     if (

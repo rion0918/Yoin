@@ -14,7 +14,11 @@ export async function setupLocal(project) {
     handoff.remainingUsd > 10
   )
     throw new Error("AI予算の引き継ぎ記録が不正です。");
-  for (const path of ["backend/.dev.vars", ".local/tester-token.txt"]) {
+  for (const path of [
+    "backend/.dev.vars",
+    ".local/tester-token.txt",
+    ".local/media.env",
+  ]) {
     const exists = await lstat(resolve(project, path))
       .then(() => true)
       .catch((error) => {
@@ -26,11 +30,12 @@ export async function setupLocal(project) {
   // Never print the token or overwrite an existing connection.
   const token = randomBytes(32).toString("hex");
   const hash = createHash("sha256").update(token).digest("hex");
+  const mediaToken = randomBytes(32).toString("hex");
   const settings = [
     `TESTER_TOKEN_SHA256=${hash}`,
     `MEDIA_SIGNING_SECRET=${randomBytes(32).toString("hex")}`,
-    `MEDIA_SERVICE_TOKEN=${randomBytes(32).toString("hex")}`,
-    "GEMINI_API_KEY=",
+    `MEDIA_SERVICE_TOKEN=${mediaToken}`,
+    "MEDIA_SERVICE_URL=http://127.0.0.1:8080",
     `AI_BUDGET_USD=${handoff.remainingUsd}`,
     "PUBLIC_API_URL=http://localhost:8787",
     "MEDIA_API_URL=http://host.docker.internal:8787",
@@ -45,6 +50,16 @@ export async function setupLocal(project) {
     mode: 0o600,
     flag: "wx",
   });
+  await writeFile(
+    resolve(project, ".local/media.env"),
+    [
+      `MEDIA_SERVICE_TOKEN=${mediaToken}`,
+      "MEDIA_ORIGIN=http://host.docker.internal:8787",
+      "GEMINI_API_KEY=",
+      "",
+    ].join("\n"),
+    { mode: 0o600, flag: "wx" },
+  );
   return { remainingUsd: handoff.remainingUsd };
 }
 if (
@@ -55,7 +70,7 @@ if (
   setupLocal(project)
     .then(({ remainingUsd }) => {
       console.log(
-        `設定を backend/.dev.vars、端末用トークンを .local/tester-token.txt に保存しました。AI予算残額: $${remainingUsd.toFixed(4)}`,
+        `設定を backend/.dev.vars と .local/media.env、端末用トークンを .local/tester-token.txt に保存しました。AI予算残額: $${remainingUsd.toFixed(4)}`,
       );
     })
     .catch(() => {

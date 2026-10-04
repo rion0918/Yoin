@@ -1,0 +1,9 @@
+**
+!backend/
+!backend/media/
+!backend/media/server.mjs
+!backend/media/providers.mjs
+!pipeline/
+!pipeline/google.ts
+!shared/
+!shared/contracts.ts

@@ -1,7 +1,6 @@
 import { handleRequest } from "./api.ts";
 import type { Env } from "./types.ts";
 
-export { MediaContainer } from "./media-container.ts";
 export { GenerateWorkflow, PrepareWorkflow } from "./workflows.ts";
 
 export default {

@@ -3,11 +3,6 @@ import {
   type WorkflowEvent,
   type WorkflowStep,
 } from "cloudflare:workers";
-import {
-  createLyrics,
-  generateMusic,
-  transcribeAudio,
-} from "../pipeline/google.ts";
 import { type LyricBlock, MAX_AUDIO_MS } from "../shared/contracts.ts";
 import {
   clips,
@@ -20,6 +15,8 @@ import {
 } from "./database.ts";
 import { inspectClip, probeSong } from "./media.ts";
 import { paidCall, RESERVATION_USD } from "./paid.ts";
+import type { SavedMusic } from "./providers.ts";
+import { createLyrics, generateMusic, transcribeAudio } from "./providers.ts";
 import { sha256 } from "./security.ts";
 import {
   type Env,
@@ -135,7 +132,7 @@ export async function prepareDraft(
     if (!inspected.length) throw new HttpError(422, "empty_audio");
     await setJob(env, job, "running", "transcribing");
     for (const { clip, inspection } of inspected) {
-      for (const chunk of inspection.chunks) {
+      for (const [index, chunk] of inspection.chunks.entries()) {
         await step.do(
           `transcribe-${clip.id}-${chunk.offsetMs}`,
           paidStep,
@@ -147,17 +144,18 @@ export async function prepareDraft(
               "transcribe",
               RESERVATION_USD.transcribe,
               async () => {
-                const audio = await env.AUDIO.get(chunk.key);
-                if (!audio) throw new HttpError(422, "media_chunk_missing");
-                const result = await transcribeAudio({
-                  bytes: new Uint8Array(await audio.arrayBuffer()),
-                  mimeType: chunk.mimeType,
-                  clipId: clip.id,
-                  offsetMs: chunk.offsetMs,
-                  apiKey: env.GEMINI_API_KEY,
-                });
+                const result = await transcribeAudio(
+                  env,
+                  job,
+                  `stt-${clip.id}-${chunk.offsetMs}`,
+                  {
+                    clipId: clip.id,
+                    index,
+                    offsetMs: chunk.offsetMs,
+                  },
+                );
                 const values = validateUtterances(
-                  result.utterances,
+                  result.value,
                   clip.id,
                   inspection.durationMs,
                 );
@@ -176,21 +174,21 @@ export async function prepareDraft(
                 };
               },
             );
+            validateUtterances(transcript, clip.id, inspection.durationMs);
+            if (
+              transcript.some(
+                (item) =>
+                  item.startMs < chunk.offsetMs ||
+                  item.endMs > chunk.offsetMs + chunk.durationMs,
+              )
+            )
+              throw new ReconciliationError();
             if (transcript.length)
-              await env.DB.batch(
-                transcript.map((item) =>
-                  env.DB.prepare(
-                    "INSERT OR IGNORE INTO utterances (id, clip_id, start_ms, end_ms, speaker, text) VALUES (?, ?, ?, ?, ?, ?)",
-                  ).bind(
-                    item.id,
-                    item.clipId,
-                    item.startMs,
-                    item.endMs,
-                    item.speaker,
-                    item.text,
-                  ),
-                ),
-              );
+              await env.DB.prepare(
+                "INSERT OR IGNORE INTO utterances (id, clip_id, start_ms, end_ms, speaker, text) SELECT json_extract(value, '$.id'), json_extract(value, '$.clipId'), json_extract(value, '$.startMs'), json_extract(value, '$.endMs'), json_extract(value, '$.speaker'), json_extract(value, '$.text') FROM json_each(?)",
+              )
+                .bind(JSON.stringify(transcript))
+                .run();
             return true;
           },
         );
@@ -208,18 +206,21 @@ export async function prepareDraft(
         "lyrics",
         RESERVATION_USD.lyrics,
         async () => {
-          const result = await createLyrics({
-            utterances: source,
-            apiKey: env.GEMINI_API_KEY,
-          });
+          const result = await createLyrics(
+            env,
+            job,
+            `lyrics-${job.draft_id}-${sourceHash}`,
+            { utterances: source },
+          );
           return {
-            value: validateBlocks(result.blocks, source),
+            value: validateBlocks(result.value, source),
             costUsd: result.costUsd,
             usage: result.usage,
           };
         },
       ),
     );
+    validateBlocks(blocks, source);
     await step.do("save_lyrics", () => saveLyrics(env, job, blocks));
     await step.do("waiting_review", () =>
       setJob(env, job, "waiting_review", "review_lyrics"),
@@ -240,14 +241,6 @@ export function lyricsMatch(blocks: LyricBlock[], returned: string) {
     clean(blocks.map((block) => block.text).join("\n")) === clean(returned)
   );
 }
-
-type SavedMusic = {
-  audioId: string;
-  key: string;
-  mimeType: string;
-  sizeBytes: number;
-  returnedLyrics: string;
-};
 
 export async function generateSong(
   env: Env,
@@ -273,40 +266,7 @@ export async function generateSong(
         `music-${job.id}`,
         "music",
         RESERVATION_USD.music,
-        async () => {
-          const result = await generateMusic({
-            blocks,
-            apiKey: env.GEMINI_API_KEY,
-          });
-          const audioId = `song-audio-${job.id}`;
-          const key = `songs/${job.owner_id}/${job.id}.mp3`;
-          await env.AUDIO.put(key, result.bytes, {
-            httpMetadata: { contentType: result.mimeType },
-          });
-          await env.DB.prepare(
-            "INSERT OR IGNORE INTO audio_objects (id, owner_id, draft_id, object_key, mime_type, size_bytes, duration_ms, kind) VALUES (?, ?, ?, ?, ?, ?, 0, 'song')",
-          )
-            .bind(
-              audioId,
-              job.owner_id,
-              job.draft_id,
-              key,
-              result.mimeType,
-              result.bytes.byteLength,
-            )
-            .run();
-          return {
-            value: {
-              audioId,
-              key,
-              mimeType: result.mimeType,
-              sizeBytes: result.bytes.byteLength,
-              returnedLyrics: result.returnedLyrics,
-            },
-            costUsd: result.costUsd,
-            usage: result.usage,
-          };
-        },
+        () => generateMusic(env, job, `music-${job.id}`, { blocks }),
       ),
     );
     if (!lyricsMatch(blocks, saved.returnedLyrics)) {

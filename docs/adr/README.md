@@ -8,10 +8,12 @@ ADR（Architecture Decision Record）は、1つの重要な判断について、
 | :-- | :----- | :--- |
 | [0001: Nygard形式のADRを開発フローに組み込む](0001-adr-workflow.md) | Accepted | 2026-10-04 |
 | [0002: 本実装にReact Nativeを使用する](0002-react-native-app.md) | Accepted | 2026-10-04 |
+| [0003: React Nativeアプリの実装基盤にExpoを使用する](0003-expo-app.md) | Accepted | 2026-10-04 |
+| [0004: 本実装のlintとformatにBiomeを使用する](0004-biome-checks.md) | Accepted | 2026-10-04 |
 
 Accepted の記録が現在の採用済み判断です。Proposed は提案段階であり、採用済みとして扱いません。記録の追加・状態変更時には、この一覧も更新します。
 
-番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0003-<short-title>.md` です。
+番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0005-<short-title>.md` です。
 
 ## 作業前に読む
 

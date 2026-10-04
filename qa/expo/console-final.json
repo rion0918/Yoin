@@ -1,0 +1,14 @@
+[
+  {
+    "level": "warn",
+    "message": "\"shadow*\" style props are deprecated. Use \"boxShadow\".",
+    "timestamp": "2026-10-04T04:00:07.188Z",
+    "url": "http://localhost:8081/index.ts.bundle?platform=web&dev=true&hot=false&lazy=true&transform.engine=hermes&transform.routerRoot=app&unstable_transformProfile=hermes-stable"
+  },
+  {
+    "level": "warn",
+    "message": "props.pointerEvents is deprecated. Use style.pointerEvents",
+    "timestamp": "2026-10-04T04:01:19.738Z",
+    "url": "http://localhost:8081/index.ts.bundle?platform=web&dev=true&hot=false&lazy=true&transform.engine=hermes&transform.routerRoot=app&unstable_transformProfile=hermes-stable"
+  }
+]

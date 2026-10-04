@@ -2,7 +2,7 @@
 
 ## Yoin design decisions
 
-- Production app framework: React Native, as requested by the user. This React/Vite project is the web UI prototype for validating the design; native app implementation is a separate phase and has not started yet.
+- Production app framework: React Native with Expo, as requested by the user. The native app lives at the repository root (`App.tsx` and `src/`). This React/Vite project remains the web UI prototype and approved design reference.
 - Current flow source: `design/library-recording-flow.png`, refined from recording option 2 with the user’s latest three-page decision. Retain `design/seasonal-reference.png` as the completed-song visual reference and `design/reference.png` as the earlier direction.
 - Use three pages: a white library home with album covers and a top-right plus, a white recording page, and the completed memory/music page. Only the completed song uses rich, muted color related to its artwork, season and mood.
 - The plus opens a new untitled recording with the microphone off; do not require a trip name or participants before recording. Use a date-based provisional title. Keep start/stop/resume in the same position, visibly label recording versus microphone off, preserve saved clips, and make finishing a separate action.

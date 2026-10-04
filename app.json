@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "Yoin",
+    "slug": "yoin",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "predictiveBackGestureEnabled": true
+    },
+    "web": {
+      "name": "Yoin | 思い出のライブラリ"
+    },
+    "plugins": ["expo-font"]
+  }
+}

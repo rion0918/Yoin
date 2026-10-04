@@ -9,5 +9,11 @@
 
 ## 現在の構成
 
-- `prototype/` は React/Vite の UI 検証用プロトタイプ。本実装は [ADR 0002](docs/adr/0002-react-native-app.md) に従って React Native を使用する。
+- ルートの `App.tsx` と `src/` は [ADR 0002](docs/adr/0002-react-native-app.md)・[ADR 0003](docs/adr/0003-expo-app.md) に従う Expo / React Native アプリ。`prototype/` は React/Vite の UI 検証用プロトタイプとデザイン参照。
 - プロトタイプを変更する際は、[prototype/AGENTS.md](prototype/AGENTS.md) の編集範囲とランタイム契約を守る。
+
+## 本実装の検証
+
+- [ADR 0004](docs/adr/0004-biome-checks.md) に従い Biome で lint と format を行う。`npm run check`、`npm run typecheck`、`npm test` を確認する。
+- デザインと操作の参照は `prototype/design/library-recording-flow.png` と `prototype/design-qa.md`。ライブラリと記録は白ベース、完成した曲だけ色を持つ。
+- 現在の録音・位置・会話・曲の再生はサンプルデータによる画面操作の実装。実際の音声入出力や保存・生成サービスの接続済みとは扱わない。

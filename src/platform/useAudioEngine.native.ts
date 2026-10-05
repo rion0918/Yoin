@@ -11,13 +11,14 @@ import {
 } from "expo-audio";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Platform } from "react-native";
-import type { LocalClip } from "../../shared/contracts";
+import type { SavedRecording } from "../../shared/contracts";
 import { waitUntilLoaded } from "./audio.native";
 import {
   beginPreparedRecording,
   clipFromRecording,
   createSerialQueue,
   createSingleFlight,
+  shouldStopSpeakerRecording,
 } from "./operations";
 import { inspectLocalAudio } from "./storage.native";
 import type {
@@ -60,7 +61,7 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
       native: boolean,
       alreadyStopped = false,
       finishedUri?: string | null,
-    ): Promise<LocalClip | null> => {
+    ): Promise<SavedRecording | null> => {
       const current = pending.current;
       if (!current) return Promise.resolve(null);
       if (!native) manualStopId.current = current.clipId;
@@ -72,10 +73,11 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
             if (!alreadyStopped) await recorder.stop();
             const uri = finishedUri ?? recorder.uri ?? current.localUri;
             if (!uri) throw new Error("録音ファイルが見つかりません。");
-            const clip = clipFromRecording(
-              { ...current, localUri: uri },
-              await inspectLocalAudio(uri),
-            );
+            const inspection = await inspectLocalAudio(uri);
+            const clip =
+              current.purpose === "speaker"
+                ? clipFromRecording({ ...current, localUri: uri }, inspection)
+                : clipFromRecording({ ...current, localUri: uri }, inspection);
             if (native && manualStopId.current !== current.clipId)
               await nativeCallback.current?.(clip);
             pending.current = null;
@@ -111,6 +113,10 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
     }
     if (status.isFinished)
       void completeRecording(true, true, status.url).catch(() => {});
+    else if (
+      shouldStopSpeakerRecording(current, recorder.getStatus().durationMillis)
+    )
+      void completeRecording(true).catch(() => {});
   };
 
   const reconcileRecorder = useCallback(() => {
@@ -154,7 +160,7 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
   }, [player, playerStatus.currentTime]);
 
   const startRecording: AudioEngine["startRecording"] = useCallback(
-    (clipId, draftId, recordedAt, timezone, onPrepared) =>
+    (clipId, draftId, recordedAt, timezone, onPrepared, speakerProfileId) =>
       queue.run(async () => {
         if (pending.current)
           throw new Error("今の録音を保存してから次の録音を開始してください。");
@@ -178,15 +184,28 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
             shouldPlayInBackground: false,
             interruptionMode: "doNotMix",
           });
-          const prepared = await beginPreparedRecording(
-            recorder,
-            { clipId, draftId, recordedAt, timezone },
-            async (next) => {
-              pending.current = next;
-              manualStopId.current = null;
-              await onPrepared?.(next);
-            },
-          );
+          const onRecordingPrepared = async (next: PendingRecording) => {
+            pending.current = next;
+            manualStopId.current = null;
+            await onPrepared?.(next);
+          };
+          const prepared = speakerProfileId
+            ? await beginPreparedRecording(
+                recorder,
+                {
+                  clipId,
+                  purpose: "speaker",
+                  speakerProfileId,
+                  recordedAt,
+                  timezone,
+                },
+                onRecordingPrepared,
+              )
+            : await beginPreparedRecording(
+                recorder,
+                { clipId, draftId, recordedAt, timezone },
+                onRecordingPrepared,
+              );
           capturing.current = true;
           setRecorderState("recording");
           return prepared;
@@ -273,7 +292,6 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
         player.clearLockScreenControls();
         playbackUri.current = null;
         playbackEnd.current = undefined;
-        player.replace(null);
       }),
     [player, queue],
   );

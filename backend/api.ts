@@ -25,6 +25,11 @@ import {
 } from "./media-api.ts";
 import { runtimeCallback } from "./runtime-api.ts";
 import { authenticate, sha256, signedUrl } from "./security.ts";
+import {
+  handleSpeakers,
+  registeredSpeakers,
+  serveSpeakerSample,
+} from "./speakers.ts";
 import { type Env, HttpError } from "./types.ts";
 import {
   clipMetadata,
@@ -372,9 +377,13 @@ async function submitJob(
   const jobId = crypto.randomUUID();
   const state = kind === "prepare" ? "preparing" : "generating";
   const created = new Date().toISOString();
+  const speakerSnapshot =
+    kind === "prepare"
+      ? JSON.stringify(await registeredSpeakers(env, owner))
+      : null;
   const result = await env.DB.batch([
     env.DB.prepare(
-      "INSERT OR IGNORE INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND owner_id = ? AND status = ? AND job_id IS ? AND lyric_revision = ?)",
+      "INSERT OR IGNORE INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, created_at, speaker_snapshot_json) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND owner_id = ? AND status = ? AND job_id IS ? AND lyric_revision = ?)",
     ).bind(
       jobId,
       owner,
@@ -385,6 +394,7 @@ async function submitJob(
       revision,
       blocks,
       created,
+      speakerSnapshot,
       draftId,
       owner,
       draft.status,
@@ -414,6 +424,17 @@ export async function handleRequest(request: Request, env: Env) {
   try {
     const url = new URL(request.url);
     const path = url.pathname;
+    const speakerSample =
+      /^\/internal\/speakers\/([a-zA-Z0-9_-]+)\/samples\/([a-zA-Z0-9_-]+)$/.exec(
+        path,
+      );
+    if (speakerSample && request.method === "GET")
+      return await serveSpeakerSample(
+        request,
+        env,
+        id(speakerSample[1]),
+        id(speakerSample[2]),
+      );
     const runtime =
       /^\/internal\/attempts\/([a-zA-Z0-9_-]{1,200})\/(claim|result|raw|song)$/.exec(
         path,
@@ -444,6 +465,8 @@ export async function handleRequest(request: Request, env: Env) {
         Number(chunk[3]),
       );
     const owner = await authenticate(request, env);
+    const speakerResponse = await handleSpeakers(request, env, owner, path);
+    if (speakerResponse) return speakerResponse;
     if (path === "/drafts" && request.method === "POST")
       return await createDraft(request, env, owner);
     const draft =

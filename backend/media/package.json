@@ -1,0 +1,11 @@
+{
+  "name": "yoin-audio-media",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.12.0 <25"
+  },
+  "dependencies": {
+    "sherpa-onnx-node": "1.13.8"
+  }
+}

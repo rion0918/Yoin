@@ -1,4 +1,4 @@
-import type { LibraryDocument, LocalClip } from "../../shared/contracts";
+import type { LibraryDocument, SavedRecording } from "../../shared/contracts";
 
 export type PendingRecording = NonNullable<LibraryDocument["pendingRecording"]>;
 export type AudioInspection = {
@@ -21,7 +21,7 @@ export type AudioEngineState = {
   durationMs: number;
   error: string | null;
 };
-export type NativeStopListener = (clip: LocalClip) => void | Promise<void>;
+export type NativeStopListener = (clip: SavedRecording) => void | Promise<void>;
 export type PreparedListener = (pending: PendingRecording) => Promise<void>;
 export type AudioEngine = {
   state: AudioEngineState;
@@ -31,8 +31,9 @@ export type AudioEngine = {
     recordedAt: string,
     timezone: string,
     onPrepared?: PreparedListener,
+    speakerProfileId?: string,
   ) => Promise<PendingRecording>;
-  stopRecording: () => Promise<LocalClip | null>;
+  stopRecording: () => Promise<SavedRecording | null>;
   play: (uri: string, startMs?: number, endMs?: number) => Promise<void>;
   pause: () => Promise<void>;
   seek: (ms: number) => Promise<void>;

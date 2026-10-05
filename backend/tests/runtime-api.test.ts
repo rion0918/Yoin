@@ -3,6 +3,7 @@ import { beforeEach, expect, it } from "vitest";
 import { handleRequest } from "../api.ts";
 import schema from "../migrations/0001_initial.sql?raw";
 import migration from "../migrations/0002_audio_runtime.sql?raw";
+import speakerMigration from "../migrations/0003_speaker_profiles.sql?raw";
 import { signedUrl } from "../security.ts";
 import type { Env } from "../types.ts";
 
@@ -16,7 +17,7 @@ beforeEach(async () => {
     PUBLIC_API_URL: "https://yoin.test",
   } as unknown as Env;
   await bindings.DB.batch(
-    `${schema}\n${migration}`
+    `${schema}\n${migration}\n${speakerMigration}`
       .split(";")
       .map((s) => s.trim())
       .filter(Boolean)

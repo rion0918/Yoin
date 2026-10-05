@@ -18,6 +18,7 @@ type LibraryScreenProps = {
   drafts: LocalDraft[];
   onNewRecording: () => void;
   onSettings: () => void;
+  onSpeakerSettings: () => void;
   onOpenDraft: (draft: LocalDraft) => void;
   onOpenSong: (song: SongDocument) => void;
 };
@@ -29,6 +30,7 @@ export function LibraryScreen({
   drafts,
   onNewRecording,
   onSettings,
+  onSpeakerSettings,
   onOpenDraft,
   onOpenSong,
 }: LibraryScreenProps) {
@@ -40,6 +42,14 @@ export function LibraryScreen({
       <View style={styles.header}>
         <Text style={styles.wordmark}>Yoin</Text>
         <View style={{ flexDirection: "row", gap: 12 }}>
+          <ActionButton
+            label="話者設定"
+            onPress={onSpeakerSettings}
+            style={styles.newRecording}
+            testID="speaker-settings"
+          >
+            <Feather name="users" size={20} color="#332317" />
+          </ActionButton>
           <ActionButton
             label="接続設定"
             onPress={onSettings}

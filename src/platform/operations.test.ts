@@ -12,6 +12,7 @@ import {
   createSerialQueue,
   createSingleFlight,
   importedClip,
+  shouldStopSpeakerRecording,
   validateInspection,
 } from "./operations.ts";
 
@@ -141,6 +142,26 @@ test("failed completion can be retried without leaving a rejected gate", async (
     /save failed/,
   );
   assert.equal(await gate.run("clip-a", async () => "saved"), "saved");
+});
+
+test("speaker enrollment recordings stop at the requested twenty seconds", () => {
+  const pending = {
+    purpose: "speaker" as const,
+    speakerProfileId: "speaker-a",
+    clipId: "voice-a",
+    recordedAt: "2026-10-05T00:00:00.000Z",
+    timezone: "Asia/Tokyo",
+    localUri: "file:///documents/voice-a.m4a",
+  };
+  assert.equal(shouldStopSpeakerRecording(pending, 19_999), false);
+  assert.equal(shouldStopSpeakerRecording(pending, 20_000), true);
+  assert.equal(
+    shouldStopSpeakerRecording(
+      { ...pending, purpose: undefined, draftId: "draft-a" },
+      20_000,
+    ),
+    false,
+  );
 });
 
 test("multipart reads use one bounded range and include the last partial part", () => {

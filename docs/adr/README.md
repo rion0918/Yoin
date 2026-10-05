@@ -19,6 +19,7 @@ ADR（Architecture Decision Record）は、1つの重要な判断について、
 | [0009: 下書きをSQLiteとDocuments内の音声ファイルで永続化する](0009-local-durable-drafts.md) | Accepted | 2026-10-04 |
 | [0010: Google APIを累積10ドル以内の音声品質検証候補に採用する](0010-google-audio-quality-trial.md) | Accepted | 2026-10-04 |
 | [0011: Cloudflare無料プラン向けに音声処理の実行先を分離する](0011-cloudflare-free-audio-runtime.md) | Accepted | 2026-10-04 |
+| [0012: 登録した声から話者名を識別する](0012-named-speaker-enrollment.md) | Proposed | 2026-10-05 |
 
 Accepted の記録が現在の採用済み判断です。Proposed は提案段階であり、採用済みとして扱いません。記録の追加・状態変更時には、この一覧も更新します。
 

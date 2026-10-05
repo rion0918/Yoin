@@ -7,6 +7,7 @@ import {
   emptyLibrary,
   type LibraryDocument,
   type LocalClip,
+  type SavedRecording,
 } from "../../shared/contracts";
 import { waitUntilLoaded } from "./audio.native";
 import {
@@ -45,7 +46,9 @@ export async function loadLibrary(): Promise<LibraryDocument> {
   const row = await db.getFirstAsync<{ document: string }>(
     "SELECT document FROM library WHERE id = 1",
   );
-  return row ? (JSON.parse(row.document) as LibraryDocument) : emptyLibrary();
+  if (!row) return emptyLibrary();
+  const stored = JSON.parse(row.document) as LibraryDocument;
+  return { ...stored, speakerProfiles: stored.speakerProfiles ?? [] };
 }
 
 export function saveLibrary(state: LibraryDocument): Promise<void> {
@@ -130,13 +133,13 @@ export async function readAudioPart(
 
 export async function recoverRecording(
   pending: PendingRecording,
-): Promise<LocalClip | null> {
+): Promise<SavedRecording | null> {
   if (!pending.localUri) return null;
   try {
-    return clipFromRecording(
-      pending,
-      await inspectLocalAudio(pending.localUri),
-    );
+    const inspection = await inspectLocalAudio(pending.localUri);
+    return pending.purpose === "speaker"
+      ? clipFromRecording(pending, inspection)
+      : clipFromRecording(pending, inspection);
   } catch {
     return null;
   }
@@ -151,4 +154,23 @@ export async function saveConnection(connection: Connection): Promise<void> {
   await SecureStore.setItemAsync(connectionKey, JSON.stringify(connection), {
     keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
   });
+}
+export async function readSpeakerAudio(uri: string): Promise<Uint8Array> {
+  const file = new File(uri);
+  if (!file.exists || file.size <= 0 || file.size > 5 * 1024 * 1024)
+    throw new Error("登録用の声の録音が見つからないか、大きすぎます。");
+  const handle = file.open(FileMode.ReadOnly);
+  try {
+    const bytes = handle.readBytes(file.size);
+    if (bytes.length !== file.size)
+      throw new Error("登録用の声の録音を読み取れませんでした。");
+    return bytes;
+  } finally {
+    handle.close();
+  }
+}
+
+export async function deleteSpeakerAudio(uri: string): Promise<void> {
+  const file = new File(uri);
+  if (file.exists) file.delete();
 }

@@ -2,9 +2,9 @@ import type {
   AudioClip,
   DraftDocument,
   LibraryDocument,
-  LocalClip,
   LocalDraft,
   LyricBlock,
+  SavedRecording,
   SongDocument,
 } from "../../shared/contracts.ts";
 
@@ -25,8 +25,31 @@ export function createLocalDraft(id: string, createdAt: string): LocalDraft {
 
 export function addSavedClip(
   state: LibraryDocument,
-  clip: LocalClip,
+  clip: SavedRecording,
 ): LibraryDocument {
+  if (clip.purpose === "speaker") {
+    if (
+      !(state.speakerProfiles ?? []).some(
+        (profile) => profile.id === clip.speakerProfileId,
+      )
+    )
+      throw new Error("登録する話者が見つかりません。");
+    return {
+      ...state,
+      pendingRecording:
+        state.pendingRecording?.clipId === clip.id
+          ? null
+          : state.pendingRecording,
+      recoveryFiles: state.recoveryFiles?.filter(
+        (pending) => pending.clipId !== clip.id,
+      ),
+      speakerProfiles: (state.speakerProfiles ?? []).map((profile) =>
+        profile.id === clip.speakerProfileId
+          ? { ...profile, sample: clip }
+          : profile,
+      ),
+    };
+  }
   const draft = state.drafts.find((value) => value.id === clip.draftId);
   if (!draft) throw new Error("記録が見つかりません。");
   if (draft.clips.some((value) => value.id === clip.id))
@@ -76,7 +99,7 @@ export function mergeRemoteDraft(
 
 export function restoreRecording(
   state: LibraryDocument,
-  recovered: LocalClip | null,
+  recovered: SavedRecording | null,
 ): LibraryDocument {
   if (!state.pendingRecording) return state;
   if (recovered) return addSavedClip(state, recovered);
@@ -88,7 +111,7 @@ export function restoreRecording(
       ? [...(state.recoveryFiles ?? []), pending]
       : state.recoveryFiles,
     drafts: state.drafts.map((draft) =>
-      draft.id === pending.draftId
+      pending.purpose !== "speaker" && draft.id === pending.draftId
         ? {
             ...draft,
             error:

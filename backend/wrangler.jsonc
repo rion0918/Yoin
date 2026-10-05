@@ -8,7 +8,7 @@
   "workers_dev": true,
   "vars": {
     "OWNER_ID": "private-tester",
-    "AI_BUDGET_USD": "0",
+    "AI_BUDGET_USD": "8.733897",
     "PUBLIC_API_URL": "https://yoin-private-api.h-rion-0910.workers.dev",
     "MEDIA_SERVICE_URL": "https://yoin-audio-300039436163.asia-northeast1.run.app"
   },

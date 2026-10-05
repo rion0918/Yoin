@@ -2,12 +2,13 @@ import { env, reset } from "cloudflare:test";
 import type { WorkflowStep } from "cloudflare:workers";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { draftDocument, ownedJob, songDocument } from "../database.ts";
-import { inspectClip, probeSong } from "../media.ts";
+import { identifySpeakersInChunk, inspectClip, probeSong } from "../media.ts";
 import initialSchema from "../migrations/0001_initial.sql?raw";
 import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
+import speakerSchema from "../migrations/0003_speaker_profiles.sql?raw";
 import { createLyrics, generateMusic, transcribeAudio } from "../providers.ts";
 
-const schema = `${initialSchema}\n${runtimeSchema}`;
+const schema = `${initialSchema}\n${runtimeSchema}\n${speakerSchema}`;
 
 import type { Env } from "../types.ts";
 import { generateSong, prepareDraft } from "../workflows.ts";
@@ -18,7 +19,11 @@ vi.mock("../providers.ts", async (original) => ({
   createLyrics: vi.fn(),
   generateMusic: vi.fn(),
 }));
-vi.mock("../media.ts", () => ({ inspectClip: vi.fn(), probeSong: vi.fn() }));
+vi.mock("../media.ts", () => ({
+  identifySpeakersInChunk: vi.fn(),
+  inspectClip: vi.fn(),
+  probeSong: vi.fn(),
+}));
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -130,7 +135,41 @@ beforeEach(async () => {
     sizeBytes: 5,
     chunks: [],
   });
+  vi.mocked(identifySpeakersInChunk).mockImplementation(
+    async (_env, _job, _clip, input) =>
+      input.utterances.map(({ speaker }) => ({
+        speaker,
+        speakerProfileId: null,
+      })),
+  );
 });
+
+async function freezeSpeakerSnapshot() {
+  await bindings.DB.prepare(
+    "UPDATE jobs SET speaker_snapshot_json = ? WHERE id = 'prepare-job'",
+  )
+    .bind(
+      JSON.stringify([
+        {
+          id: "speaker-a",
+          name: "あおい",
+          modelVersion: "weSpeakerResNet34Lm:1",
+          embedding: Array.from({ length: 256 }, (_, index) =>
+            index === 0 ? 1 : 0,
+          ),
+        },
+        {
+          id: "speaker-b",
+          name: "れん",
+          modelVersion: "weSpeakerResNet34Lm:1",
+          embedding: Array.from({ length: 256 }, (_, index) =>
+            index === 1 ? 1 : 0,
+          ),
+        },
+      ]),
+    )
+    .run();
+}
 
 async function approveAndGenerate() {
   await prepareDraft(bindings, "prepare-job", step);
@@ -160,6 +199,84 @@ it("preserves original chunk offsets and source IDs through lyric review", async
   expect(draft.lyrics).toEqual({ revision: 1, blocks });
   expect(transcribeAudio).toHaveBeenCalledTimes(2);
   expect(generateMusic).not.toHaveBeenCalled();
+});
+
+it("matches temporary speaker labels independently within each chunk and passes names to lyrics", async () => {
+  await freezeSpeakerSnapshot();
+  vi.mocked(identifySpeakersInChunk).mockImplementation(
+    async (_env, _job, _clip, input) =>
+      input.utterances.map(({ speaker }) => ({
+        speaker,
+        speakerProfileId: input.offsetMs === 0 ? "speaker-a" : "speaker-b",
+      })),
+  );
+
+  await prepareDraft(bindings, "prepare-job", step);
+
+  expect(identifySpeakersInChunk).toHaveBeenCalledTimes(2);
+  expect(
+    vi
+      .mocked(identifySpeakersInChunk)
+      .mock.calls.map((call) => call[3].offsetMs),
+  ).toEqual([0, 1500000]);
+  expect(vi.mocked(createLyrics).mock.calls[0]?.[3]).toMatchObject({
+    utterances: [
+      {
+        speaker: "話者 1",
+        speakerProfileId: "speaker-a",
+        speakerName: "あおい",
+      },
+      { speaker: "話者 1", speakerProfileId: "speaker-b", speakerName: "れん" },
+    ],
+  });
+  expect(
+    (await draftDocument(bindings, "draft", "private-tester")).utterances.map(
+      ({ speakerName }) => speakerName,
+    ),
+  ).toEqual(["あおい", "れん"]);
+});
+
+it("keeps temporary labels for unknown voices", async () => {
+  await freezeSpeakerSnapshot();
+  await prepareDraft(bindings, "prepare-job", step);
+
+  const source = vi.mocked(createLyrics).mock.calls[0]?.[3].utterances ?? [];
+  expect(
+    source.map(({ speaker, speakerProfileId, speakerName }) => [
+      speaker,
+      speakerProfileId ?? null,
+      speakerName ?? null,
+    ]),
+  ).toEqual([
+    ["話者 1", null, null],
+    ["話者 1", null, null],
+  ]);
+});
+
+it("retries failed speaker matching from cached transcripts without another paid transcription", async () => {
+  await freezeSpeakerSnapshot();
+  vi.mocked(identifySpeakersInChunk)
+    .mockRejectedValueOnce(new Error("speaker_identification_failed"))
+    .mockImplementation(async (_env, _job, _clip, input) =>
+      input.utterances.map(({ speaker }) => ({
+        speaker,
+        speakerProfileId: null,
+      })),
+    );
+
+  await prepareDraft(bindings, "prepare-job", step);
+  expect(
+    await ownedJob(bindings, "prepare-job", "private-tester"),
+  ).toMatchObject({ status: "failed", error: "speaker_identification_failed" });
+  expect(transcribeAudio).toHaveBeenCalledTimes(2);
+
+  await prepareDraft(bindings, "prepare-job", step);
+
+  expect(transcribeAudio).toHaveBeenCalledTimes(2);
+  expect(identifySpeakersInChunk).toHaveBeenCalledTimes(3);
+  expect(
+    (await ownedJob(bindings, "prepare-job", "private-tester")).status,
+  ).toBe("waiting_review");
 });
 
 it("persists an approved song with its measured duration and immutable source revision", async () => {

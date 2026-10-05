@@ -2,7 +2,6 @@ import { Feather } from "@expo/vector-icons";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
-  Keyboard,
   KeyboardAvoidingView,
   Modal,
   PanResponder,
@@ -24,6 +23,9 @@ type Props = {
   description: string;
   children: ReactNode;
   snap?: number;
+  footer?: ReactNode;
+  closeDisabled?: boolean;
+  avoidKeyboard?: boolean;
 };
 
 export function NativeSheet({
@@ -33,6 +35,9 @@ export function NativeSheet({
   description,
   children,
   snap = 0.76,
+  footer,
+  closeDisabled = false,
+  avoidKeyboard = false,
 }: Props) {
   const { height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -44,9 +49,13 @@ export function NativeSheet({
   closeRef.current = onClose;
   const openRef = useRef(open);
   openRef.current = open;
+  const closeDisabledRef = useRef(closeDisabled);
+  closeDisabledRef.current = closeDisabled;
+  const requestClose = () => {
+    if (!closeDisabledRef.current) closeRef.current();
+  };
 
   useEffect(() => {
-    Keyboard.dismiss();
     translation.stopAnimation();
     if (open) {
       setPresented(true);
@@ -73,7 +82,8 @@ export function NativeSheet({
   const responder = useMemo(
     () =>
       PanResponder.create({
-        onMoveShouldSetPanResponder: (_, gesture) => gesture.dy > 5,
+        onMoveShouldSetPanResponder: (_, gesture) =>
+          !closeDisabledRef.current && gesture.dy > 5,
         onPanResponderGrant: () => {
           if (openRef.current) translation.stopAnimation();
         },
@@ -82,7 +92,11 @@ export function NativeSheet({
         },
         onPanResponderRelease: (_, gesture) => {
           if (!openRef.current) return;
-          if (gesture.dy > 80 || gesture.vy > 0.8) closeRef.current();
+          if (
+            (gesture.dy > 80 || gesture.vy > 0.8) &&
+            !closeDisabledRef.current
+          )
+            closeRef.current();
           else
             Animated.spring(translation, {
               toValue: 0,
@@ -109,12 +123,21 @@ export function NativeSheet({
       transparent
       visible={presented}
       animationType="none"
-      onRequestClose={onClose}
+      onRequestClose={requestClose}
       statusBarTranslucent
     >
       <KeyboardAvoidingView
-        style={styles.overlay}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={[
+          styles.overlay,
+          avoidKeyboard && { paddingTop: insets.top + 8 },
+        ]}
+        behavior={
+          Platform.OS === "ios"
+            ? "padding"
+            : avoidKeyboard
+              ? "height"
+              : undefined
+        }
       >
         <Animated.View
           pointerEvents="none"
@@ -132,7 +155,7 @@ export function NativeSheet({
         />
         <Pressable
           style={StyleSheet.absoluteFill}
-          onPress={onClose}
+          onPress={requestClose}
           accessibilityLabel="シートを閉じる"
           accessibilityRole="button"
         />
@@ -141,6 +164,7 @@ export function NativeSheet({
           accessibilityViewIsModal
           style={[
             styles.card,
+            avoidKeyboard && { flexShrink: 1 },
             { height: sheetHeight, transform: [{ translateY: translation }] },
           ]}
         >
@@ -156,7 +180,8 @@ export function NativeSheet({
             </View>
             <ActionButton
               label="シートを閉じる"
-              onPress={onClose}
+              onPress={requestClose}
+              disabled={closeDisabled}
               style={styles.close}
               testID="close-sheet"
             >
@@ -167,11 +192,18 @@ export function NativeSheet({
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={[
               styles.content,
-              { paddingBottom: insets.bottom + 28 },
+              { paddingBottom: footer ? 20 : insets.bottom + 28 },
             ]}
           >
             {children}
           </ScrollView>
+          {footer && (
+            <View
+              style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}
+            >
+              {footer}
+            </View>
+          )}
         </Animated.View>
       </KeyboardAvoidingView>
     </Modal>
@@ -217,4 +249,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   content: { paddingHorizontal: 24 },
+  footer: {
+    paddingHorizontal: 24,
+    paddingTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#ddcfc1",
+    backgroundColor: "#fffaf5",
+  },
 });

@@ -1,4 +1,6 @@
 const explanations: Record<string, string> = {
+  route_not_found:
+    "接続先がこの機能に対応していません。サーバーの更新状況を確認してください。",
   unauthorized: "検証用トークンが一致しません。接続設定を確認してください。",
   authentication_not_configured:
     "サーバーに検証用トークンが設定されていません。",
@@ -18,6 +20,16 @@ const explanations: Record<string, string> = {
     "音声の送信がまだ完了していません。接続を確認して再開してください。",
   no_speech_detected:
     "会話を聞き取れませんでした。保存した音声を確認してください。",
+  speaker_sample_too_short:
+    "声の録音が短すぎます。10秒以上、できれば20秒ほど録音してください。",
+  speaker_sample_silent:
+    "声を確認できませんでした。静かな場所で話しながら録り直してください。",
+  speaker_sample_metadata_mismatch:
+    "登録音声の情報を確認できません。もう一度録音してください。",
+  speaker_identification_failed:
+    "話者の識別に失敗しました。音声は残っています。準備をもう一度実行してください。",
+  invalid_speaker_embedding:
+    "声の特徴を保存できませんでした。もう一度録音してください。",
   empty_audio:
     "音声が見つかりません。会話を録音するか音声を取り込んでください。",
   ai_budget_exhausted:

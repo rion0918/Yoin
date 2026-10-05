@@ -2,6 +2,85 @@ export const MAX_AUDIO_MS = 60 * 60 * 1000;
 export const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
 export const UPLOAD_PART_BYTES = 8 * 1024 * 1024;
 export const CHUNK_MS = 25 * 60 * 1000;
+export const SPEAKER_SAMPLE_MS = 20_000;
+export const MIN_SPEAKER_SAMPLE_MS = 10_000;
+export const MAX_SPEAKER_SAMPLE_MS = 30_000;
+export const MAX_SPEAKER_SAMPLE_BYTES = 5 * 1024 * 1024;
+export const SPEAKER_MODEL_VERSION =
+  "wespeaker-resnet34-lm-e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012";
+export const SPEAKER_EMBEDDING_DIM = 256;
+export type RegisteredSpeaker = {
+  id: string;
+  name: string;
+  modelVersion: string;
+  embedding: number[];
+};
+export type SpeakerMatch = { speaker: string; speakerProfileId: string | null };
+
+export type SpeakerProfile = {
+  id: string;
+  name: string;
+  status: "pending" | "ready";
+  sampleId: string | null;
+  modelVersion: string | null;
+};
+export type LocalSpeakerSample = {
+  purpose: "speaker";
+  id: string;
+  speakerProfileId: string;
+  localUri: string;
+  mimeType: string;
+  sizeBytes: number;
+  durationMs: number;
+};
+export type LocalSpeakerProfile = SpeakerProfile & {
+  sample?: LocalSpeakerSample;
+};
+export type SpeakerSampleDocument = {
+  id: string;
+  speakerProfileId: string;
+  status: "uploading" | "uploaded" | "ready";
+};
+
+export type RecordingTarget =
+  | { purpose?: "conversation"; draftId: string }
+  | { purpose: "speaker"; speakerProfileId: string };
+export type ConversationRecordingMetadata = {
+  purpose?: "conversation";
+  draftId: string;
+  clipId: string;
+  recordedAt: string;
+  timezone: string;
+};
+export type SpeakerRecordingMetadata = {
+  purpose: "speaker";
+  speakerProfileId: string;
+  clipId: string;
+  recordedAt: string;
+  timezone: string;
+};
+export type RecordingMetadata =
+  | ConversationRecordingMetadata
+  | SpeakerRecordingMetadata;
+export type ConversationPendingRecording = {
+  purpose?: "conversation";
+  draftId: string;
+  clipId: string;
+  recordedAt: string;
+  timezone: string;
+  localUri: string | null;
+};
+export type SpeakerPendingRecording = {
+  purpose: "speaker";
+  speakerProfileId: string;
+  clipId: string;
+  recordedAt: string;
+  timezone: string;
+  localUri: string | null;
+};
+export type PendingRecording =
+  | ConversationPendingRecording
+  | SpeakerPendingRecording;
 
 export type AudioClip = {
   id: string;
@@ -22,9 +101,11 @@ export type UploadProgress = {
 };
 
 export type LocalClip = AudioClip & {
+  purpose?: "conversation";
   localUri: string;
   upload?: UploadProgress;
 };
+export type SavedRecording = LocalClip | LocalSpeakerSample;
 
 export type Utterance = {
   id: string;
@@ -32,6 +113,8 @@ export type Utterance = {
   startMs: number;
   endMs: number;
   speaker: string;
+  speakerProfileId?: string;
+  speakerName?: string;
   text: string;
 };
 
@@ -101,13 +184,8 @@ export type JobDocument = {
 export type LibraryDocument = {
   drafts: LocalDraft[];
   songs: SongDocument[];
-  pendingRecording: {
-    clipId: string;
-    draftId: string;
-    recordedAt: string;
-    timezone: string;
-    localUri: string | null;
-  } | null;
+  speakerProfiles?: LocalSpeakerProfile[];
+  pendingRecording: PendingRecording | null;
   recoveryFiles?: NonNullable<LibraryDocument["pendingRecording"]>[];
 };
 
@@ -131,5 +209,5 @@ export type UploadCreated = {
 export type AudioUrl = { url: string; expiresAt: string };
 
 export function emptyLibrary(): LibraryDocument {
-  return { drafts: [], songs: [], pendingRecording: null };
+  return { drafts: [], songs: [], speakerProfiles: [], pendingRecording: null };
 }

@@ -1,0 +1,211 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yoin-cicd-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  MEDIA_IMAGE: yoin-audio:${{ github.sha }}
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ubuntu-24.04-npm-${{ hashFiles('package-lock.json', 'backend/package-lock.json') }}
+          restore-keys: ubuntu-24.04-npm-
+
+      - name: Lint workflow and shell definitions
+        run: |
+          nix develop --command actionlint .github/workflows/ci.yml
+          nix develop --command shellcheck scripts/ci-verify.sh
+
+      - name: Run repository checks and verify audio image
+        run: nix develop --command bash -euo pipefail scripts/ci-verify.sh
+
+      - name: Upload verified audio image
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-artifact@v4
+        with:
+          name: yoin-audio-${{ github.sha }}
+          path: ${{ runner.temp }}/yoin-audio.tar
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: deploy production
+    needs: verify
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: asia-northeast1
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      CLOUD_RUN_SERVICE: yoin-audio
+      IMAGE_REPOSITORY: yoin-runtime/audio
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Restore verified audio image
+        uses: actions/download-artifact@v4
+        with:
+          name: yoin-audio-${{ github.sha }}
+          path: ${{ runner.temp }}/verified-image
+
+      - name: Load verified audio image
+        run: docker load --input "$RUNNER_TEMP/verified-image/yoin-audio.tar"
+
+      - name: Authenticate with Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Reconcile production AI budget before any deployment
+        run: |
+          set -euo pipefail
+          configured_budget="$(jq --raw-output '.vars.AI_BUDGET_USD' backend/wrangler.jsonc)"
+          settings="$(curl --silent --show-error --fail \
+            --max-time 30 \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/yoin-private-api/settings")"
+          test "$(jq --raw-output '.success' <<<"$settings")" = true
+          live_budget="$(jq --raw-output '[.result.bindings[]? | select(.name == "AI_BUDGET_USD") | .text][0] // ""' <<<"$settings")"
+          if [[ -z "$live_budget" || "$live_budget" != "$configured_budget" ]]; then
+            echo "Production AI_BUDGET_USD differs from the tracked deployment setting; no Cloud Run, D1, or Worker changes were made." >&2
+            exit 1
+          fi
+          echo "Production AI budget matches the tracked configuration."
+
+      - name: Tag and push verified image
+        id: image
+        env:
+          IMAGE_TAG: asia-northeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/yoin-runtime/audio:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker tag "$MEDIA_IMAGE" "$IMAGE_TAG"
+          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+          docker push "$IMAGE_TAG"
+          digest="$(gcloud artifacts docker images describe "$IMAGE_TAG" --project "$GCP_PROJECT_ID" --format='value(image_summary.digest)')"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Check current Cloud Run configuration
+        id: media-config
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CLOUD_RUN_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format=json > "$RUNNER_TEMP/cloud-run-before.json"
+          env_names="$(jq --compact-output '[.spec.template.spec.containers[].env[]?.name] | sort' "$RUNNER_TEMP/cloud-run-before.json")"
+          for required in GEMINI_API_KEY MEDIA_SERVICE_TOKEN MEDIA_ORIGIN; do
+            jq --exit-status --arg name "$required" '(.spec.template.spec.containers[].env[]?.name) | select(. == $name)' "$RUNNER_TEMP/cloud-run-before.json" >/dev/null
+          done
+          echo "env_names=$env_names" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy Cloud Run and verify health
+        id: deploy_cloud_run
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+          gcloud run deploy "$CLOUD_RUN_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --image "$image" --quiet
+          run_url="$(gcloud run services describe "$CLOUD_RUN_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status.url)')"
+          test -n "$run_url"
+          test "$(curl --silent --show-error --fail --retry 10 --retry-all-errors --retry-delay 2 "$run_url/health")" = ok
+          echo "run_url=$run_url" >> "$GITHUB_OUTPUT"
+
+      - name: Apply D1 migrations and deploy Worker
+        run: |
+          nix develop --impure --command bash -e -o pipefail -c '
+            npm ci
+            npm --prefix backend ci
+            cd backend
+            npx wrangler d1 migrations apply yoin --remote
+            npx wrangler deploy
+          '
+
+      - name: Verify Cloud Run and Worker after deployment
+        env:
+          RUN_URL: ${{ steps.deploy_cloud_run.outputs.run_url }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          EXPECTED_ENV_NAMES: ${{ steps.media-config.outputs.env_names }}
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CLOUD_RUN_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format=json > "$RUNNER_TEMP/cloud-run-after.json"
+          actual_env_names="$(jq --compact-output '[.spec.template.spec.containers[].env[]?.name] | sort' "$RUNNER_TEMP/cloud-run-after.json")"
+          test "$actual_env_names" = "$EXPECTED_ENV_NAMES"
+          test "$(curl --silent --show-error --fail --retry 10 --retry-all-errors --retry-delay 2 "$RUN_URL/health")" = ok
+          for route in inspect probe transcribe lyrics music; do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' --request POST "$RUN_URL/$route" --data '{}')"
+            test "$status" = 401
+          done
+          worker_url="$(jq --raw-output '.vars.PUBLIC_API_URL' backend/wrangler.jsonc)"
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' "$worker_url/drafts/ci-smoke")"
+          test "$status" = 401
+          worker_deployments="$(curl --silent --show-error --fail \
+            --max-time 30 \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/yoin-private-api/deployments")"
+          test "$(jq --raw-output '.success' <<<"$worker_deployments")" = true
+          worker_deployment_id="$(jq --raw-output '.result.deployments[0].id // empty' <<<"$worker_deployments")"
+          worker_versions="$(jq --raw-output '[.result.deployments[0].versions[]? | "\(.version_id)@\(.percentage)%"] | join(", ")' <<<"$worker_deployments")"
+          test -n "$worker_deployment_id"
+          test -n "$worker_versions"
+          revision="$(gcloud run services describe "$CLOUD_RUN_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status.latestReadyRevisionName)')"
+          {
+            echo "## Production deployment"
+            echo
+            echo "- Commit: $GITHUB_SHA"
+            echo "- Cloud Run image digest: $IMAGE_DIGEST"
+            echo "- Cloud Run revision: $revision"
+            echo "- Cloud Run URL: $RUN_URL"
+            echo "- Worker deployment: $worker_deployment_id"
+            echo "- Worker version(s): $worker_versions"
+            echo "- Worker: $worker_url (unauthenticated API rejected)"
+            echo "- Cloud Run health and unauthenticated API checks passed."
+            echo "- Cloud Run environment variable names were preserved."
+          } >> "$GITHUB_STEP_SUMMARY"

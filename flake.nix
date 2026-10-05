@@ -23,6 +23,8 @@
             nodejs_24
             openjdk17
             ffmpeg
+            actionlint
+            shellcheck
           ];
 
           shellHook = ''

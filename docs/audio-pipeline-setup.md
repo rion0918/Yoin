@@ -23,6 +23,65 @@ npm --prefix backend ci
 
 AI予算0での接続確認と、有料APIを使う確認は区別します。リポジトリの既定値0は文字起こし・曲生成を開始しません。基盤の料金はAI累積10ドルとは別です。
 
+## GitHub Actionsの本番配置設定
+
+[ADR 0013](adr/0013-github-actions-cicd.md)に従い、PRで全チェックを実行し、成功したmainだけを既存のCloud Run・D1・Workerへ反映します。`.github/workflows/ci.yml`が設定の入口です。PR検証には読み取り権限だけを付け、本番配置ジョブは`production` Environmentに限定します。
+
+### Google CloudのOIDCと配置権限
+
+GitHubへサービスアカウント鍵を保存しません。Yoinプロジェクト`yoin-app-20261004`（project number `300039436163`）に管理者権限を持つGoogle Cloudアカウントで`gcloud auth login`した開発端末から、専用`yoin-github-deployer`サービスアカウントとWorkload Identity Federationを一度設定します。
+
+```sh
+export YOIN_PROJECT_ID=yoin-app-20261004
+export YOIN_PROJECT_NUMBER=300039436163
+export YOIN_GH_POOL=yoin-github-actions
+export YOIN_GH_PROVIDER=yoin-repository-main
+export YOIN_DEPLOY_SA=yoin-github-deployer
+
+gcloud services enable iam.googleapis.com iamcredentials.googleapis.com sts.googleapis.com --project="$YOIN_PROJECT_ID"
+gcloud iam workload-identity-pools create "$YOIN_GH_POOL" --project="$YOIN_PROJECT_ID" --location=global --display-name='Yoin GitHub Actions'
+gcloud iam workload-identity-pools providers create-oidc "$YOIN_GH_PROVIDER" \
+  --project="$YOIN_PROJECT_ID" --location=global --workload-identity-pool="$YOIN_GH_POOL" \
+  --display-name='Yoin main production deployment' \
+  --issuer-uri='https://token.actions.githubusercontent.com' \
+  --attribute-mapping='google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.repository_owner_id=assertion.repository_owner_id,attribute.ref=assertion.ref,attribute.workflow_ref=assertion.workflow_ref,attribute.environment=assertion.environment,attribute.event_name=assertion.event_name' \
+  --attribute-condition="assertion.repository_id == '1403380512' && assertion.repository_owner_id == '180129292' && assertion.ref == 'refs/heads/main' && assertion.workflow_ref == 'rion0918/Yoin/.github/workflows/ci.yml@refs/heads/main' && assertion.environment == 'production' && assertion.event_name in ['push', 'workflow_dispatch']"
+gcloud iam service-accounts create "$YOIN_DEPLOY_SA" --project="$YOIN_PROJECT_ID" --display-name='Yoin GitHub Actions deployer'
+```
+
+既存のpool、Provider、サービスアカウントがある場合は作り直さず、属性と条件を確認して再利用します。専用アカウントにはGitHubの当該リポジトリからの偽装を許可し、次の役割だけを対象リソースに割り当てます。
+
+```sh
+export YOIN_DEPLOY_EMAIL="$YOIN_DEPLOY_SA@$YOIN_PROJECT_ID.iam.gserviceaccount.com"
+export YOIN_POOL_RESOURCE="projects/$YOIN_PROJECT_NUMBER/locations/global/workloadIdentityPools/$YOIN_GH_POOL"
+
+gcloud iam service-accounts add-iam-policy-binding "$YOIN_DEPLOY_EMAIL" \
+  --project="$YOIN_PROJECT_ID" --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/$YOIN_POOL_RESOURCE/attribute.repository_id/1403380512"
+gcloud run services add-iam-policy-binding yoin-audio --project="$YOIN_PROJECT_ID" --region=asia-northeast1 \
+  --member="serviceAccount:$YOIN_DEPLOY_EMAIL" --role=roles/run.developer
+gcloud iam service-accounts add-iam-policy-binding "yoin-audio@$YOIN_PROJECT_ID.iam.gserviceaccount.com" \
+  --project="$YOIN_PROJECT_ID" --member="serviceAccount:$YOIN_DEPLOY_EMAIL" --role=roles/iam.serviceAccountUser
+gcloud artifacts repositories add-iam-policy-binding yoin-runtime --project="$YOIN_PROJECT_ID" --location=asia-northeast1 \
+  --member="serviceAccount:$YOIN_DEPLOY_EMAIL" --role=roles/artifactregistry.writer
+gcloud iam workload-identity-pools providers describe "$YOIN_GH_PROVIDER" \
+  --project="$YOIN_PROJECT_ID" --location=global --workload-identity-pool="$YOIN_GH_POOL" --format='value(name)'
+```
+
+最後のコマンドが出力するProvider名と`$YOIN_DEPLOY_EMAIL`をGitHubの **Settings → Environments → production → Environment variables** に、`GCP_WORKLOAD_IDENTITY_PROVIDER`、`GCP_DEPLOY_SERVICE_ACCOUNT`として登録します。同Environmentに`GCP_PROJECT_ID=yoin-app-20261004`と`CLOUDFLARE_ACCOUNT_ID=3b7d7afda6c8bf0aa72256c171dd5f04`も登録します。Google Cloudの役割は[Cloud Run公式の必要権限](https://docs.cloud.google.com/run/docs/deploying#required_roles)に基づき、サービス・実行ID・Artifact Registryへ分けています。
+
+### Cloudflare tokenとGitHubの保護設定
+
+Cloudflareで対象アカウントだけを指定し、Workers Scripts Edit、D1 Edit、Workers Workflows Edit、R2 Readを持つカスタムAPI tokenを発行します。GitHubの`production` EnvironmentにSecret `CLOUDFLARE_API_TOKEN`として登録します。秘密値はリポジトリやチャットに記録しません。[Cloudflare公式手順](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)も参照してください。
+
+`production` Environmentのdeployment branch policyをprotected branchesのみにします。`verify`が登録済みcheckとして現れるよう、最初にワークフローを含むPRを作成して検証を実行してから、main保護を設定します。mainではPRと`verify`成功を必須化し、人の必須承認数は0、管理者にも保護を適用、force push・削除を禁止します。
+
+本番へ書き込む前にWorkerの`AI_BUDGET_USD`をGitHub Actionsから読み、`backend/wrangler.jsonc`と一致しなければ停止します。値を合わせる前にD1の利用額・未確定予約とPoCからの移管額を照合してください。WorkerのGoogle keyとサービス用tokenはGitHubへ複製しません。Cloud Runはイメージだけを更新し、既存の`GEMINI_API_KEY`、`MEDIA_SERVICE_TOKEN`、`MEDIA_ORIGIN`が保持されることも確認します。
+
+### デプロイ失敗時の再開
+
+段階が失敗すると、その後の本番変更へ進みません。同じmainコミットのActions runを再実行します。Cloud Runの更新後に停止した場合はD1とWorkerは未変更です。D1適用後にWorker反映が止まった場合は、Wranglerが適用済みのmigrationを認識するため再実行できます。Worker反映後の確認で停止した場合は、同じバージョンを再配置して原因を調べます。予算台帳や有料試行を初期化して復旧しないでください。配置のコミット、イメージdigest、Cloud Run revisionはActions summaryに残します。
+
 ## Google APIの設定
 
 1. [Google AI StudioのAPIキー画面](https://aistudio.google.com/apikey)を開き、Yoin検証用のプロジェクトを選びます。既存キーを使うか、Create API keyから作成します。

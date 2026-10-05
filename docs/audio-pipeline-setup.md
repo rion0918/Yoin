@@ -72,7 +72,7 @@ gcloud iam workload-identity-pools providers describe "$YOIN_GH_PROVIDER" \
 
 ### Cloudflare tokenとGitHubの保護設定
 
-Cloudflareで対象アカウントだけを指定し、Workers Scripts Edit、D1 Edit、Workers Workflows Edit、R2 Readを持つカスタムAPI tokenを発行します。GitHubの`production` EnvironmentにSecret `CLOUDFLARE_API_TOKEN`として登録します。秘密値はリポジトリやチャットに記録しません。[Cloudflare公式手順](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)も参照してください。
+Cloudflareで対象アカウントだけを指定し、Workers Scripts EditとD1 Editを持つAPI tokenを発行します。既存Workerの配置にはWorkersの編集権限が必要で、D1マイグレーションにはD1 Editを使います。Workerのbindingとして設定したWorkflowやR2には、この配置処理から個別にアクセスしないため、専用のWorkflow編集権限やR2 Readは付けません。[Cloudflareの権限説明](https://developers.cloudflare.com/workers/authorization/)を参照してください。GitHubの`production` EnvironmentにSecret `YOIN_API_TOKEN`として登録します。workflow内ではこのSecretを`CLOUDFLARE_API_TOKEN`環境変数としてWranglerとCloudflare APIへ渡します。秘密値はリポジトリやチャットに記録しません。[Cloudflare公式のGitHub Actions手順](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)も参照してください。
 
 `production` Environmentのdeployment branch policyをprotected branchesのみにします。`verify`が登録済みcheckとして現れるよう、最初にワークフローを含むPRを作成して検証を実行してから、main保護を設定します。mainではPRと`verify`成功を必須化し、人の必須承認数は0、管理者にも保護を適用、force push・削除を禁止します。
 

@@ -113,7 +113,7 @@ jobs:
 
       - name: Reconcile production AI budget before any deployment
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.YOIN_API_TOKEN }}
         run: |
           set -euo pipefail
           configured_budget="$(jq --raw-output '.vars.AI_BUDGET_USD' backend/wrangler.jsonc)"
@@ -168,7 +168,7 @@ jobs:
 
       - name: Apply D1 migrations and deploy Worker
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.YOIN_API_TOKEN }}
         run: |
           nix develop --impure --command bash -e -o pipefail -c '
             cd backend
@@ -178,7 +178,7 @@ jobs:
 
       - name: Verify Cloud Run and Worker after deployment
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.YOIN_API_TOKEN }}
           RUN_URL: ${{ steps.deploy_cloud_run.outputs.run_url }}
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           EXPECTED_ENV_NAMES: ${{ steps.media-config.outputs.env_names }}

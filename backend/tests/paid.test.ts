@@ -4,6 +4,7 @@ import { GoogleProviderError } from "../../pipeline/google.ts";
 import { type JobRow, ownedJob } from "../database.ts";
 import initialSchema from "../migrations/0001_initial.sql?raw";
 import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
+import { applyAccountSchema } from "./schema.ts";
 
 const schema = `${initialSchema}\n${runtimeSchema}`;
 
@@ -17,7 +18,6 @@ beforeEach(async () => {
   await reset();
   bindings = {
     ...env,
-    OWNER_ID: "private-tester",
     AI_BUDGET_USD: "10",
   } as unknown as Env;
   await bindings.DB.batch(
@@ -27,6 +27,7 @@ beforeEach(async () => {
       .filter(Boolean)
       .map((statement) => bindings.DB.prepare(statement)),
   );
+  await applyAccountSchema(bindings.DB);
   await bindings.DB.prepare(
     "INSERT INTO drafts (id, owner_id, title, created_at) VALUES ('draft', 'private-tester', '旅', '2026-10-04')",
   ).run();
@@ -204,6 +205,30 @@ it("makes no paid call with the default zero budget", async () => {
   expect(submissions).toBe(0);
 });
 
+it("shares the cumulative budget across different owners", async () => {
+  bindings.AI_BUDGET_USD = "0.7";
+  await paidCall(bindings, job, "first", "transcribe", 0.6, async () => ({
+    value: {},
+    costUsd: 0.6,
+    usage: {},
+  }));
+  await bindings.DB.prepare(
+    "INSERT INTO drafts (id, owner_id, title, created_at) VALUES ('other-draft', 'other', '旅', '2026-10-05')",
+  ).run();
+  await bindings.DB.prepare(
+    "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, created_at) VALUES ('other-job', 'other', 'other-draft', 'prepare', 'other-key', 'hash', '2026-10-05')",
+  ).run();
+  const other = await ownedJob(bindings, "other-job", "other");
+  let submissions = 0;
+  await expect(
+    paidCall(bindings, other, "second", "transcribe", 0.6, async () => {
+      submissions++;
+      return { value: {}, costUsd: 0.6, usage: {} };
+    }),
+  ).rejects.toMatchObject({ code: "ai_budget_exhausted" });
+  expect(submissions).toBe(0);
+});
+
 it("allows an explicit retry only when validation failed before submission", async () => {
   await expect(
     paidCall(bindings, job, "stt-job", "transcribe", 0.6, async () => {
@@ -235,4 +260,42 @@ it("allows an explicit retry only when validation failed before submission", asy
   );
   expect(result).toEqual({ text: "旅の会話" });
   expect(submissions).toBe(1);
+});
+
+it("retains actual cost if deletion finishes while a provider response is in flight", async () => {
+  await expect(
+    paidCall(bindings, job, "late-result", "music", 0.08, async () => {
+      await bindings.DB.prepare(
+        "INSERT INTO accounts (uid, status) VALUES ('private-tester', 'deleted')",
+      ).run();
+      await bindings.DB.prepare(
+        "DELETE FROM provider_attempts WHERE owner_id = 'private-tester'",
+      ).run();
+      return { value: {}, costUsd: 0.12, usage: {} };
+    }),
+  ).rejects.toBeDefined();
+  expect(
+    await bindings.DB.prepare(
+      "SELECT status, amount_micros FROM budget_ledger WHERE id = 'late-result'",
+    ).first(),
+  ).toEqual({ status: "cost_overrun", amount_micros: 120000 });
+  expect(
+    await bindings.AUDIO.head("results/private-tester/late-result.json"),
+  ).toBeNull();
+});
+
+it("keeps a known overrun when deletion is pending but its private attempt still exists", async () => {
+  await expect(
+    paidCall(bindings, job, "deleting-result", "music", 0.08, async () => {
+      await bindings.DB.prepare(
+        "INSERT INTO accounts (uid, status) VALUES ('private-tester', 'deleting')",
+      ).run();
+      return { value: {}, costUsd: 0.12, usage: {} };
+    }),
+  ).rejects.toBeDefined();
+  expect(
+    await bindings.DB.prepare(
+      "SELECT status, amount_micros FROM budget_ledger WHERE id = 'deleting-result'",
+    ).first(),
+  ).toEqual({ status: "cost_overrun", amount_micros: 120000 });
 });

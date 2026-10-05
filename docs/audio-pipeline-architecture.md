@@ -23,7 +23,7 @@ flowchart TD
 | 部分 | 責務 | 実装の入口 |
 | :--- | :--- | :--- |
 | Expoアプリ | 録音、取り込み、下書き保存、歌詞編集、状態取得、再生 | [セッション操作](../src/useSession.ts) |
-| 端末内保存 | Documentsに音声、SQLiteに状態、SecureStoreにAPI接続先とトークン | [保存](../src/platform/storage.native.ts) |
+| 端末内保存 | UIDごとのDocumentsに音声、UIDごとのSQLiteに状態。認証セッションはFirebase SDK | [保存](../src/platform/storage.native.ts) |
 | Workers API | 認証、所有者確認、multipart、ジョブ受付、署名URL、内部callback | [API](../backend/api.ts) |
 | D1 | 下書き、発話、歌詞版、ジョブ、有料試行、話者名・登録状態・所有者付き声特徴 | [初期スキーマ](../backend/migrations/0001_initial.sql)・[実行権の追加](../backend/migrations/0002_audio_runtime.sql)・[話者登録](../backend/migrations/0003_speaker_profiles.sql) |
 | R2 | 元音声、分割音声、生成MP3、生応答、回復用結果、非公開の登録音声 | [音声API](../backend/media-api.ts)・[callback](../backend/runtime-api.ts)・[話者API](../backend/speakers.ts) |
@@ -88,8 +88,8 @@ flowchart LR
 
 ## 認証と保存先
 
-- アプリのBearerトークンをWorkerがSHA256と照合し、固定の単一所有者へ対応させる。
-- 元トークンとAPI接続先は端末のSecureStoreへ保存する。Googleキーは端末に置かない。
+- アプリのFirebase IDトークンをWorkerが署名・発行元・対象プロジェクト・期限・Googleプロバイダーで検証する。検証済みメールの許可リストを確認し、UIDを所有者にする。
+- API URLとFirebase非秘密設定はビルド時に固定する。トークン更新はFirebase SDKが行い、認証更新を理由に有料POSTを再送しない。Google AIキーは端末に置かない。
 - R2の公開URLは無効。音声取得・Range再生は所有者を確認した署名URLを使う。再生URLの標準期限は5分。
 - WorkerからCloud Runの処理ルートへは別のBearerトークンで認証する。公開 `/health` は `ok` だけを返す。
 - 内部URLはHTTPメソッド・用途・期限・ジョブ・所有者・試行を検証する。処理用URLは最大1時間。
@@ -103,6 +103,8 @@ flowchart LR
 
 Workflowは外部呼び出し前にD1へ試行と予約額を保存します。Cloud Runは署名claim URLで `runtime_claimed_at` を一度だけ取得してからGoogleを呼びます。これは同じ試行の重複実行を防ぐためのD1による排他制御です。
 
+費用と未確定予約は全利用者共通の `budget_ledger` で累積管理する。`0004` は既存試行を複写し、個人に紐づく `provider_attempts` の削除後も金額・状態を残す。
+
 MP3、生応答の `.raw.json`、小さい回復用 `.json` をR2へ保存してからCloud Runが応答します。応答喪失後は保存結果を読み、予算を精算して再利用します。結果がない送信済み試行は `needs_reconciliation` で予約を保持し、有料POSTを自動再送しません。入力拒否を確認できた試行は予約を解放し、予約超過の料金見積もりでは新規呼び出しを止めます。
 
 これはアプリ側の予算制御で、プロバイダー請求の厳密な上限保証ではありません。基盤費用は別に扱います。[予算実装](../backend/paid.ts)・[ローカル台帳](../pipeline/budget.ts)・[運用手順](audio-pipeline-setup.md#障害と結果不明の確認)を参照してください。
@@ -113,3 +115,7 @@ MP3、生応答の `.raw.json`、小さい回復用 `.json` をR2へ保存して
 - [設定・デプロイ・運用](audio-pipeline-setup.md)
 - [内部テスト](internal-testing.md)
 - [現行構成のADR](adr/0011-cloudflare-free-audio-runtime.md)・[ADR一覧](adr/README.md)
+
+## 本人データの削除
+
+削除APIがアカウントをdeletingにして処理を遮断し、専用 `DeleteAccountWorkflow` が既存Workflow状態・Firebase・D1・R2を削除する。受け付けた要求と途中失敗を同じWorkflowで再開する。署名URLとコールバックはDBリソースから所有者を解決し、ジョブ・クリップ・試行を照合する。削除中に完了したR2書き込みも削除する。拒否記録は24時間、独立費用台帳は継続保持する。[配布・削除運用](play-internal-release.md)と[ADR 0014](adr/0014-firebase-account-isolation.md)を参照する。

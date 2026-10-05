@@ -8,6 +8,11 @@ import {
   type SpeakerProfile,
   type SpeakerSampleDocument,
 } from "../shared/contracts.ts";
+import {
+  assertAccountActive,
+  finishOwnedUpload,
+  resourceOwner,
+} from "./accounts.ts";
 import { enrollSpeakerAudio } from "./media.ts";
 import { fixedBody } from "./media-api.ts";
 import { verifySignedUrl } from "./security.ts";
@@ -152,7 +157,8 @@ export async function serveSpeakerSample(
   sampleId: string,
 ) {
   await verifySignedUrl(request, env);
-  const sample = await ownedSample(env, env.OWNER_ID, speakerId, sampleId);
+  const owner = await resourceOwner(env, "speaker_samples", sampleId);
+  const sample = await ownedSample(env, owner, speakerId, sampleId);
   if (sample.status === "uploading")
     throw new HttpError(409, "speaker_sample_not_uploaded");
   const object = await env.AUDIO.get(sample.object_key);
@@ -201,6 +207,7 @@ async function enroll(
     await env.AUDIO.put(key, JSON.stringify(result), {
       httpMetadata: { contentType: "application/json" },
     });
+  await finishOwnedUpload(env, owner, key);
   await env.DB.batch([
     env.DB.prepare(
       "UPDATE speaker_profiles SET sample_id = ?, model_version = ?, embedding_json = ? WHERE id = ? AND owner_id = ? AND pending_sample_id = ?",
@@ -264,6 +271,7 @@ export async function handleSpeakers(
   owner: string,
   path: string,
 ): Promise<Response | null> {
+  await assertAccountActive(env, owner);
   if (path === "/speakers") {
     if (request.method === "GET")
       return Response.json(await speakerProfiles(env, owner));
@@ -272,9 +280,9 @@ export async function handleSpeakers(
     const speakerId = id(body.id);
     const name = text(body.name, 80);
     const inserted = await env.DB.prepare(
-      "INSERT OR IGNORE INTO speaker_profiles (id, owner_id, name, created_at) VALUES (?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO speaker_profiles (id, owner_id, name, created_at) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
     )
-      .bind(speakerId, owner, name, new Date().toISOString())
+      .bind(speakerId, owner, name, new Date().toISOString(), owner)
       .run();
     const row = await ownedSpeaker(env, owner, speakerId);
     if (row.name !== name)
@@ -363,7 +371,7 @@ export async function handleSpeakers(
     const key = `voices/${owner}/${speakerId}/${sampleId}.audio`;
     await env.DB.batch([
       env.DB.prepare(
-        "INSERT INTO speaker_samples (id, speaker_id, owner_id, mime_type, size_bytes, duration_ms, object_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO speaker_samples (id, speaker_id, owner_id, mime_type, size_bytes, duration_ms, object_key, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
       ).bind(
         sampleId,
         speakerId,
@@ -373,6 +381,7 @@ export async function handleSpeakers(
         duration,
         key,
         new Date().toISOString(),
+        owner,
       ),
       env.DB.prepare(
         "UPDATE speaker_profiles SET pending_sample_id = ? WHERE id = ? AND owner_id = ?",
@@ -398,6 +407,7 @@ export async function handleSpeakers(
         httpMetadata: { contentType: sample.mime_type },
       }),
     );
+    await finishOwnedUpload(env, owner, sample.object_key);
     await env.DB.prepare(
       "UPDATE speaker_samples SET status = 'uploaded' WHERE id = ? AND owner_id = ?",
     )

@@ -1,24 +1,29 @@
 import { env, reset } from "cloudflare:test";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleRequest } from "../api.ts";
 import initialSchema from "../migrations/0001_initial.sql?raw";
 import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
 import speakerSchema from "../migrations/0003_speaker_profiles.sql?raw";
+import { applyAccountSchema } from "./schema.ts";
 
 const schema = `${initialSchema}\n${runtimeSchema}\n${speakerSchema}`;
 
-import { sha256 } from "../security.ts";
+import { firebaseToken, mockFirebaseKeys } from "./auth-fixture.ts";
+
+afterEach(() => vi.restoreAllMocks());
+
 import type { Env } from "../types.ts";
 
-const testerToken = "test-credential-with-at-least-thirty-two-bytes";
+let testerToken = "";
 const draftId = "e22a50aa-1d25-4dd0-bfba-f6ee2c101911";
 let bindings: Env;
 
 beforeEach(async () => {
   await reset();
+  mockFirebaseKeys();
+  testerToken = await firebaseToken();
   bindings = {
     ...env,
-    TESTER_TOKEN_SHA256: await sha256(testerToken),
     MEDIA_SIGNING_SECRET: "test-signing-secret-with-at-least-thirty-two-bytes",
   } as unknown as Env;
   await bindings.DB.batch(
@@ -28,6 +33,7 @@ beforeEach(async () => {
       .filter(Boolean)
       .map((statement) => bindings.DB.prepare(statement)),
   );
+  await applyAccountSchema(bindings.DB);
 });
 
 function request(
@@ -50,6 +56,36 @@ function request(
 }
 
 describe("private API", () => {
+  it("accepts account deletion as a durable operation", async () => {
+    bindings.DELETE_ACCOUNT = {
+      create: vi.fn(async () => ({ id: "deletion" })),
+    } as unknown as Env["DELETE_ACCOUNT"];
+    const response = await request("/account/deletion", "POST", {});
+    expect(response.status).toBe(202);
+    expect(await response.json()).toMatchObject({ status: "deleting" });
+    expect((await request("/songs")).status).toBe(403);
+  });
+  it("removes a workflow created after deletion started during dispatch", async () => {
+    await seedReview({
+      id: "block",
+      text: "秋の風",
+      sourceUtteranceIds: ["clip:u:0:1"],
+    });
+    const remove = vi.fn(async () => {});
+    bindings.GENERATE = {
+      create: async () => {
+        await bindings.DB.prepare(
+          "INSERT INTO accounts (uid, status) VALUES ('private-tester', 'deleting')",
+        ).run();
+        return { delete: remove };
+      },
+    } as unknown as Env["GENERATE"];
+    await request(`/drafts/${draftId}/generate`, "POST", {
+      revision: 1,
+      idempotencyKey: "deletion-race",
+    });
+    expect(remove).toHaveBeenCalledOnce();
+  });
   it("offers authenticated speaker registration instead of anonymous labels only", async () => {
     const created = await request("/speakers", "POST", {
       id: "speaker-a",

@@ -4,9 +4,10 @@ export type Env = {
   AUDIO: R2Bucket;
   PREPARE: Workflow<WorkflowParams>;
   GENERATE: Workflow<WorkflowParams>;
+  DELETE_ACCOUNT: Workflow<{ uid: string }>;
   MEDIA_SERVICE_URL: string;
-  OWNER_ID: string;
-  TESTER_TOKEN_SHA256: string;
+  FIREBASE_PROJECT_ID: string;
+  ALLOWED_TESTER_EMAILS: string;
   MEDIA_SIGNING_SECRET: string;
   MEDIA_SERVICE_TOKEN: string;
   AI_BUDGET_USD: string;

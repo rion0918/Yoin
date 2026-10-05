@@ -51,10 +51,10 @@ export function LibraryScreen({
             <Feather name="users" size={20} color="#332317" />
           </ActionButton>
           <ActionButton
-            label="接続設定"
+            label="設定"
             onPress={onSettings}
             style={styles.newRecording}
-            testID="connection-settings"
+            testID="account-settings"
           >
             <Feather name="settings" size={21} color="#332317" />
           </ActionButton>

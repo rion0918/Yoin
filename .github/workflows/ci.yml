@@ -47,7 +47,7 @@ jobs:
         run: nix develop --command bash -euo pipefail scripts/ci-verify.sh
 
       - name: Upload verified audio image
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: yoin-audio-${{ github.sha }}
@@ -58,7 +58,7 @@ jobs:
   deploy:
     name: deploy production
     needs: verify
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment:
@@ -122,12 +122,34 @@ jobs:
             --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/yoin-private-api/settings")"
           test "$(jq --raw-output '.success' <<<"$settings")" = true
+          test "$(jq --raw-output '.vars.FIREBASE_PROJECT_ID' backend/wrangler.jsonc)" = "$GCP_PROJECT_ID"
+          jq --exit-status '.result.bindings[]? | select(.name == "ALLOWED_TESTER_EMAILS" and .type == "secret_text")' <<<"$settings" >/dev/null
           live_budget="$(jq --raw-output '[.result.bindings[]? | select(.name == "AI_BUDGET_USD") | .text][0] // ""' <<<"$settings")"
           if [[ -z "$live_budget" || "$live_budget" != "$configured_budget" ]]; then
             echo "Production AI_BUDGET_USD differs from the tracked deployment setting; no Cloud Run, D1, or Worker changes were made." >&2
             exit 1
           fi
           echo "Production AI budget matches the tracked configuration."
+
+      - name: Check current Cloud Run configuration
+        id: media-config
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CLOUD_RUN_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format=json > "$RUNNER_TEMP/cloud-run-before.json"
+          env_names="$(jq --compact-output '[.spec.template.spec.containers[].env[]?.name] | sort' "$RUNNER_TEMP/cloud-run-before.json")"
+          for required in GEMINI_API_KEY MEDIA_SERVICE_TOKEN MEDIA_ORIGIN; do
+            jq --exit-status --arg name "$required" '(.spec.template.spec.containers[].env[]?.name) | select(. == $name)' "$RUNNER_TEMP/cloud-run-before.json" >/dev/null
+          done
+          echo "env_names=$env_names" >> "$GITHUB_OUTPUT"
+
+      - name: Apply D1 migrations before updating services
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.YOIN_API_TOKEN }}
+        run: |
+          nix develop --impure --command bash -e -o pipefail -c '
+            cd backend
+            npx wrangler d1 migrations apply yoin --remote
+          '
 
       - name: Tag and push verified image
         id: image
@@ -142,17 +164,6 @@ jobs:
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
-      - name: Check current Cloud Run configuration
-        id: media-config
-        run: |
-          set -euo pipefail
-          gcloud run services describe "$CLOUD_RUN_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format=json > "$RUNNER_TEMP/cloud-run-before.json"
-          env_names="$(jq --compact-output '[.spec.template.spec.containers[].env[]?.name] | sort' "$RUNNER_TEMP/cloud-run-before.json")"
-          for required in GEMINI_API_KEY MEDIA_SERVICE_TOKEN MEDIA_ORIGIN; do
-            jq --exit-status --arg name "$required" '(.spec.template.spec.containers[].env[]?.name) | select(. == $name)' "$RUNNER_TEMP/cloud-run-before.json" >/dev/null
-          done
-          echo "env_names=$env_names" >> "$GITHUB_OUTPUT"
-
       - name: Deploy Cloud Run and verify health
         id: deploy_cloud_run
         env:
@@ -166,13 +177,12 @@ jobs:
           test "$(curl --silent --show-error --fail --retry 10 --retry-all-errors --retry-delay 2 "$run_url/health")" = ok
           echo "run_url=$run_url" >> "$GITHUB_OUTPUT"
 
-      - name: Apply D1 migrations and deploy Worker
+      - name: Deploy Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.YOIN_API_TOKEN }}
         run: |
           nix develop --impure --command bash -e -o pipefail -c '
             cd backend
-            npx wrangler d1 migrations apply yoin --remote
             npx wrangler deploy
           '
 
@@ -188,7 +198,7 @@ jobs:
           actual_env_names="$(jq --compact-output '[.spec.template.spec.containers[].env[]?.name] | sort' "$RUNNER_TEMP/cloud-run-after.json")"
           test "$actual_env_names" = "$EXPECTED_ENV_NAMES"
           test "$(curl --silent --show-error --fail --retry 10 --retry-all-errors --retry-delay 2 "$RUN_URL/health")" = ok
-          for route in inspect probe transcribe lyrics music; do
+          for route in inspect probe transcribe lyrics music enroll-speaker identify-speakers accounts/delete; do
             status="$(curl --silent --output /dev/null --write-out '%{http_code}' --request POST "$RUN_URL/$route" --data '{}')"
             test "$status" = 401
           done

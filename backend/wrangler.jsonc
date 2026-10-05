@@ -7,7 +7,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "vars": {
-    "OWNER_ID": "private-tester",
+    "FIREBASE_PROJECT_ID": "yoin-app-20261004",
     "AI_BUDGET_USD": "8.733897",
     "PUBLIC_API_URL": "https://yoin-private-api.h-rion-0910.workers.dev",
     "MEDIA_SERVICE_URL": "https://yoin-audio-300039436163.asia-northeast1.run.app"
@@ -31,6 +31,11 @@
       "name": "yoin-generate",
       "binding": "GENERATE",
       "class_name": "GenerateWorkflow"
+    },
+    {
+      "name": "yoin-delete-account",
+      "binding": "DELETE_ACCOUNT",
+      "class_name": "DeleteAccountWorkflow"
     }
   ],
   "observability": { "enabled": false }

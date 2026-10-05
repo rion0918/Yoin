@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
@@ -24,20 +23,16 @@ async function fixture(t) {
   );
   return directory;
 }
-test("setup keeps tester credentials private and uses only the handed-off budget", async (t) => {
+test("setup keeps service credentials private and uses only the handed-off budget", async (t) => {
   const project = await fixture(t);
   assert.deepEqual(await setupLocal(project), { remainingUsd: 9.42 });
-  const token = await readFile(
-    join(project, ".local/tester-token.txt"),
-    "utf8",
-  );
   const env = await readFile(join(project, "backend/.dev.vars"), "utf8");
-  assert.match(
-    env,
-    new RegExp(
-      `TESTER_TOKEN_SHA256=${createHash("sha256").update(token).digest("hex")}`,
-    ),
-  );
+  assert.match(env, /FIREBASE_PROJECT_ID=yoin-app-20261004/);
+  assert.match(env, /ALLOWED_TESTER_EMAILS=\[\]/);
+  assert.equal(env.includes("TESTER_TOKEN"), false);
+  await assert.rejects(stat(join(project, ".local/tester-token.txt")), {
+    code: "ENOENT",
+  });
   assert.match(env, /AI_BUDGET_USD=9.42/);
   assert.match(env, /MEDIA_SERVICE_URL=http:\/\/127.0.0.1:8080/);
   assert.equal(env.includes("GEMINI_API_KEY"), false);
@@ -52,7 +47,6 @@ test("setup keeps tester credentials private and uses only the handed-off budget
     (await stat(join(project, ".local/media.env"))).mode & 0o777,
     0o600,
   );
-  assert.equal(env.includes(token), false);
   assert.equal(
     (await stat(join(project, "backend/.dev.vars"))).mode & 0o777,
     0o600,

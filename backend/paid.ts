@@ -1,4 +1,5 @@
 import { GoogleProviderError } from "../pipeline/google.ts";
+import { assertAccountActive, finishOwnedUpload } from "./accounts.ts";
 import type { JobRow } from "./database.ts";
 import { type Env, HttpError, ReconciliationError } from "./types.ts";
 
@@ -12,6 +13,24 @@ type CachedOutput<T> = PaidOutput<T> & { version: 1 };
 
 export const RESERVATION_USD = { transcribe: 0.6, lyrics: 0.5, music: 0.08 };
 
+async function retainCost<T>(
+  env: Env,
+  attemptId: string,
+  reserve: number,
+  output: PaidOutput<T>,
+) {
+  const cost = Math.ceil(output.costUsd * 1_000_000);
+  if (!Number.isSafeInteger(cost) || cost < 0) throw new ReconciliationError();
+  const status = cost > reserve ? "cost_overrun" : "succeeded";
+  await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE provider_attempts SET status = ?, amount_micros = ? WHERE id = ?",
+    ).bind(status, cost, attemptId),
+    env.DB.prepare(
+      "UPDATE budget_ledger SET status = ?, amount_micros = ? WHERE id = ?",
+    ).bind(status, cost, attemptId),
+  ]);
+}
 async function settle<T>(
   env: Env,
   job: JobRow,
@@ -56,6 +75,7 @@ export async function paidCall<T>(
   reserveUsd: number,
   call: () => Promise<PaidOutput<T>>,
 ): Promise<T> {
+  await assertAccountActive(env, job.owner_id);
   const reserve = Math.ceil(reserveUsd * 1_000_000);
   const previous = await env.DB.prepare(
     "SELECT status, output_key, amount_micros FROM provider_attempts WHERE id = ? AND owner_id = ?",
@@ -76,6 +96,7 @@ export async function paidCall<T>(
         output.costUsd < 0
       )
         throw new ReconciliationError();
+      await finishOwnedUpload(env, job.owner_id, outputKey);
       return await settle(env, job, attemptId, outputKey, reserve, output);
     }
     throw new ReconciliationError();
@@ -84,7 +105,7 @@ export async function paidCall<T>(
   if (!Number.isFinite(budget) || budget < 0 || budget > 10)
     throw new HttpError(503, "invalid_ai_budget");
   const claimed = await env.DB.prepare(
-    "INSERT INTO provider_attempts (id, job_id, owner_id, stage, status, amount_micros, created_at) SELECT ?, ?, ?, ?, 'submitted', ?, ? WHERE (SELECT COALESCE(SUM(amount_micros), 0) FROM provider_attempts WHERE owner_id = ?) + ? <= ? AND NOT EXISTS (SELECT 1 FROM provider_attempts WHERE owner_id = ? AND status = 'cost_overrun') ON CONFLICT(id) DO UPDATE SET job_id = excluded.job_id, status = 'submitted', amount_micros = excluded.amount_micros, created_at = excluded.created_at, runtime_claimed_at = NULL, error = NULL WHERE provider_attempts.owner_id = excluded.owner_id AND provider_attempts.status = 'failed_before_submission' AND provider_attempts.amount_micros = 0",
+    "INSERT INTO provider_attempts (id, job_id, owner_id, stage, status, amount_micros, created_at) SELECT ?, ?, ?, ?, 'submitted', ?, ? WHERE (SELECT COALESCE(SUM(amount_micros), 0) FROM budget_ledger) + ? <= ? AND NOT EXISTS (SELECT 1 FROM budget_ledger WHERE status = 'cost_overrun') AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active') ON CONFLICT(id) DO UPDATE SET job_id = excluded.job_id, status = 'submitted', amount_micros = excluded.amount_micros, created_at = excluded.created_at, runtime_claimed_at = NULL, error = NULL WHERE provider_attempts.owner_id = excluded.owner_id AND provider_attempts.status = 'failed_before_submission' AND provider_attempts.amount_micros = 0",
   )
     .bind(
       attemptId,
@@ -93,13 +114,12 @@ export async function paidCall<T>(
       stage,
       reserve,
       new Date().toISOString(),
-      job.owner_id,
       reserve,
       Math.floor(budget * 1_000_000),
       job.owner_id,
     )
     .run();
-  if (claimed.meta.changes !== 1) {
+  if (claimed.meta.changes < 1) {
     const duplicate = await env.DB.prepare(
       "SELECT id FROM provider_attempts WHERE id = ?",
     )
@@ -112,6 +132,8 @@ export async function paidCall<T>(
     const output = await call();
     if (!Number.isFinite(output.costUsd) || output.costUsd < 0)
       throw new ReconciliationError();
+    await retainCost(env, attemptId, reserve, output);
+    await assertAccountActive(env, job.owner_id);
     const outputKey = `results/${job.owner_id}/${attemptId}.json`;
     if (!(await env.AUDIO.head(outputKey)))
       await env.AUDIO.put(
@@ -121,6 +143,7 @@ export async function paidCall<T>(
           httpMetadata: { contentType: "application/json" },
         },
       );
+    await finishOwnedUpload(env, job.owner_id, outputKey);
     return await settle(env, job, attemptId, outputKey, reserve, output);
   } catch (error) {
     if (
@@ -132,7 +155,7 @@ export async function paidCall<T>(
       error instanceof GoogleProviderError && error.kind === "input"
     );
     await env.DB.prepare(
-      "UPDATE provider_attempts SET status = ?, amount_micros = CASE WHEN ? = 0 THEN 0 ELSE amount_micros END, error = ? WHERE id = ? AND owner_id = ?",
+      "UPDATE provider_attempts SET status = ?, amount_micros = CASE WHEN ? = 0 THEN 0 ELSE amount_micros END, error = ? WHERE id = ? AND owner_id = ? AND status != 'cost_overrun'",
     )
       .bind(
         sent ? "needs_reconciliation" : "failed_before_submission",

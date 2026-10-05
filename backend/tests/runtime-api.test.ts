@@ -6,13 +6,13 @@ import migration from "../migrations/0002_audio_runtime.sql?raw";
 import speakerMigration from "../migrations/0003_speaker_profiles.sql?raw";
 import { signedUrl } from "../security.ts";
 import type { Env } from "../types.ts";
+import { applyAccountSchema } from "./schema.ts";
 
 let bindings: Env;
 beforeEach(async () => {
   await reset();
   bindings = {
     ...env,
-    OWNER_ID: "private-tester",
     MEDIA_SIGNING_SECRET: "s".repeat(64),
     PUBLIC_API_URL: "https://yoin.test",
   } as unknown as Env;
@@ -23,6 +23,7 @@ beforeEach(async () => {
       .filter(Boolean)
       .map((s) => bindings.DB.prepare(s)),
   );
+  await applyAccountSchema(bindings.DB);
   await bindings.DB.prepare(
     "INSERT INTO drafts (id, owner_id, title, created_at) VALUES ('draft', 'private-tester', '旅', '2026-10-04')",
   ).run();
@@ -56,6 +57,17 @@ it("claims a reserved provider attempt only once across runtime requests", async
     request("claim", "POST"),
   ]);
   expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+});
+
+it("resolves callback ownership from the attempt instead of a fixed environment owner", async () => {
+  await bindings.DB.prepare("UPDATE drafts SET owner_id = 'alice'").run();
+  await bindings.DB.prepare("UPDATE jobs SET owner_id = 'alice'").run();
+  await bindings.DB.prepare(
+    "UPDATE provider_attempts SET owner_id = 'alice'",
+  ).run();
+  expect((await request("claim", "POST")).status).toBe(200);
+  expect((await request("song", "PUT", "ID3audio")).status).toBe(200);
+  expect(await bindings.AUDIO.head("songs/alice/job.mp3")).not.toBeNull();
 });
 it("streams a generated song and persists the result before workflow settlement", async () => {
   expect((await request("song", "PUT", "ID3audio")).status).toBe(409);

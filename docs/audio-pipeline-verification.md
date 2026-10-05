@@ -2,6 +2,27 @@
 
 [ドキュメントの目次](README.md)へ
 
+## 2026-10-05 Google Play内部テスト向けの実装確認
+
+Googleログイン、UIDごとの端末・サーバーデータ分離、アカウント削除、個人情報を含まない累積費用台帳、Play内部テスト用の配布設定を実装しました。接続設定の入力画面を削除し、初回の流れをログイン、名前・声の登録、ライブラリに変更しています。今回の外部設定変更・D1移行・Cloud Run/Workerのデプロイ・Playへのアップロードは行っていません。以前の配置記録は下に実施時の状態として保持します。
+
+| 確認 | 結果 | 確認できた範囲・制約 |
+| :--- | :--- | :--- |
+| `npm run check`・`npm run typecheck`・`npm run backend:typecheck` | 成功 | Nix環境。アプリ・配布設定・バックエンドの静的確認 |
+| `npm test` | 97/97成功 | IDトークン取得、認証失敗時の有料POST再送防止、UID別保存キー、切り替え時の遅延応答・録音停止待ち、配布設定の不足・不一致を含む |
+| `npm run backend:test` | 54/54成功 | 署名・発行元・対象プロジェクト・期限・Google認証・検証済み許可メール、通常API・署名音声URL・話者・コールバックの所有者、削除と音声送信・Workflow作成の競合、削除後の費用保持・全利用者共通上限を確認。Google署名キーと応答はテスト用に置き換え、D1/R2はテストbinding |
+| `npm --prefix backend run test:media` | 9/9成功、スキップ0 | NixのFFmpeg/FFprobeで26分・60分の合成音声を処理。Firebase削除の内部APIは認証・入力・冪等性を確認し、Firebase Adminの呼び出しは置き換え |
+| `npm run export` | 成功 | Android・iOS・WebのExpo export。署名付きAABやAndroid実機での起動の確認ではない |
+| Worker `deploy --dry-run` | 成功 | 準備・生成・アカウント削除の3つのWorkflowを含むbundleを確認。実環境へは未反映 |
+| `actionlint`・`shellcheck scripts/ci-verify.sh`・`git diff --check` | 成功 | 手動反映の順序とCI設定を静的確認。GitHub Actions自体は未実行 |
+| `EAS_BUILD_PROFILE=playInternal npx expo config --type public` | 必須設定の不足で意図どおり失敗 | `google-services.json` が未配置。設定済みfixtureでは配布設定の検証が成功することを単体テストで確認 |
+
+認証、利用者分離、遅延応答、削除、費用保持、配布設定の回帰テストは、実装前にRED、実装後にGREENを確認しました。有料AIは呼び出していません。既存の開発テストデータと未確定予約を新しいUIDへ自動移管・初期化していません。
+
+残る作業は[Play内部テストの配布・運用手順](play-internal-release.md)に記載しています。Firebase Authenticationの有効化、3種類の署名証明書、`google-services.json`、EASプロジェクトID、テスター許可リスト、Cloud Run実行アカウントのFirebase削除権限は未設定です。実費・予約の照合、D1移行とサービス反映の後に署名付きAABを作成する必要があります。
+
+2つの実Googleアカウントでの分離、Nitro/Credential Managerによるログイン・キャンセル・再認証、再起動後の下書き復元、オフライン録音・取り込み・バックグラウンド録音・再生はAndroid実機で未確認です。削除途中の通信失敗・生成中の削除・削除済みトークン・遅延コールバック、削除Workflowの実行履歴消去・24時間後の拒否記録消去、Firebaseアカウントの実削除も実環境で未確認です。Play配布後の確認と実AI品質・長時間録音の受け入れは、自動チェックの成功と分けて記録します。
+
 ## 2026-10-05 話者登録・識別の実装状況
 
 話者登録とチャンク単位の識別を追加し、D1、Cloud Run、Workerの順に反映しました。実機で2人を登録して別内容の日本語会話から曲完成まで進める受け入れ確認は未完了です。

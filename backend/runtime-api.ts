@@ -1,4 +1,5 @@
 import { MAX_AUDIO_BYTES } from "../shared/contracts.ts";
+import { assertAccountActive, finishOwnedUpload } from "./accounts.ts";
 import { ownedJob } from "./database.ts";
 import { fixedBody } from "./media-api.ts";
 import { verifySignedUrl } from "./security.ts";
@@ -13,11 +14,12 @@ export async function runtimeCallback(
 ) {
   await verifySignedUrl(request, env);
   const attempt = await env.DB.prepare(
-    "SELECT job_id, stage, status, runtime_claimed_at FROM provider_attempts WHERE id = ? AND owner_id = ?",
+    "SELECT job_id, owner_id, stage, status, runtime_claimed_at FROM provider_attempts WHERE id = ?",
   )
-    .bind(attemptId, env.OWNER_ID)
+    .bind(attemptId)
     .first<{
       job_id: string;
+      owner_id: string;
       stage: string;
       status: string;
       runtime_claimed_at: string | null;
@@ -27,7 +29,8 @@ export async function runtimeCallback(
     !["submitted", "needs_reconciliation"].includes(attempt.status)
   )
     throw new HttpError(409, "invalid_runtime_attempt");
-  const job = await ownedJob(env, attempt.job_id, env.OWNER_ID);
+  await assertAccountActive(env, attempt.owner_id);
+  const job = await ownedJob(env, attempt.job_id, attempt.owner_id);
   if (action === "claim") {
     if (
       job.status !== "running" ||
@@ -40,7 +43,7 @@ export async function runtimeCallback(
     const claimed = await env.DB.prepare(
       "UPDATE provider_attempts SET runtime_claimed_at = ? WHERE id = ? AND owner_id = ? AND status = 'submitted' AND runtime_claimed_at IS NULL",
     )
-      .bind(new Date().toISOString(), attemptId, env.OWNER_ID)
+      .bind(new Date().toISOString(), attemptId, attempt.owner_id)
       .run();
     if (claimed.meta.changes !== 1)
       throw new HttpError(409, "runtime_attempt_already_claimed");
@@ -64,6 +67,7 @@ export async function runtimeCallback(
     await fixedBody(request, size, (body) =>
       env.AUDIO.put(key, body, { httpMetadata: { contentType: "audio/mpeg" } }),
     );
+    await finishOwnedUpload(env, job.owner_id, key);
     await env.DB.prepare(
       "INSERT OR IGNORE INTO audio_objects (id, owner_id, draft_id, object_key, mime_type, size_bytes, duration_ms, kind) VALUES (?, ?, ?, ?, 'audio/mpeg', ?, 0, 'song')",
     )
@@ -82,5 +86,6 @@ export async function runtimeCallback(
       httpMetadata: { contentType: "application/json" },
     }),
   );
+  await finishOwnedUpload(env, job.owner_id, key);
   return Response.json({ key });
 }

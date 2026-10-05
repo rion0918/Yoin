@@ -8,6 +8,7 @@ import {
   MAX_AUDIO_MS,
   type RegisteredSpeaker,
 } from "../shared/contracts.ts";
+import { resourceOwner } from "./accounts.ts";
 import {
   clips,
   type JobRow,
@@ -123,7 +124,11 @@ export async function prepareDraft(
   jobId: string,
   step: WorkflowStep,
 ) {
-  const job = await ownedJob(env, jobId, env.OWNER_ID);
+  const job = await ownedJob(
+    env,
+    jobId,
+    await resourceOwner(env, "jobs", jobId),
+  );
   if (job.kind !== "prepare") throw new HttpError(409, "wrong_workflow_kind");
   if (["waiting_review", "ready", "needs_reconciliation"].includes(job.status))
     return;
@@ -314,7 +319,11 @@ export async function generateSong(
   jobId: string,
   step: WorkflowStep,
 ) {
-  const job = await ownedJob(env, jobId, env.OWNER_ID);
+  const job = await ownedJob(
+    env,
+    jobId,
+    await resourceOwner(env, "jobs", jobId),
+  );
   if (job.kind !== "generate" || !job.blocks_json || !job.lyric_revision)
     throw new HttpError(409, "wrong_workflow_kind");
   if (["ready", "needs_reconciliation"].includes(job.status)) return;

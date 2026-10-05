@@ -25,6 +25,7 @@
 | [構成・設計](audio-pipeline-architecture.md) | 構成図、データ、状態遷移、認証、予算と結果回復の契約 |
 | [開発ガイド](development.md) | コードの入口、開発環境、検証、ツール更新、PR、起動時の対処 |
 | [設定・デプロイ・運用](audio-pipeline-setup.md) | Google設定、PoC、残予算移管、ローカルバックエンド、クラウド配置、障害確認 |
+| [Google Play配布準備](play-internal-release.md) | Firebase・署名・許可アカウント・削除権限・移行順・AAB配布 |
 | [内部テスト](internal-testing.md) | 開始条件、Android接続、操作と期待結果、録音・復旧・品質評価、不具合記録 |
 | [検証記録](audio-pipeline-verification.md) | 日付付きの実績、配置情報、既知の問題、未確認事項 |
 | [ADR一覧](adr/README.md) | 採用済み判断とその理由・履歴 |

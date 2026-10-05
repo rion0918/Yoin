@@ -1,9 +1,14 @@
 const explanations: Record<string, string> = {
-  route_not_found:
-    "接続先がこの機能に対応していません。サーバーの更新状況を確認してください。",
-  unauthorized: "検証用トークンが一致しません。接続設定を確認してください。",
+  route_not_found: "現在この操作を利用できません。時間をおいてお試しください。",
+  unauthorized: "ログインを確認できません。もう一度ログインしてください。",
   authentication_not_configured:
-    "サーバーに検証用トークンが設定されていません。",
+    "現在サービスを利用できません。時間をおいてお試しください。",
+  account_not_allowed:
+    "このGoogleアカウントはまだ利用できません。招待されたアカウントでログインしてください。",
+  account_deleted: "アカウントの削除を受け付けています。",
+  recent_login_required: "削除するには、もう一度Googleで本人確認してください。",
+  authentication_unavailable:
+    "ログインを確認できません。時間をおいてお試しください。",
   lyric_revision_conflict:
     "歌詞の版が更新されています。保存済みの歌詞を確認してください。",
   lyrics_not_ready: "歌詞の準備がまだ完了していません。",
@@ -11,9 +16,9 @@ const explanations: Record<string, string> = {
     "歌詞は16ブロック・合計6000文字までです。空の歌詞も確認してください。",
   invalid_lyric_source:
     "歌詞の元になった会話を確認できません。保存済みの歌詞から確認してください。",
-  audio_duration_limit: "今回の検証は合計60分までの音声に対応しています。",
+  audio_duration_limit: "一つの記録に残せる音声は合計60分までです。",
   clip_conflict_or_audio_limit:
-    "音声の登録内容や合計時間を確認してください。今回の検証は60分までです。",
+    "音声の登録内容や合計時間を確認してください。一つの記録は合計60分までです。",
   unsupported_audio_format:
     "音声形式に対応していません。M4A・WAV・MP3などの音声を使ってください。",
   audio_upload_incomplete:
@@ -33,14 +38,15 @@ const explanations: Record<string, string> = {
   empty_audio:
     "音声が見つかりません。会話を録音するか音声を取り込んでください。",
   ai_budget_exhausted:
-    "今回のAI検証予算が足りません。音声と歌詞は残っています。",
+    "現在、新しい曲を作れません。音声と歌詞は保存されています。",
   provider_cost_exceeded_reservation:
-    "AIの利用額が見積もりを超えたため、新しい生成を止めています。利用履歴を確認してください。",
-  invalid_ai_budget: "サーバーのAI検証予算が設定されていません。",
+    "現在、新しい曲を作れません。音声と歌詞は保存されています。",
+  invalid_ai_budget:
+    "現在、新しい曲を作れません。音声と歌詞は保存されています。",
   generated_lyrics_differ:
-    "生成された曲の歌詞が、確認した歌詞と異なります。音源は保存して、自動再生成を止めています。",
+    "曲の歌詞が確認した内容と異なるため、完成できませんでした。音声と歌詞は保存されています。",
   provider_outcome_unconfirmed:
-    "AIの受付結果を確認できません。利用履歴を確認するまで自動再生成しません。",
+    "曲の受付を確認できませんでした。音声と歌詞は保存されています。この状態では作り直せません。時間をおいて状況を確認してください。",
   draft_not_ready: "この記録は処理中です。保存した生成状況を確認してください。",
   expired_or_invalid_media_url:
     "再生リンクの期限が切れました。もう一度再生を押してください。",
@@ -49,6 +55,6 @@ const explanations: Record<string, string> = {
 export function explainError(value: string): string {
   if (explanations[value]) return explanations[value];
   return /^[a-z_]+$/.test(value)
-    ? "処理を続けられませんでした。記録の状態と接続設定を確認してください。"
+    ? "処理を続けられませんでした。音声と歌詞は保存されています。時間をおいて状況を確認してください。"
     : value;
 }

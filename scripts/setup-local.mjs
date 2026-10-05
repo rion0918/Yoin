@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -27,12 +27,20 @@ export async function setupLocal(project) {
       });
     if (exists) throw new Error("既存の接続設定は上書きできません。");
   }
-  // Never print the token or overwrite an existing connection.
-  const token = randomBytes(32).toString("hex");
-  const hash = createHash("sha256").update(token).digest("hex");
+  // Keep existing test settings isolated; never print service credentials.
+  const projectId = process.env.FIREBASE_PROJECT_ID ?? "yoin-app-20261004";
+  if (!/^[a-z0-9-]+$/.test(projectId))
+    throw new Error("Firebaseプロジェクト設定が不正です。");
+  const allowed = JSON.parse(process.env.ALLOWED_TESTER_EMAILS ?? "[]");
+  if (
+    !Array.isArray(allowed) ||
+    !allowed.every((email) => typeof email === "string")
+  )
+    throw new Error("許可アカウント設定が不正です。");
   const mediaToken = randomBytes(32).toString("hex");
   const settings = [
-    `TESTER_TOKEN_SHA256=${hash}`,
+    `FIREBASE_PROJECT_ID=${projectId}`,
+    `ALLOWED_TESTER_EMAILS=${JSON.stringify(allowed)}`,
     `MEDIA_SIGNING_SECRET=${randomBytes(32).toString("hex")}`,
     `MEDIA_SERVICE_TOKEN=${mediaToken}`,
     "MEDIA_SERVICE_URL=http://127.0.0.1:8080",
@@ -43,10 +51,6 @@ export async function setupLocal(project) {
   ].join("\n");
   await mkdir(resolve(project, ".local"), { recursive: true, mode: 0o700 });
   await writeFile(resolve(project, "backend/.dev.vars"), settings, {
-    mode: 0o600,
-    flag: "wx",
-  });
-  await writeFile(resolve(project, ".local/tester-token.txt"), token, {
     mode: 0o600,
     flag: "wx",
   });
@@ -70,7 +74,7 @@ if (
   setupLocal(project)
     .then(({ remainingUsd }) => {
       console.log(
-        `設定を backend/.dev.vars と .local/media.env、端末用トークンを .local/tester-token.txt に保存しました。AI予算残額: $${remainingUsd.toFixed(4)}`,
+        `設定を backend/.dev.vars と .local/media.env に保存しました。AI予算残額: $${remainingUsd.toFixed(4)}`,
       );
     })
     .catch(() => {

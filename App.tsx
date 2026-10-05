@@ -22,6 +22,7 @@ import {
 } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Keyboard,
   ScrollView,
   StyleSheet,
@@ -37,6 +38,8 @@ import type {
   SongDocument,
   Utterance,
 } from "./shared/contracts";
+import type { SessionIdentity } from "./src/auth/types";
+import { useAuthentication } from "./src/auth/useAuthentication";
 import { ActionButton, useReducedMotion } from "./src/components/ActionButton";
 import { NativeSheet } from "./src/components/NativeSheet";
 import { SpeakerEnrollmentSheet } from "./src/components/SpeakerEnrollmentSheet";
@@ -87,7 +90,7 @@ const statusLabel: Record<string, string> = {
   generating: "曲を作っています",
   ready: "曲ができました",
   failed: "処理を続けられませんでした",
-  needs_reconciliation: "受付状況の確認が必要です",
+  needs_reconciliation: "曲の受付を確認できませんでした",
 };
 
 function LibraryRoute({
@@ -102,12 +105,7 @@ function LibraryRoute({
       onSpeakerSettings={() => app.show({ kind: "speakers" })}
       onNewRecording={() => {
         if (!hasRegisteredSpeaker(app.state)) {
-          app.show({
-            kind:
-              app.connection.apiUrl && app.connection.token
-                ? "speakers"
-                : "settings",
-          });
+          app.show({ kind: "speakers" });
           return;
         }
         void app.newRecording().then((draftId) => {
@@ -252,14 +250,58 @@ function MusicRoute({
 }
 
 export default function App() {
-  const app = useSession();
+  const auth = useAuthentication();
+  if (auth.identity)
+    return (
+      <SessionApp
+        key={auth.identity.uid}
+        identity={auth.identity}
+        auth={auth}
+      />
+    );
+  return (
+    <SafeAreaProvider>
+      <StatusBar style="dark" />
+      <View style={[extra.loading, { padding: 32 }]}>
+        <Text style={extra.brand}>Yoin</Text>
+        <Text style={styles.summary}>会話を、思い出の一曲に。</Text>
+        {auth.ready ? (
+          <ActionButton
+            label="Googleでログイン"
+            onPress={() => {
+              void auth.signIn();
+            }}
+            disabled={auth.busy}
+            style={styles.primary}
+            testID="google-login"
+          >
+            <Text style={styles.primaryText}>Googleでログイン</Text>
+          </ActionButton>
+        ) : (
+          <ActivityIndicator color="#493020" />
+        )}
+        {!!auth.error && (
+          <Text accessibilityLiveRegion="polite" style={extra.errorCopy}>
+            {auth.error}
+          </Text>
+        )}
+      </View>
+    </SafeAreaProvider>
+  );
+}
+function SessionApp({
+  identity,
+  auth,
+}: {
+  identity: SessionIdentity;
+  auth: ReturnType<typeof useAuthentication>;
+}) {
+  const app = useSession(identity);
   const reducedMotion = useReducedMotion();
   const [overlay, setOverlay] = useState<Overlay | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [finishTitle, setFinishTitle] = useState("");
   const [place, setPlace] = useState("");
-  const [apiUrl, setApiUrl] = useState("");
-  const [token, setToken] = useState("");
   const [editedBlocks, setEditedBlocks] = useState<LyricBlock[]>([]);
   const close = () => {
     Keyboard.dismiss();
@@ -281,19 +323,10 @@ export default function App() {
             ?.blocks ?? [],
         );
       if (next.kind === "source") setPlace(next.clip?.place ?? "");
-      if (next.kind === "settings") {
-        setApiUrl(app.connection.apiUrl);
-        setToken(app.connection.token);
-      }
       setOverlay(next);
       setSheetOpen(true);
     },
-    [
-      app.clearError,
-      app.connection.apiUrl,
-      app.connection.token,
-      app.state.drafts,
-    ],
+    [app.clearError, app.state.drafts],
   );
   const draft =
     overlay && "draftId" in overlay
@@ -301,7 +334,6 @@ export default function App() {
       : undefined;
   const firstRunGuidanceShown = useRef(false);
   const speakerRegistered = hasRegisteredSpeaker(app.state);
-  const hasConnection = Boolean(app.connection.apiUrl && app.connection.token);
   useEffect(() => {
     if (!app.ready || firstRunGuidanceShown.current) return;
     if (speakerRegistered) {
@@ -309,10 +341,29 @@ export default function App() {
       return;
     }
     firstRunGuidanceShown.current = true;
-    show({
-      kind: hasConnection ? "speakers" : "settings",
-    });
-  }, [app.ready, speakerRegistered, hasConnection, show]);
+    show({ kind: "speakers" });
+  }, [app.ready, speakerRegistered, show]);
+  const deletionExit = useRef(false);
+  useEffect(() => {
+    if (app.accountDeleted && !deletionExit.current) {
+      deletionExit.current = true;
+      void auth.signOut();
+    }
+  }, [app.accountDeleted, auth.signOut]);
+  async function logout() {
+    if (await app.suspend()) await auth.signOut();
+  }
+  async function removeAccount() {
+    try {
+      if (!(await auth.reauthenticate(identity.uid))) return;
+      if (await app.deleteAccount()) await auth.signOut();
+    } catch {
+      setAccountError(
+        "本人確認を完了できませんでした。通信を確認して、もう一度お試しください。",
+      );
+    }
+  }
+  const [accountError, setAccountError] = useState<string | null>(null);
   const overlayKind =
     overlay?.kind === "progress" && draft?.status === "waiting_review"
       ? "review"
@@ -352,7 +403,7 @@ export default function App() {
   };
   const title =
     overlayKind === "settings"
-      ? "接続設定"
+      ? "設定"
       : overlayKind === "speakers"
         ? "話者の声を登録"
         : overlayKind === "source"
@@ -364,7 +415,7 @@ export default function App() {
               : "思い出を一曲に";
   const description =
     overlayKind === "settings"
-      ? "検証用の接続先とトークンを設定します。"
+      ? "アカウントと、登録した声を管理できます。"
       : overlayKind === "speakers"
         ? "名前と声を登録すると、次の会話から発話者を名前で表示します。"
         : overlayKind === "review"
@@ -412,6 +463,18 @@ export default function App() {
             <Text style={styles.summary}>
               {app.error || "思い出を読み込んでいます"}
             </Text>
+            {!!app.error && (
+              <ActionButton
+                label="ログアウト"
+                onPress={() => {
+                  void logout();
+                }}
+                disabled={auth.busy}
+                style={styles.secondary}
+              >
+                <Text style={styles.secondaryText}>ログアウト</Text>
+              </ActionButton>
+            )}
           </View>
         )}
         {!!app.error && app.ready && !sheetOpen && (
@@ -450,45 +513,57 @@ export default function App() {
             </Text>
           )}
           {overlayKind === "settings" && (
-            <View testID="connection-sheet">
-              <Text style={styles.fieldLabel}>接続先URL</Text>
-              <TextInput
-                value={apiUrl}
-                onChangeText={setApiUrl}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="url"
-                accessibilityLabel="接続先URL"
-                style={styles.input}
-                testID="api-url"
-              />
-              <Text style={styles.fieldLabel}>検証用トークン</Text>
-              <TextInput
-                value={token}
-                onChangeText={setToken}
-                secureTextEntry
-                autoCapitalize="none"
-                autoCorrect={false}
-                accessibilityLabel="検証用トークン"
-                style={styles.input}
-                testID="tester-token"
-              />
+            <View testID="account-sheet">
+              <Text style={styles.fieldLabel}>ログイン中のアカウント</Text>
+              <Text style={styles.summary}>{identity.name}</Text>
+              <Text style={styles.summary}>{identity.email}</Text>
               <ActionButton
-                label="接続を保存"
-                onPress={() => {
-                  void app.configure({ apiUrl, token }).then((success) => {
-                    if (success) {
-                      if (hasRegisteredSpeaker(app.state)) close();
-                      else show({ kind: "speakers" });
-                    }
-                  });
-                }}
+                label="話者を管理"
+                onPress={() => show({ kind: "speakers" })}
                 disabled={app.busy}
                 style={styles.primary}
-                testID="save-connection"
               >
-                <Text style={styles.primaryText}>接続を保存</Text>
+                <Text style={styles.primaryText}>話者を管理</Text>
               </ActionButton>
+              <ActionButton
+                label="ログアウト"
+                onPress={() => {
+                  void logout();
+                }}
+                disabled={app.busy || auth.busy}
+                style={styles.secondary}
+              >
+                <Text style={styles.secondaryText}>ログアウト</Text>
+              </ActionButton>
+              <ActionButton
+                label="アカウントを削除"
+                onPress={() => {
+                  setAccountError(null);
+                  Alert.alert(
+                    "アカウントを削除しますか？",
+                    "下書き、曲、登録した声を削除します。元に戻せません。続けるとGoogleで本人確認を行います。",
+                    [
+                      { text: "キャンセル", style: "cancel" },
+                      {
+                        text: "削除する",
+                        style: "destructive",
+                        onPress: () => {
+                          void removeAccount();
+                        },
+                      },
+                    ],
+                  );
+                }}
+                disabled={app.busy || auth.busy}
+                style={styles.secondary}
+              >
+                <Text style={styles.secondaryText}>アカウントを削除</Text>
+              </ActionButton>
+              {!!(accountError || auth.error) && (
+                <Text accessibilityLiveRegion="polite" style={extra.errorCopy}>
+                  {accountError || auth.error}
+                </Text>
+              )}
             </View>
           )}
           {overlayKind === "finish" && draft && (
@@ -642,7 +717,7 @@ export default function App() {
             <View testID="generation-progress">
               <Text style={styles.story}>
                 {draft.status === "needs_reconciliation"
-                  ? "生成が受け付けられたか確認できないため、自動では作り直しません。接続を確認してから、実行履歴を確認してください。"
+                  ? "曲の受付を確認できませんでした。音声と歌詞は保存されています。この状態では作り直せません。時間をおいて状況を確認してください。"
                   : draft.status === "failed"
                     ? "音声と歌詞は残っています。ホームからこの記録を開き、もう一度仕上げられます。"
                     : "思い出の言葉を、一曲にしています。完成したらライブラリに残ります。"}
@@ -803,6 +878,7 @@ export default function App() {
 }
 
 const extra = StyleSheet.create({
+  brand: { color: "#493020", fontSize: 32, fontWeight: "600" },
   loading: {
     ...StyleSheet.absoluteFill,
     backgroundColor: "#fff",
@@ -854,6 +930,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     marginTop: 28,
   },
+  secondary: {
+    minHeight: 52,
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 16,
+  },
+  secondaryText: { color: "#493020", fontSize: 15 },
   primaryText: {
     color: "#fff8f0",
     fontSize: 15,

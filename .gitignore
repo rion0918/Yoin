@@ -24,3 +24,5 @@ npm-debug.*
 backend/.wrangler/
 backend/.output/
 gha-creds-*.json
+
+/google-services.json

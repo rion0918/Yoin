@@ -4,6 +4,12 @@ import {
   type UploadCreated,
 } from "../shared/contracts.ts";
 import {
+  assertAccountActive,
+  finishOwnedUpload,
+  getAccount,
+  requestDeletion,
+} from "./accounts.ts";
+import {
   audioClip,
   type ClipRow,
   clips,
@@ -43,8 +49,20 @@ import {
 async function launch(env: Env, job: JobRow) {
   const workflow = job.kind === "prepare" ? env.PREPARE : env.GENERATE;
   try {
-    await workflow.create({ id: job.id, params: { jobId: job.id } });
-  } catch {
+    await assertAccountActive(env, job.owner_id);
+    const instance = await workflow.create({
+      id: job.id,
+      params: { jobId: job.id },
+    });
+    try {
+      await assertAccountActive(env, job.owner_id);
+    } catch (error) {
+      await instance.delete();
+      throw error;
+    }
+  } catch (error) {
+    if (error instanceof HttpError && error.code === "account_deleted")
+      throw error;
     // A durable queued row remains available if dispatch fails or the instance already exists.
   }
 }
@@ -57,9 +75,9 @@ async function createDraft(request: Request, env: Env, owner: string) {
   if (!Number.isFinite(Date.parse(createdAt)))
     throw new HttpError(422, "invalid_date");
   const result = await env.DB.prepare(
-    "INSERT OR IGNORE INTO drafts (id, owner_id, title, created_at) VALUES (?, ?, ?, ?)",
+    "INSERT OR IGNORE INTO drafts (id, owner_id, title, created_at) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
   )
-    .bind(draftId, owner, title, createdAt)
+    .bind(draftId, owner, title, createdAt, owner)
     .run();
   const document = await draftDocument(env, draftId, owner);
   return Response.json(document, {
@@ -106,7 +124,7 @@ async function createClip(
       throw new HttpError(409, "draft_sources_frozen");
     const key = `originals/${owner}/${metadata.id}`;
     const inserted = await env.DB.prepare(
-      "INSERT OR IGNORE INTO clips (id, draft_id, owner_id, mime_type, size_bytes, duration_ms, recorded_at, imported_at, timezone, place, object_key) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COALESCE(SUM(duration_ms), 0) FROM clips WHERE draft_id = ? AND owner_id = ?) + ? <= ? AND (SELECT status FROM drafts WHERE id = ? AND owner_id = ?) = 'uploading'",
+      "INSERT OR IGNORE INTO clips (id, draft_id, owner_id, mime_type, size_bytes, duration_ms, recorded_at, imported_at, timezone, place, object_key) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COALESCE(SUM(duration_ms), 0) FROM clips WHERE draft_id = ? AND owner_id = ?) + ? <= ? AND (SELECT status FROM drafts WHERE id = ? AND owner_id = ?) = 'uploading' AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
     )
       .bind(
         metadata.id,
@@ -126,6 +144,7 @@ async function createClip(
         MAX_AUDIO_MS,
         draftId,
         owner,
+        owner,
       )
       .run();
     if (inserted.meta.changes !== 1)
@@ -137,9 +156,9 @@ async function createClip(
       httpMetadata: { contentType: clip.mime_type },
     });
     const saved = await env.DB.prepare(
-      "UPDATE clips SET upload_id = ? WHERE id = ? AND owner_id = ? AND upload_id IS NULL",
+      "UPDATE clips SET upload_id = ? WHERE id = ? AND owner_id = ? AND upload_id IS NULL AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
     )
-      .bind(upload.uploadId, clip.id, owner)
+      .bind(upload.uploadId, clip.id, owner, owner)
       .run();
     if (saved.meta.changes !== 1) await upload.abort();
     clip = await ownedClip(env, clip.id, owner);
@@ -181,6 +200,12 @@ async function uploadPart(
   const part = (await fixedBody(request, size, (body) =>
     upload.uploadPart(partNumber, body),
   )) as R2UploadedPart;
+  try {
+    await assertAccountActive(env, owner);
+  } catch (error) {
+    await upload.abort();
+    throw error;
+  }
   await env.DB.prepare(
     "INSERT INTO upload_parts (clip_id, part_number, etag, size_bytes) VALUES (?, ?, ?, ?) ON CONFLICT (clip_id, part_number) DO UPDATE SET etag = excluded.etag, size_bytes = excluded.size_bytes",
   )
@@ -225,6 +250,7 @@ async function completeUpload(
       clip.object_key,
       clip.upload_id,
     ).complete(stored.parts);
+  await finishOwnedUpload(env, owner, clip.object_key);
   if (object.size !== clip.size_bytes)
     throw new HttpError(422, "upload_size_mismatch");
   await env.DB.batch([
@@ -383,7 +409,7 @@ async function submitJob(
       : null;
   const result = await env.DB.batch([
     env.DB.prepare(
-      "INSERT OR IGNORE INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, created_at, speaker_snapshot_json) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND owner_id = ? AND status = ? AND job_id IS ? AND lyric_revision = ?)",
+      "INSERT OR IGNORE INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, created_at, speaker_snapshot_json) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND owner_id = ? AND status = ? AND job_id IS ? AND lyric_revision = ?) AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
     ).bind(
       jobId,
       owner,
@@ -400,6 +426,7 @@ async function submitJob(
       draft.status,
       draft.job_id,
       draft.lyric_revision,
+      owner,
     ),
     env.DB.prepare(
       "UPDATE drafts SET status = ?, job_id = ?, error = NULL WHERE id = ? AND owner_id = ? AND EXISTS (SELECT 1 FROM jobs WHERE id = ?)",
@@ -464,7 +491,13 @@ export async function handleRequest(request: Request, env: Env) {
         id(chunk[2]),
         Number(chunk[3]),
       );
-    const owner = await authenticate(request, env);
+    const identity = await authenticate(request, env);
+    if (path === "/account" && request.method === "GET")
+      return await getAccount(env, identity);
+    if (path === "/account/deletion" && request.method === "POST")
+      return await requestDeletion(env, identity);
+    const owner = identity.uid;
+    await assertAccountActive(env, owner);
     const speakerResponse = await handleSpeakers(request, env, owner, path);
     if (speakerResponse) return speakerResponse;
     if (path === "/drafts" && request.method === "POST")

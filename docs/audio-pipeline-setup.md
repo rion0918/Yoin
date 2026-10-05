@@ -2,7 +2,7 @@
 
 [ドキュメントの目次](README.md)へ
 
-単一テスター向けの接続手順です。アプリの起動は[README](../README.md)、端末の導入・操作確認は[内部テスト](internal-testing.md)を参照してください。実際の配置先と有効化状況は[検証記録](audio-pipeline-verification.md#現在の確認状況)で管理します。
+許可されたGoogleアカウント向けの運用手順です。認証・削除・Play配布の移行は[配布準備](play-internal-release.md)を先に確認してください。アプリの起動は[README](../README.md)、端末の導入・操作確認は[内部テスト](internal-testing.md)を参照してください。実際の配置先と有効化状況は[検証記録](audio-pipeline-verification.md#現在の確認状況)で管理します。
 
 ## 作業の前提と順番
 
@@ -21,11 +21,11 @@ npm --prefix backend ci
 3. ローカルバックエンド、またはクラウドの一方に接続を設定する。
 4. [内部テストの開始条件](internal-testing.md#開始条件)と実際の設定を確認して端末で試す。
 
-AI予算0での接続確認と、有料APIを使う確認は区別します。リポジトリの既定値0は文字起こし・曲生成を開始しません。基盤の料金はAI累積10ドルとは別です。
+AI予算0での接続確認と、有料APIを使う確認は区別します。予算0の試験は文字起こし・曲生成を開始しません。既存環境の累積枠を0や10へ書き戻さないでください。基盤の料金はAI累積10ドルとは別です。
 
 ## GitHub Actionsの本番配置設定
 
-[ADR 0013](adr/0013-github-actions-cicd.md)に従い、PRで全チェックを実行し、成功したmainだけを既存のCloud Run・D1・Workerへ反映します。`.github/workflows/ci.yml`が設定の入口です。PR検証には読み取り権限だけを付け、本番配置ジョブは`production` Environmentに限定します。
+PRとmainで全チェックを実行し、個別指示後のmainの手動workflow_dispatchだけで反映します。反映順は予算・設定照合 → D1 → Cloud Run → Workerです。[ADR 0013](adr/0013-github-actions-cicd.md)からの前提変更は[ADR 0015](adr/0015-google-play-internal-distribution.md)にProposedとして記録しています。`.github/workflows/ci.yml`が設定の入口です。PR検証には読み取り権限だけを付け、本番配置ジョブは`production` Environmentに限定します。
 
 ### Google CloudのOIDCと配置権限
 
@@ -80,14 +80,14 @@ Cloudflareで対象アカウントだけを指定し、Workers Scripts EditとD1
 
 ### デプロイ失敗時の再開
 
-段階が失敗すると、その後の本番変更へ進みません。同じmainコミットのActions runを再実行します。Cloud Runの更新後に停止した場合はD1とWorkerは未変更です。D1適用後にWorker反映が止まった場合は、Wranglerが適用済みのmigrationを認識するため再実行できます。Worker反映後の確認で停止した場合は、同じバージョンを再配置して原因を調べます。予算台帳や有料試行を初期化して復旧しないでください。配置のコミット、イメージdigest、Cloud Run revisionはActions summaryに残します。
+段階が失敗すると、その後の本番変更へ進みません。同じmainコミットのActions runを再実行します。D1適用後にCloud Run更新が停止した場合は、適用済みmigrationを保持して同じコミットから再開します。D1適用後にWorker反映が止まった場合は、Wranglerが適用済みのmigrationを認識するため再実行できます。Worker反映後の確認で停止した場合は、同じバージョンを再配置して原因を調べます。予算台帳や有料試行を初期化して復旧しないでください。配置のコミット、イメージdigest、Cloud Run revisionはActions summaryに残します。
 
 ## Google APIの設定
 
 1. [Google AI StudioのAPIキー画面](https://aistudio.google.com/apikey)を開き、Yoin検証用のプロジェクトを選びます。既存キーを使うか、Create API keyから作成します。
 2. プロジェクトのBilling Tierを確認します。FreeならSet up billingから有料設定を行います。支払い・規約同意は自分で行ってください。新しいPrepayアカウントは最低5ドルの入金が必要で、既存アカウントでは表示が異なる場合があります。[Googleの設定手順](https://ai.google.dev/gemini-api/docs/billing)
 3. Yoin直下に `.env.local.example` をコピーして `.env.local` を作り、エディタで `GEMINI_API_KEY=` の後にキーを保存します。キーをチャットへ貼らず、Gitにも含めません。アプリの `EXPO_PUBLIC_*` には置きません。[APIキーの扱い](https://ai.google.dev/gemini-api/docs/api-key)
-4. 初回は接続設定後に話者の名前と声を登録します。準備処理で登録済み音声と文字起こしの発話を照合し、確度が足りない場合は仮ラベルを残します。登録名は利用者が入力した名前のみを表示し、人名を自動推測しません。
+4. 初回はGoogleログイン後に話者の名前と声を登録します。準備処理で登録済み音声と文字起こしの発話を照合し、確度が足りない場合は仮ラベルを残します。登録名は利用者が入力した名前のみを表示し、人名を自動推測しません。
 
 有料音楽生成の候補はLyria 3.5です。日本語の聞き取りやすさ・地名人名の読み・編集歌詞の歌唱は未確認で、利用できない場合も自動で他の有料サービスへ切り替えません。[音楽生成の仕様](https://ai.google.dev/gemini-api/docs/music-generation)
 
@@ -127,7 +127,7 @@ npm run poc -- handoff
 
 ### 新しいローカル接続を作る場合
 
-引き継ぎファイルが存在し、下記の3ファイルがまだない環境で実行します。
+引き継ぎファイルが存在し、下記の2ファイルと旧 `.local/tester-token.txt` がない環境で実行します。旧設定は上書きせず隔離して保持します。
 
 ```sh
 npm run setup:local
@@ -139,13 +139,12 @@ npm run setup:local
 | :--- | :--- |
 | `backend/.dev.vars` | Workerの認証・署名・接続先と引き継いだAI予算 |
 | `.local/media.env` | 音声サービスのBearerトークン、callback元、空のGoogleキー欄 |
-| `.local/tester-token.txt` | 端末へ設定する元トークン |
 
-`.local/media.env` の `GEMINI_API_KEY=` をエディタで設定します。キーや元トークンをチャット・ログへ表示しません。
+`.local/media.env` の `GEMINI_API_KEY=` をエディタで設定します。キーやサービス用トークンをチャット・ログへ表示しません。`FIREBASE_PROJECT_ID` と `ALLOWED_TESTER_EMAILS` のJSON配列は運用側で設定します。既定の許可リストは空なので新規利用を受け付けません。
 
 ### 既存の接続・クラウドへ移す場合
 
-既存トークンや台帳を削除して `setup:local` をやり直さないでください。既存の認証設定を保持し、handoffの `remainingUsd` を対象Workerの `AI_BUDGET_USD` に設定します。クラウドでは `backend/wrangler.jsonc` の `vars` を更新して再配置します。移管額はそのサーバーで使う累積枠であり、再配置時に10ドルへ戻しません。
+既存トークンや台帳を削除して `setup:local` をやり直さないでください。既存のサービス用秘密情報を保持し、Firebaseへの認証変更は[配布準備](play-internal-release.md)の手順で行います。handoffの `remainingUsd` を対象Workerの `AI_BUDGET_USD` に設定します。クラウドでは `backend/wrangler.jsonc` の `vars` を更新して再配置します。移管額はそのサーバーで使う累積枠であり、再配置時に10ドルへ戻しません。
 
 ローカルD1でも有料処理を実行していた場合は、`provider_attempts` とGoogle Usageで確定費用・未確定予約を照合し、その分も差し引いてクラウドへ移します。同じ残額をローカル・クラウドへ割り当てて並行実行しないでください。
 
@@ -155,8 +154,9 @@ npm run setup:local
 
 | 設定 | 配置する場所 | 用途 |
 | :--- | :--- | :--- |
-| API URL・元テスタートークン | 端末の接続設定 / SecureStore | Workersへの認証 |
-| `TESTER_TOKEN_SHA256` | Workerの秘密情報 | 元トークンのSHA256 |
+| `EXPO_PUBLIC_API_URL`・Firebase非秘密設定 | アプリのビルド設定 | 固定API接続先とGoogleログイン |
+| `FIREBASE_PROJECT_ID` | Workerのvars | IDトークンの発行元・対象プロジェクト |
+| `ALLOWED_TESTER_EMAILS` | WorkerのSecret、ローカルでは `.dev.vars` | 検証済みGoogleメールの許可リスト |
 | `MEDIA_SIGNING_SECRET` | Workerの秘密情報 | 期限付き音声・callback URLのHMAC |
 | `MEDIA_SERVICE_TOKEN` | Workerと音声サービスの秘密情報 | Cloud Run処理ルートのBearer認証。同じ値を設定 |
 | `GEMINI_API_KEY` | PoCの `.env.local`、音声サービスの環境変数 | Google API認証。Worker・端末には置かない |
@@ -190,7 +190,7 @@ npm run backend:dev
 
 `backend/.dev.vars` の `MEDIA_SERVICE_URL`、`MEDIA_API_URL` と、`.local/media.env` の `MEDIA_ORIGIN` を対応させます。上記はDocker Desktopのホスト接続を前提にします。別のDocker環境ではホスト名の解決を確認し、callback元と署名URLのoriginを揃えてください。
 
-ローカルD1・R2・Workflowsを使います。Dockerのビルド送信対象は[Dockerfileのignore](../backend/media/Dockerfile.dockerignore)で限定し、秘密情報・音声を含めません。端末のUSB転送と接続設定は[内部テスト](internal-testing.md#androidへの導入と接続設定)を参照してください。
+ローカルD1・R2・Workflowsを使います。Dockerのビルド送信対象は[Dockerfileのignore](../backend/media/Dockerfile.dockerignore)で限定し、秘密情報・音声を含めません。開発版のUSB転送とビルド時の接続設定は[内部テスト](internal-testing.md#androidへの導入と接続設定)を参照してください。
 
 ## Cloud RunとCloudflareへの配置
 
@@ -288,17 +288,17 @@ npx wrangler r2 bucket create yoin-private-audio
 
 R2の公開 `r2.dev` URLを無効にし、公開カスタムドメインも設定しません。初回は `AI_BUDGET_USD=0`、クラウドでは `MEDIA_API_URL` を設定せず `PUBLIC_API_URL` を使います。話者テーブル・発話の識別項目・ジョブ開始時のプロフィールsnapshotを追加する `0003_speaker_profiles.sql` も適用します。Cloud Runには `/enroll-speaker` と `/identify-speakers` の認証付き処理が含まれます。
 
-既存トークンのSHA256、32文字以上の署名秘密、Cloud Runと同じサービス用トークンを登録します。値は端末・Worker・Cloud Runの対応を確認し、秘密入力または権限600のファイルを使います。
+許可メールのJSON配列、32文字以上の署名秘密、Cloud Runと同じサービス用トークンを登録します。値はFirebase・Worker・Cloud Runの対応を確認し、秘密入力または権限600のファイルを使います。
 
 ```sh
-npx wrangler secret put TESTER_TOKEN_SHA256
+npx wrangler secret put ALLOWED_TESTER_EMAILS
 npx wrangler secret put MEDIA_SIGNING_SECRET
 npx wrangler secret put MEDIA_SERVICE_TOKEN
 npx wrangler d1 migrations apply yoin --remote
 npx wrangler deploy
 ```
 
-GoogleキーをWorkerへ登録しません。D1移行は `0001`〜`0003` を番号順に適用します。`0002_audio_runtime.sql` は有料試行の実行権を排他取得し、`0003_speaker_profiles.sql` は話者プロフィールと識別結果を保存します。移管後の有料APIを有効化する場合は[残予算の移管](#残予算の移管)に従ってvarsを更新します。
+GoogleキーをWorkerへ登録しません。D1移行は `0001`〜`0004` を番号順に適用します。`0002_audio_runtime.sql` は有料試行の実行権を排他取得し、`0003_speaker_profiles.sql` は話者プロフィールと識別結果を保存します。`0004_accounts_and_budget.sql` はUID状態と独立費用台帳へ既存金額・状態を保持して移行します。適用前後で合計と件数を照合します。移管後の有料APIを有効化する場合は[残予算の移管](#残予算の移管)に従ってvarsを更新します。
 
 ## 配置後の確認
 
@@ -312,7 +312,7 @@ GoogleキーをWorkerへ登録しません。D1移行は `0001`〜`0003` を番�
 
 | 状況 | 確認と扱い |
 | :--- | :--- |
-| 認証失敗 | 接続先、元トークンとSHA256、Cloud Run用トークンの一致を確認 |
+| 認証失敗 | Firebaseプロジェクト・Google証明書・検証済みメールの許可リストと、Cloud Run用トークンを確認 |
 | `ai_budget_exhausted` | 設定された累積枠と、D1の費用・未確定予約を確認。台帳を初期化して回避しない |
 | 音声検査失敗 | 元音声の署名期限・実ファイル・callbackのorigin・保存先を確認 |
 | `needs_reconciliation` / `provider_outcome_unconfirmed` | 同じ有料POSTを再送せず、D1の試行と予約、R2の結果・生応答、Google Usageを照合 |
@@ -325,6 +325,6 @@ GoogleキーをWorkerへ登録しません。D1移行は `0001`〜`0003` を番�
 
 Workers Freeを維持しますが、R2の超過利用やGoogle Cloud、Google APIには料金があり得ます。Cloud Runはリクエスト課金・最小0・最大1・同時処理1で開始し、厳密な料金上限とは扱いません。基盤とAIの費用を分けて確認します。
 
-元音声・分割音声・生成曲・試行結果が蓄積します。現行実装には保存総量の料金上限や自動削除がないため、R2の保存量と操作回数、Artifact Registryの保管量、Cloud Runの実行・通信、Google Usageを確認します。無料枠はアカウント・請求先の他の利用と共有されます。
+元音声・分割音声・生成曲・試行結果が蓄積します。アカウント削除は実装していますが、保存総量の料金上限や期限による自動削除はないため、R2の保存量と操作回数、Artifact Registryの保管量、Cloud Runの実行・通信、Google Usageを確認します。無料枠はアカウント・請求先の他の利用と共有されます。
 
 過去の概算は[2026-10-04の記録](audio-pipeline-verification.md#2026-10-04の基盤費用の概算)、利用時の単価・制限は[Workers](https://developers.cloudflare.com/workers/platform/limits/)、[D1](https://developers.cloudflare.com/d1/platform/pricing/)、[R2](https://developers.cloudflare.com/r2/pricing/)、[Cloud Run](https://cloud.google.com/run/pricing)、[Artifact Registry](https://cloud.google.com/artifact-registry/pricing)、[Google API](https://ai.google.dev/gemini-api/docs/pricing)の公式情報で確認してください。

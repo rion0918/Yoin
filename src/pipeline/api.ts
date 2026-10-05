@@ -13,7 +13,11 @@ import type {
 } from "../../shared/contracts.ts";
 import { explainError } from "./messages.ts";
 
-export type Connection = { apiUrl: string; token: string };
+export type Connection = {
+  apiUrl: string;
+  getIdToken: () => Promise<string>;
+  signal?: AbortSignal;
+};
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -26,27 +30,56 @@ export function createApi(
   connection: Connection,
   fetcher: typeof fetch = fetch,
 ) {
+  async function authenticatedFetch(
+    path: string,
+    options: RequestInit,
+    timeoutMs: number,
+  ) {
+    const token = await connection.getIdToken();
+    if (connection.signal?.aborted)
+      throw new Error("アカウントが切り替わりました。");
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    connection.signal?.addEventListener("abort", abort, { once: true });
+    const timeout = setTimeout(abort, timeoutMs);
+    try {
+      const response = await fetcher(
+        `${connection.apiUrl.replace(/\/$/, "")}${path}`,
+        {
+          ...options,
+          headers: { ...options.headers, Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        },
+      );
+      const value: unknown = await response.json();
+      if (connection.signal?.aborted)
+        throw new Error("アカウントが切り替わりました。");
+      return {
+        ok: response.ok,
+        status: response.status,
+        json: async () => value,
+      };
+    } finally {
+      clearTimeout(timeout);
+      connection.signal?.removeEventListener("abort", abort);
+    }
+  }
   async function request<T>(
     path: string,
     method = "GET",
     body?: unknown,
   ): Promise<T> {
-    if (!connection.apiUrl || !connection.token)
-      throw new Error("最初に接続設定を保存してください。");
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
     try {
-      const response = await fetcher(
-        `${connection.apiUrl.replace(/\/$/, "")}${path}`,
+      const response = await authenticatedFetch(
+        path,
         {
           method,
           headers: {
-            Authorization: `Bearer ${connection.token}`,
             "Content-Type": "application/json",
           },
           body: body === undefined ? undefined : JSON.stringify(body),
-          signal: controller.signal,
         },
+        30000,
       );
       const value = (await response.json()) as T & { error?: string };
       if (!response.ok)
@@ -60,13 +93,24 @@ export function createApi(
     } catch (error) {
       if (error instanceof ApiError) throw error;
       throw new Error(
-        "通信を確認してください。生成の受付状況は、再開時に同じ処理IDで確認します。",
+        "通信を確認してください。音声と歌詞は保存されています。処理状況はアプリを開き直して確認できます。",
       );
-    } finally {
-      clearTimeout(timeout);
     }
   }
   return {
+    account: () =>
+      request<{
+        uid: string;
+        email: string;
+        name: string;
+        status: "active" | "deleting" | "deleted";
+      }>("/account"),
+    deleteAccount: () =>
+      request<{ status: "deleting" | "deleted" }>(
+        "/account/deletion",
+        "POST",
+        {},
+      ),
     speakers: () => request<SpeakerProfile[]>("/speakers"),
     createSpeaker: (id: string, name: string) =>
       request<SpeakerProfile>("/speakers", "POST", { id, name }),
@@ -105,18 +149,17 @@ export function createApi(
       sampleId: string,
       bytes: Uint8Array,
     ) {
-      const response = await fetcher(
-        `${connection.apiUrl.replace(/\/$/, "")}/speakers/${encodeURIComponent(speakerId)}/samples/${encodeURIComponent(sampleId)}/audio`,
+      const response = await authenticatedFetch(
+        `/speakers/${encodeURIComponent(speakerId)}/samples/${encodeURIComponent(sampleId)}/audio`,
         {
           method: "PUT",
           headers: {
-            Authorization: `Bearer ${connection.token}`,
             "Content-Type": "application/octet-stream",
             "Content-Length": String(bytes.byteLength),
           },
           body: bytes.slice().buffer,
-          signal: AbortSignal.timeout(120000),
         },
+        120000,
       );
       if (!response.ok) {
         const value = (await response.json()) as { error?: string };
@@ -153,30 +196,21 @@ export function createApi(
       partNumber: number,
       bytes: Uint8Array,
     ) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 120000);
-      try {
-        const response = await fetcher(
-          `${connection.apiUrl.replace(/\/$/, "")}/clips/${encodeURIComponent(clipId)}/parts/${partNumber}?uploadId=${encodeURIComponent(uploadId)}`,
-          {
-            method: "PUT",
-            headers: {
-              Authorization: `Bearer ${connection.token}`,
-              "Content-Type": "application/octet-stream",
-            },
-            body: bytes.slice().buffer,
-            signal: controller.signal,
-          },
+      const response = await authenticatedFetch(
+        `/clips/${encodeURIComponent(clipId)}/parts/${partNumber}?uploadId=${encodeURIComponent(uploadId)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: bytes.slice().buffer,
+        },
+        120000,
+      );
+      if (!response.ok)
+        throw new ApiError(
+          response.status,
+          "音声の送信が中断されました。保存済みの音声から再開できます。",
         );
-        if (!response.ok)
-          throw new ApiError(
-            response.status,
-            "音声の送信が中断されました。保存済みの音声から再開できます。",
-          );
-        return (await response.json()) as { partNumber: number; etag: string };
-      } finally {
-        clearTimeout(timeout);
-      }
+      return (await response.json()) as { partNumber: number; etag: string };
     },
     completeUpload: (
       clipId: string,

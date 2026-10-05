@@ -5,31 +5,39 @@ import {
   type SavedRecording,
 } from "../../shared/contracts";
 import { createSerialQueue } from "./operations";
-import type { AudioInspection, Connection, PendingRecording } from "./types";
+import type { AudioInspection, PendingRecording } from "./types";
 
 const writes = createSerialQueue();
-let sessionToken = "";
+
+import { accountStorageKey } from "./account";
+
 const nativeOnly = () =>
   new Error("端末の音声機能はiOS・Androidアプリでご利用ください。");
 
-export async function loadLibrary(): Promise<LibraryDocument> {
+export async function loadLibrary(uid: string): Promise<LibraryDocument> {
   const value =
     typeof localStorage === "undefined"
       ? null
-      : localStorage.getItem("yoin.library");
+      : localStorage.getItem(`yoin.library.${accountStorageKey(uid)}`);
   if (!value) return emptyLibrary();
   const stored = JSON.parse(value) as LibraryDocument;
   return { ...stored, speakerProfiles: stored.speakerProfiles ?? [] };
 }
 
-export function saveLibrary(state: LibraryDocument): Promise<void> {
+export function saveLibrary(
+  uid: string,
+  state: LibraryDocument,
+): Promise<void> {
   const snapshot = JSON.stringify(state);
   return writes.run(async () => {
-    localStorage.setItem("yoin.library", snapshot);
+    localStorage.setItem(`yoin.library.${accountStorageKey(uid)}`, snapshot);
   });
 }
 
-export async function importAudio(_draftId: string): Promise<LocalClip | null> {
+export async function importAudio(
+  _uid: string,
+  _draftId: string,
+): Promise<LocalClip | null> {
   throw nativeOnly();
 }
 export async function inspectLocalAudio(
@@ -45,22 +53,16 @@ export async function readAudioPart(
   throw nativeOnly();
 }
 export async function recoverRecording(
+  _uid: string,
   _pending: PendingRecording,
 ): Promise<SavedRecording | null> {
   return null;
 }
-export async function loadConnection(): Promise<Connection> {
-  return {
-    apiUrl:
-      typeof localStorage === "undefined"
-        ? ""
-        : (localStorage.getItem("yoin.apiUrl") ?? ""),
-    token: sessionToken,
-  };
+export async function preserveRecording(_uid: string, clip: SavedRecording) {
+  return clip;
 }
-export async function saveConnection(connection: Connection): Promise<void> {
-  localStorage.setItem("yoin.apiUrl", connection.apiUrl);
-  sessionToken = connection.token;
+export async function eraseLibrary(uid: string) {
+  localStorage.removeItem(`yoin.library.${accountStorageKey(uid)}`);
 }
 export async function readSpeakerAudio(_uri: string): Promise<Uint8Array> {
   throw nativeOnly();

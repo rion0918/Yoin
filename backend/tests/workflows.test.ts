@@ -7,6 +7,7 @@ import initialSchema from "../migrations/0001_initial.sql?raw";
 import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
 import speakerSchema from "../migrations/0003_speaker_profiles.sql?raw";
 import { createLyrics, generateMusic, transcribeAudio } from "../providers.ts";
+import { applyAccountSchema } from "./schema.ts";
 
 const schema = `${initialSchema}\n${runtimeSchema}\n${speakerSchema}`;
 
@@ -48,7 +49,6 @@ beforeEach(async () => {
   vi.resetAllMocks();
   bindings = {
     ...env,
-    OWNER_ID: "private-tester",
     AI_BUDGET_USD: "10",
   } as unknown as Env;
   await bindings.DB.batch(
@@ -58,6 +58,7 @@ beforeEach(async () => {
       .filter(Boolean)
       .map((statement) => bindings.DB.prepare(statement)),
   );
+  await applyAccountSchema(bindings.DB);
   await bindings.DB.prepare(
     "INSERT INTO drafts (id, owner_id, title, created_at, status, job_id) VALUES ('draft', 'private-tester', '秋の京都', '2026-10-04', 'preparing', 'prepare-job')",
   ).run();

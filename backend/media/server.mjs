@@ -9,6 +9,8 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 import { GoogleProviderError } from "../../pipeline/google.ts";
 import { runProvider } from "./providers.mjs";
 
@@ -193,6 +195,11 @@ export function createMediaServer({
   ffprobe = "ffprobe",
   apiKey,
   providerFetch,
+  deleteFirebaseUser = async (uid) => {
+    const app =
+      getApps()[0] ?? initializeApp({ credential: applicationDefault() });
+    await getAuth(app).deleteUser(uid);
+  },
 }) {
   if (!token || token.length < 32 || !origin)
     throw new Error("media_service_not_configured");
@@ -211,6 +218,7 @@ export function createMediaServer({
     if (
       request.method !== "POST" ||
       ![
+        "/accounts/delete",
         "/inspect",
         "/probe",
         "/transcribe",
@@ -239,22 +247,37 @@ export function createMediaServer({
         if (size > 2_000_000) throw new Error("request_too_large");
       }
       const body = JSON.parse(Buffer.concat(parts).toString("utf8"));
+      const removeAccount = async () => {
+        if (
+          typeof body.uid !== "string" ||
+          !/^[a-zA-Z0-9_-]{1,128}$/.test(body.uid)
+        )
+          throw new Error("invalid_account");
+        try {
+          await deleteFirebaseUser(body.uid);
+        } catch (error) {
+          if (error?.code !== "auth/user-not-found") throw error;
+        }
+        return { deleted: true };
+      };
       const result =
-        request.url === "/enroll-speaker"
-          ? await enrollSpeaker(body, { origin, ffmpeg, ffprobe })
-          : request.url === "/identify-speakers"
-            ? await identifySpeakers(body, { origin, ffmpeg, ffprobe })
-            : ["/inspect", "/probe"].includes(request.url)
-              ? await inspect(
-                  body,
-                  { origin, ffmpeg, ffprobe },
-                  request.url === "/inspect",
-                )
-              : await runProvider(request.url.slice(1), body, {
-                  origin,
-                  apiKey,
-                  providerFetch,
-                });
+        request.url === "/accounts/delete"
+          ? await removeAccount()
+          : request.url === "/enroll-speaker"
+            ? await enrollSpeaker(body, { origin, ffmpeg, ffprobe })
+            : request.url === "/identify-speakers"
+              ? await identifySpeakers(body, { origin, ffmpeg, ffprobe })
+              : ["/inspect", "/probe"].includes(request.url)
+                ? await inspect(
+                    body,
+                    { origin, ffmpeg, ffprobe },
+                    request.url === "/inspect",
+                  )
+                : await runProvider(request.url.slice(1), body, {
+                    origin,
+                    apiKey,
+                    providerFetch,
+                  });
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify(result));
     } catch (error) {

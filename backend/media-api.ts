@@ -1,3 +1,4 @@
+import { finishOwnedUpload, resourceOwner } from "./accounts.ts";
 import { ownedAudio, ownedClip, ownedJob } from "./database.ts";
 import { verifySignedUrl } from "./security.ts";
 import { type Env, HttpError } from "./types.ts";
@@ -25,7 +26,8 @@ export function byteRange(value: string | null, size: number) {
 
 export async function serveMedia(request: Request, env: Env, audioId: string) {
   await verifySignedUrl(request, env);
-  const audio = await ownedAudio(env, audioId, env.OWNER_ID);
+  const owner = await resourceOwner(env, "audio_objects", audioId);
+  const audio = await ownedAudio(env, audioId, owner);
   const metadata = await env.AUDIO.head(audio.object_key);
   if (!metadata) throw new HttpError(404, "audio_not_found");
   let range: ReturnType<typeof byteRange>;
@@ -99,8 +101,9 @@ export async function serveMediaChunk(
   index: number,
 ) {
   await verifySignedUrl(request, env);
-  const job = await ownedJob(env, jobId, env.OWNER_ID);
-  const clip = await ownedClip(env, clipId, env.OWNER_ID);
+  const owner = await resourceOwner(env, "jobs", jobId);
+  const job = await ownedJob(env, jobId, owner);
+  const clip = await ownedClip(env, clipId, owner);
   if (
     job.kind !== "prepare" ||
     job.draft_id !== clip.draft_id ||
@@ -110,9 +113,7 @@ export async function serveMediaChunk(
     index > 2
   )
     throw new HttpError(409, "invalid_media_job");
-  const object = await env.AUDIO.get(
-    chunkKey(env.OWNER_ID, jobId, clipId, index),
-  );
+  const object = await env.AUDIO.get(chunkKey(owner, jobId, clipId, index));
   if (!object) throw new HttpError(404, "media_chunk_missing");
   return new Response(object.body, {
     headers: {
@@ -131,8 +132,9 @@ export async function uploadMediaChunk(
   index: number,
 ) {
   await verifySignedUrl(request, env);
-  const job = await ownedJob(env, jobId, env.OWNER_ID);
-  const clip = await ownedClip(env, clipId, env.OWNER_ID);
+  const owner = await resourceOwner(env, "jobs", jobId);
+  const job = await ownedJob(env, jobId, owner);
+  const clip = await ownedClip(env, clipId, owner);
   if (
     job.kind !== "prepare" ||
     job.draft_id !== clip.draft_id ||
@@ -147,9 +149,10 @@ export async function uploadMediaChunk(
     1,
     16 * 1024 * 1024,
   );
-  const key = chunkKey(env.OWNER_ID, jobId, clipId, index);
+  const key = chunkKey(owner, jobId, clipId, index);
   await fixedBody(request, size, (body) =>
     env.AUDIO.put(key, body, { httpMetadata: { contentType: "audio/mp4" } }),
   );
+  await finishOwnedUpload(env, owner, key);
   return Response.json({ key });
 }

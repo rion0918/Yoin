@@ -21,10 +21,12 @@ ADR（Architecture Decision Record）は、1つの重要な判断について、
 | [0011: Cloudflare無料プラン向けに音声処理の実行先を分離する](0011-cloudflare-free-audio-runtime.md) | Accepted | 2026-10-04 |
 | [0012: 登録した声から話者名を識別する](0012-named-speaker-enrollment.md) | Proposed | 2026-10-05 |
 | [0013: GitHub Actionsで検証と本番デプロイを行う](0013-github-actions-cicd.md) | Accepted | 2026-10-05 |
+| [0014: FirebaseのGoogle認証とUID単位の保存・削除を使用する](0014-firebase-account-isolation.md) | Proposed | 2026-10-05 |
+| [0015: Google Play内部テスト用の配布ビルドを使用する](0015-google-play-internal-distribution.md) | Proposed | 2026-10-05 |
 
 Accepted の記録が現在の採用済み判断です。Proposed は提案段階であり、採用済みとして扱いません。記録の追加・状態変更時には、この一覧も更新します。
 
-番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0014-<short-title>.md` です。
+番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0016-<short-title>.md` です。
 
 ## 作業前に読む
 

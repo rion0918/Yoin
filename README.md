@@ -34,4 +34,6 @@ npm run android:device
 
 接続した端末を選び、development buildをビルド・インストールします。開発用アプリの起動・操作にはMetroへの接続が必要です。Expo Goではバックグラウンド録音を確認できません。
 
+Google認証のネイティブ設定を[配布準備](docs/play-internal-release.md)に従って用意してください。Google Play内部テスト用AABは `playInternal` プロファイルを使用し、配布版の起動にはMetroや開発PCを必要としません。
+
 詳しい環境設定、バックエンド接続、内部テストは[ドキュメントの目次](docs/README.md)から参照してください。

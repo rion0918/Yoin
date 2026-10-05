@@ -35,7 +35,7 @@ for attempt in $(seq 1 30); do
 done
 test "$(curl --silent --show-error --fail "$health_url")" = ok
 
-for route in inspect probe transcribe lyrics music; do
+for route in inspect probe transcribe lyrics music enroll-speaker identify-speakers accounts/delete; do
   status="$(curl --silent --output /dev/null --write-out '%{http_code}' --request POST "http://127.0.0.1:18080/$route" --data '{}')"
   test "$status" = 401
 done

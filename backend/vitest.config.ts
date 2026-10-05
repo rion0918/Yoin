@@ -10,7 +10,8 @@ export default defineConfig({
         d1Databases: ["DB"],
         r2Buckets: ["AUDIO"],
         bindings: {
-          OWNER_ID: "private-tester",
+          FIREBASE_PROJECT_ID: "yoin-auth-test",
+          ALLOWED_TESTER_EMAILS: '["tester@example.com"]',
           AI_BUDGET_USD: "10",
           PUBLIC_API_URL: "https://yoin.test",
         },

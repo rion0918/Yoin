@@ -6,7 +6,6 @@ export type AudioInspection = {
   sizeBytes: number;
   mimeType: string;
 };
-export type Connection = { apiUrl: string; token: string };
 export type RecorderPhase =
   | "off"
   | "preparing"

@@ -10,6 +10,7 @@ import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
 import speakerSchema from "../migrations/0003_speaker_profiles.sql?raw";
 import { handleSpeakers } from "../speakers.ts";
 import type { Env } from "../types.ts";
+import { applyAccountSchema } from "./schema.ts";
 
 vi.mock("../media.ts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../media.ts")>()),
@@ -21,7 +22,7 @@ let bindings: Env;
 beforeEach(async () => {
   await reset();
   vi.resetAllMocks();
-  bindings = { ...env, OWNER_ID: "private-tester" } as unknown as Env;
+  bindings = { ...env } as unknown as Env;
   await bindings.DB.batch(
     `${initialSchema}\n${runtimeSchema}\n${speakerSchema}`
       .split(";")
@@ -29,6 +30,7 @@ beforeEach(async () => {
       .filter(Boolean)
       .map((statement) => bindings.DB.prepare(statement)),
   );
+  await applyAccountSchema(bindings.DB);
 });
 
 function jsonRequest(path: string, method: string, value: unknown) {

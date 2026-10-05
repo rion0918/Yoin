@@ -15,6 +15,7 @@ import {
   type SpeakerProfile,
   type SpeakerSampleDocument,
 } from "../shared/contracts";
+import type { SessionIdentity } from "./auth/types";
 import { ApiError, type Connection, createApi } from "./pipeline/api";
 import {
   addSavedClip,
@@ -36,31 +37,49 @@ import {
 } from "./pipeline/speakers";
 import {
   deleteSpeakerAudio,
+  eraseLibrary,
   importAudio,
-  loadConnection,
   loadLibrary,
+  preserveRecording,
   readAudioPart,
   readSpeakerAudio,
   recoverRecording,
-  saveConnection,
   saveLibrary,
   useAudioEngine,
 } from "./platform";
+import { createAccountScope } from "./platform/account";
 
 function id(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 const message = (error: unknown) =>
-  error instanceof Error ? error.message : "処理を続けられませんでした。";
+  error instanceof Error && /[ぁ-んァ-ヶ一-龠]/.test(error.message)
+    ? error.message
+    : "処理を続けられませんでした。時間をおいてお試しください。";
 
-export function useSession() {
+export function useSession(identity: SessionIdentity) {
+  const [scope] = useState(() =>
+    createAccountScope(identity.uid, async () => {
+      await audioRef.current.stopRecording();
+      await audioRef.current.stopPlayback();
+      await queue.current;
+    }),
+  );
   const [state, setState] = useState<LibraryDocument>(emptyLibrary);
   const stateRef = useRef(state);
-  const [connection, setConnection] = useState<Connection>({
-    apiUrl: "",
-    token: "",
+  const connectionRef = useRef<Connection>({
+    apiUrl:
+      process.env.EXPO_PUBLIC_API_URL ??
+      "https://yoin-private-api.h-rion-0910.workers.dev",
+    signal: scope.signal,
+    getIdToken: async () => {
+      scope.assertActive();
+      const token = await identity.getIdToken();
+      scope.assertActive();
+      return token;
+    },
   });
-  const connectionRef = useRef(connection);
+  const [accountDeleted, setAccountDeleted] = useState(false);
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -82,30 +101,34 @@ export function useSession() {
   const commit = useCallback(
     (change: (current: LibraryDocument) => LibraryDocument) => {
       const operation = queue.current.then(async () => {
+        scope.assertActive();
         const next = change(stateRef.current);
-        await saveLibrary(next);
+        await saveLibrary(identity.uid, next);
+        scope.assertActive();
         stateRef.current = next;
         setState(next);
       });
       queue.current = operation.catch(() => {});
       return operation;
     },
-    [],
+    [scope, identity.uid],
   );
 
   const nativeStopped = useCallback(
     async (clip: SavedRecording) => {
+      scope.assertActive();
       const previous =
         "purpose" in clip && clip.purpose === "speaker"
           ? stateRef.current.speakerProfiles?.find(
               (profile) => profile.id === clip.speakerProfileId,
             )?.sample?.localUri
           : undefined;
-      await commit((current) => addSavedClip(current, clip));
+      const saved = await preserveRecording(identity.uid, clip);
+      await commit((current) => addSavedClip(current, saved));
       if (previous && previous !== clip.localUri)
         await deleteSpeakerAudio(previous);
     },
-    [commit],
+    [commit, identity.uid, scope],
   );
   const audio = useAudioEngine(nativeStopped);
   const audioRef = useRef(audio);
@@ -113,8 +136,8 @@ export function useSession() {
 
   useEffect(() => {
     let alive = true;
-    void Promise.all([loadLibrary(), loadConnection()])
-      .then(async ([stored, savedConnection]) => {
+    void loadLibrary(identity.uid)
+      .then(async (stored) => {
         let restored = stored;
         if (stored.pendingRecording) {
           const pending = stored.pendingRecording;
@@ -125,10 +148,14 @@ export function useSession() {
                 )
               : stored.drafts.some((draft) => draft.id === pending.draftId);
           const recovered = canRecover
-            ? await recoverRecording(stored.pendingRecording)
+            ? await recoverRecording(identity.uid, stored.pendingRecording)
             : null;
-          restored = restoreRecording(stored, recovered);
-          await saveLibrary(restored);
+          restored = restoreRecording(
+            stored,
+            recovered ? await preserveRecording(identity.uid, recovered) : null,
+          );
+          scope.assertActive();
+          await saveLibrary(identity.uid, restored);
         }
         for (const pending of stored.recoveryFiles ?? []) {
           const exists =
@@ -138,17 +165,19 @@ export function useSession() {
                 )
               : restored.drafts.some((draft) => draft.id === pending.draftId);
           if (!exists) continue;
-          const recovered = await recoverRecording(pending);
+          const recovered = await recoverRecording(identity.uid, pending);
           if (recovered) {
-            restored = addSavedClip(restored, recovered);
-            await saveLibrary(restored);
+            restored = addSavedClip(
+              restored,
+              await preserveRecording(identity.uid, recovered),
+            );
+            scope.assertActive();
+            await saveLibrary(identity.uid, restored);
           }
         }
         if (!alive) return;
         stateRef.current = restored;
         setState(restored);
-        connectionRef.current = savedConnection;
-        setConnection(savedConnection);
         setReady(true);
       })
       .catch((failure) => {
@@ -156,13 +185,14 @@ export function useSession() {
       });
     return () => {
       alive = false;
+      scope.close();
     };
-  }, []);
+  }, [scope, identity.uid]);
 
   useEffect(() => {
-    if (!ready || !connection.apiUrl || !connection.token) return;
+    if (!ready) return;
     let active = true;
-    void createApi(connection)
+    void createApi(connectionRef.current)
       .speakers()
       .then((profiles) => {
         if (active)
@@ -172,17 +202,23 @@ export function useSession() {
     return () => {
       active = false;
     };
-  }, [ready, connection, commit]);
+  }, [ready, commit]);
 
-  async function run<T>(action: () => Promise<T>): Promise<T | undefined> {
+  async function run<T>(
+    action: () => Promise<T>,
+    closing = false,
+  ): Promise<T | undefined> {
     if (!ready || busyRef.current) return undefined;
     busyRef.current = true;
     setBusy(true);
     setError(null);
     try {
-      return await action();
+      scope.assertActive();
+      const result = await action();
+      if (!closing) scope.assertActive();
+      return result;
     } catch (failure) {
-      setError(message(failure));
+      if (!scope.signal.aborted || closing) setError(message(failure));
       return undefined;
     } finally {
       busyRef.current = false;
@@ -194,15 +230,16 @@ export function useSession() {
     if (!draft) throw new Error("記録が見つかりません。");
     return draft;
   };
-  async function stopAndSave() {
+  const stopAndSave = useCallback(async () => {
     const clip =
       unsavedClip.current ?? (await audioRef.current.stopRecording());
     if (clip) {
-      unsavedClip.current = clip;
-      await commit((current) => addSavedClip(current, clip));
+      const saved = await preserveRecording(identity.uid, clip);
+      unsavedClip.current = saved;
+      await commit((current) => addSavedClip(current, saved));
       unsavedClip.current = null;
     }
-  }
+  }, [commit, identity.uid]);
   async function newRecording() {
     return run(async () => {
       assertCanRecordConversation(stateRef.current);
@@ -253,8 +290,6 @@ export function useSession() {
       const cleanName = name.trim();
       if (!cleanName || cleanName.length > 80)
         throw new Error("名前を80文字以内で入力してください。");
-      if (!connectionRef.current.apiUrl || !connectionRef.current.token)
-        throw new Error("先に接続設定を保存してください。");
       const api = createApi(connectionRef.current);
       const speakerId = id("speaker");
       let profile: SpeakerProfile;
@@ -349,8 +384,6 @@ export function useSession() {
         throw new Error("10秒以上30秒以内の声を録音してください。");
       if (sample.sizeBytes > MAX_SPEAKER_SAMPLE_BYTES)
         throw new Error("録音が大きすぎます。短く録り直してください。");
-      if (!connectionRef.current.apiUrl || !connectionRef.current.token)
-        throw new Error("声の登録には接続設定が必要です。");
       const api = createApi(connectionRef.current);
       const metadata = {
         id: sample.id,
@@ -524,7 +557,7 @@ export function useSession() {
       if (getDraft(draftId).status !== "local")
         throw new Error("仕上げ中の記録には音声を追加できません。");
       await stopAndSave();
-      const clip = await importAudio(draftId);
+      const clip = await importAudio(identity.uid, draftId);
       if (clip) await commit((current) => addSavedClip(current, clip));
     });
   }
@@ -561,10 +594,10 @@ export function useSession() {
         draft.clips.reduce((sum, clip) => sum + clip.durationMs, 0) >
         MAX_AUDIO_MS
       )
-        throw new Error("今回の検証は合計60分までの音声に対応しています。");
+        throw new Error("一曲に使える音声は合計60分までです。");
       if (draft.clips.some((clip) => clip.sizeBytes > MAX_AUDIO_BYTES))
         throw new Error(
-          "今回の検証では1ファイル100 MiBまで送信できます。録音は端末に残っています。",
+          "1ファイル100 MiBまで送信できます。録音は端末に残っています。",
         );
       const api = createApi(connectionRef.current);
       const prepareKey =
@@ -701,19 +734,15 @@ export function useSession() {
   }
   const polling = useRef(false);
   const refresh = useCallback(async () => {
-    if (
-      polling.current ||
-      busyRef.current ||
-      !connectionRef.current.apiUrl ||
-      !connectionRef.current.token
-    )
-      return;
+    if (polling.current || busyRef.current || scope.signal.aborted) return;
     polling.current = true;
     try {
       const api = createApi(connectionRef.current);
       for (const draft of stateRef.current.drafts.filter(
         (value) =>
-          value.status === "preparing" || value.status === "generating",
+          value.status === "preparing" ||
+          value.status === "generating" ||
+          value.status === "needs_reconciliation",
       )) {
         let jobId = draft.jobId;
         if (!jobId) {
@@ -752,13 +781,13 @@ export function useSession() {
         }
       }
     } catch (failure) {
-      setError(message(failure));
+      if (!scope.signal.aborted) setError(message(failure));
     } finally {
       polling.current = false;
     }
-  }, [commit]);
+  }, [commit, scope]);
   useEffect(() => {
-    if (!ready || !connection.apiUrl || !connection.token) return;
+    if (!ready) return;
     void refresh();
     const timer = setInterval(() => {
       if (AppState.currentState === "active") void refresh();
@@ -770,51 +799,80 @@ export function useSession() {
       clearInterval(timer);
       subscription.remove();
     };
-  }, [ready, refresh, connection.apiUrl, connection.token]);
+  }, [ready, refresh]);
 
-  async function configure(value: Connection) {
-    return run(async () => {
-      const url = new URL(value.apiUrl);
-      if (
-        url.protocol !== "https:" &&
-        !(
-          url.protocol === "http:" &&
-          ["localhost", "127.0.0.1", "10.0.2.2"].includes(url.hostname)
-        )
-      )
-        throw new Error("接続先にはHTTPSのURLを指定してください。");
-      if (!value.token.trim())
-        throw new Error("検証用トークンを入力してください。");
-      await saveConnection({
-        apiUrl: value.apiUrl.replace(/\/$/, ""),
-        token: value.token.trim(),
-      });
-      connectionRef.current = {
-        apiUrl: value.apiUrl.replace(/\/$/, ""),
-        token: value.token.trim(),
-      };
-      setConnection(connectionRef.current);
-      const api = createApi(connectionRef.current);
-      const [songs, speakers] = await Promise.all([
-        api.songs(),
-        api.speakers(),
-      ]);
-      await commit((current) =>
-        mergeSpeakerProfiles(
-          {
+  useEffect(() => {
+    if (!ready) return;
+    let active = true;
+    const api = createApi(connectionRef.current);
+    void api
+      .account()
+      .then(async (account) => {
+        if (!active) return;
+        if (account.uid !== identity.uid)
+          throw new Error("ログインを確認できません。");
+        if (account.status !== "active") {
+          await stopAndSave();
+          await audioRef.current.stopPlayback();
+          await api.deleteAccount();
+          scope.close();
+          await queue.current;
+          await eraseLibrary(identity.uid);
+          setAccountDeleted(true);
+          return;
+        }
+        const songs = await api.songs();
+        if (active)
+          await commit((current) => ({
             ...current,
+            drafts: current.drafts.filter(
+              (draft) => !songs.some((song) => song.draftId === draft.id),
+            ),
             songs: [
               ...songs,
               ...current.songs.filter(
                 (song) => !songs.some((remote) => remote.id === song.id),
               ),
             ],
-          },
-          speakers,
-        ),
-      );
+          }));
+      })
+      .catch((failure) => {
+        if (active && !scope.signal.aborted) setError(message(failure));
+      });
+    return () => {
+      active = false;
+    };
+  }, [ready, commit, scope, identity.uid, stopAndSave]);
+  async function suspend() {
+    if (scope.signal.aborted) return true;
+    if (busyRef.current) return false;
+    busyRef.current = true;
+    setBusy(true);
+    try {
+      await stopAndSave();
+      await audioRef.current.stopPlayback();
+      await queue.current;
+      scope.close();
       return true;
-    });
+    } catch (failure) {
+      setError(message(failure));
+      return false;
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }
+  async function deleteAccount() {
+    return run(async () => {
+      await stopAndSave();
+      await audioRef.current.stopPlayback();
+      const api = createApi(connectionRef.current);
+      await api.deleteAccount();
+      scope.close();
+      await queue.current;
+      await eraseLibrary(identity.uid);
+      return true;
+    }, true);
   }
   const openSong = useCallback(
     async (song: SongDocument) => {
@@ -839,7 +897,7 @@ export function useSession() {
       const request = ++playbackRequest.current;
       await audioRef.current.pause();
       const url = await createApi(connectionRef.current).audioUrl(song.audioId);
-      if (request !== playbackRequest.current) return;
+      if (request !== playbackRequest.current || scope.signal.aborted) return;
       const resumeMs =
         playbackRef.current.positionMs >= song.durationMs
           ? 0
@@ -867,7 +925,7 @@ export function useSession() {
         : undefined;
       const uri =
         local || (await createApi(connectionRef.current).audioUrl(clipId)).url;
-      if (request !== playbackRequest.current) return;
+      if (request !== playbackRequest.current || scope.signal.aborted) return;
       await audioRef.current.play(uri, startMs, endMs);
     });
   }
@@ -902,11 +960,12 @@ export function useSession() {
   return {
     state,
     ready,
+    accountDeleted,
     busy,
     error: error || audio.state.error,
     clearError,
-    connection,
-    configure,
+    suspend,
+    deleteAccount,
     recorder: audio.state,
     newRecording,
     toggleRecording,

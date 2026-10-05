@@ -3,10 +3,33 @@ import test from "node:test";
 import type { SpeakerProfile } from "../../shared/contracts.ts";
 import { ApiError, createApi } from "./api.ts";
 
+test("uses a fresh Firebase token for each JSON request and binary upload", async () => {
+  let tokens = 0;
+  const headers: string[] = [];
+  const api = createApi(
+    {
+      apiUrl: "https://test.invalid",
+      getIdToken: async () => `firebase-${++tokens}`,
+    },
+    async (_url, options) => {
+      headers.push(new Headers(options?.headers).get("Authorization") ?? "");
+      return Response.json([]);
+    },
+  );
+  await api.songs();
+  await api.uploadPart("clip", "upload", 1, new Uint8Array([1]));
+  await api.uploadSpeakerSample("speaker", "sample", new Uint8Array([1]));
+  assert.deepEqual(headers, [
+    "Bearer firebase-1",
+    "Bearer firebase-2",
+    "Bearer firebase-3",
+  ]);
+});
+
 test("a lost generation response is never automatically sent twice", async () => {
   let requests = 0;
   const api = createApi(
-    { apiUrl: "https://test.invalid", token: "tester" },
+    { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
     async (_url, options) => {
       requests++;
       assert.equal(
@@ -22,13 +45,13 @@ test("a lost generation response is never automatically sent twice", async () =>
   );
   await assert.rejects(
     api.generate("draft", 3, "same-operation"),
-    /同じ処理ID/,
+    /音声と歌詞/,
   );
   assert.equal(requests, 1);
 });
 test("invalid auth and stale revisions are reported without starting another operation", async () => {
   const api = createApi(
-    { apiUrl: "https://test.invalid", token: "tester" },
+    { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
     async () =>
       Response.json({ error: "歌詞の版が古いです。" }, { status: 409 }),
   );
@@ -40,14 +63,14 @@ test("invalid auth and stale revisions are reported without starting another ope
 
 test("server authentication errors explain the next action in Japanese", async () => {
   const api = createApi(
-    { apiUrl: "https://test.invalid", token: "tester" },
+    { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
     async () => Response.json({ error: "unauthorized" }, { status: 401 }),
   );
-  await assert.rejects(api.songs(), /検証用トークン/);
+  await assert.rejects(api.songs(), /ログイン/);
 });
 test("missing speaker API reports an unsupported server instead of invalid connection settings", async () => {
   const api = createApi(
-    { apiUrl: "https://test.invalid", token: "tester" },
+    { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
     async () => Response.json({ error: "route_not_found" }, { status: 404 }),
   );
   await assert.rejects(
@@ -56,7 +79,7 @@ test("missing speaker API reports an unsupported server instead of invalid conne
       error instanceof ApiError &&
       error.status === 404 &&
       error.message ===
-        "接続先がこの機能に対応していません。サーバーの更新状況を確認してください。",
+        "現在この操作を利用できません。時間をおいてお試しください。",
   );
 });
 test("multipart progress uses the server ETag and reads only the requested bytes", async () => {
@@ -69,7 +92,7 @@ test("multipart progress uses the server ETag and reads only the requested bytes
   };
   const requests: { url: string; method: string; body?: unknown }[] = [];
   const api = createApi(
-    { apiUrl: "https://test.invalid", token: "tester" },
+    { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
     async (url, options) => {
       requests.push({
         url: String(url),
@@ -107,7 +130,7 @@ test("multipart progress uses the server ETag and reads only the requested bytes
 test("speaker profile changes use authenticated JSON requests", async () => {
   const requests: { url: string; method: string; body: unknown }[] = [];
   const api = createApi(
-    { apiUrl: "https://test.invalid", token: "tester" },
+    { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
     async (url, options) => {
       requests.push({
         url: String(url),
@@ -133,7 +156,7 @@ test("speaker profile changes use authenticated JSON requests", async () => {
 test("speaker enrollment can resolve a lost success response by reading the profile", async () => {
   let requests = 0;
   const api = createApi(
-    { apiUrl: "https://test.invalid", token: "tester" },
+    { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
     async (url) => {
       requests++;
       if (String(url).endsWith("/enroll"))
@@ -154,7 +177,7 @@ test("speaker enrollment can resolve a lost success response by reading the prof
 
 test("multipart progress uses the server ETag and reads only the requested bytes", async () => {
   const api = createApi(
-    { apiUrl: "https://test.invalid", token: "tester" },
+    { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
     async (url, options) => {
       assert.equal(
         String(url),
@@ -171,4 +194,41 @@ test("multipart progress uses the server ETag and reads only the requested bytes
     await api.uploadPart("c1", "upload-1", 2, new Uint8Array([3, 4])),
     { partNumber: 2, etag: "confirmed" },
   );
+});
+
+test("logout aborts a request waiting for an ID token before it can submit", async () => {
+  const controller = new AbortController();
+  let release: (token: string) => void = () => {};
+  let submissions = 0;
+  const api = createApi(
+    {
+      apiUrl: "https://test.invalid",
+      signal: controller.signal,
+      getIdToken: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    },
+    async () => {
+      submissions++;
+      return Response.json({});
+    },
+  );
+  const pending = api.generate("draft", 1, "operation");
+  controller.abort();
+  release("old-token");
+  await assert.rejects(pending);
+  assert.equal(submissions, 0);
+});
+test("a paid POST rejected by authentication is not retried", async () => {
+  let submissions = 0;
+  const api = createApi(
+    { apiUrl: "https://test.invalid", getIdToken: async () => "token" },
+    async () => {
+      submissions++;
+      return Response.json({ error: "unauthorized" }, { status: 401 });
+    },
+  );
+  await assert.rejects(api.generate("draft", 1, "operation"), ApiError);
+  assert.equal(submissions, 1);
 });

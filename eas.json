@@ -1,0 +1,16 @@
+{
+  "cli": { "appVersionSource": "remote" },
+  "build": {
+    "playInternal": {
+      "distribution": "store",
+      "developmentClient": false,
+      "environment": "production",
+      "autoIncrement": true,
+      "android": { "buildType": "app-bundle" },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://yoin-private-api.h-rion-0910.workers.dev",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "yoin-app-20261004"
+      }
+    }
+  }
+}

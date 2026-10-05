@@ -1,14 +1,14 @@
 import { createAudioPlayer } from "expo-audio";
 import * as DocumentPicker from "expo-document-picker";
 import { Directory, File, FileMode, Paths } from "expo-file-system";
-import * as SecureStore from "expo-secure-store";
-import { openDatabaseAsync } from "expo-sqlite";
+import { deleteDatabaseAsync, openDatabaseAsync } from "expo-sqlite";
 import {
   emptyLibrary,
   type LibraryDocument,
   type LocalClip,
   type SavedRecording,
 } from "../../shared/contracts";
+import { accountStorageKey } from "./account";
 import { waitUntilLoaded } from "./audio.native";
 import {
   audioPartRange,
@@ -18,15 +18,27 @@ import {
   mimeTypeForUri,
   validateInspection,
 } from "./operations";
-import type { AudioInspection, Connection, PendingRecording } from "./types";
+import type { AudioInspection, PendingRecording } from "./types";
 
 const writes = createSerialQueue();
-let database: ReturnType<typeof openDatabaseAsync> | null = null;
-const connectionKey = "yoin.connection";
+const databases = new Map<string, ReturnType<typeof openDatabaseAsync>>();
+const erased = new Set<string>();
+export function accountAudioDirectory(uid: string) {
+  if (erased.has(uid)) throw new Error("このアカウントは削除されています。");
+  const directory = new Directory(
+    Paths.document,
+    "accounts",
+    accountStorageKey(uid),
+    "audio",
+  );
+  directory.create({ idempotent: true, intermediates: true });
+  return directory;
+}
 
-function getDatabase() {
+function getDatabase(uid: string) {
+  let database = databases.get(uid);
   if (!database) {
-    database = openDatabaseAsync("yoin.db")
+    database = openDatabaseAsync(`${accountStorageKey(uid)}.db`)
       .then(async (db) => {
         await db.execAsync(
           "PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS library (id INTEGER PRIMARY KEY CHECK (id = 1), document TEXT NOT NULL);",
@@ -34,15 +46,16 @@ function getDatabase() {
         return db;
       })
       .catch((error: unknown) => {
-        database = null;
+        databases.delete(uid);
         throw error;
       });
+    databases.set(uid, database);
   }
   return database;
 }
 
-export async function loadLibrary(): Promise<LibraryDocument> {
-  const db = await getDatabase();
+export async function loadLibrary(uid: string): Promise<LibraryDocument> {
+  const db = await getDatabase(uid);
   const row = await db.getFirstAsync<{ document: string }>(
     "SELECT document FROM library WHERE id = 1",
   );
@@ -51,10 +64,14 @@ export async function loadLibrary(): Promise<LibraryDocument> {
   return { ...stored, speakerProfiles: stored.speakerProfiles ?? [] };
 }
 
-export function saveLibrary(state: LibraryDocument): Promise<void> {
+export function saveLibrary(
+  uid: string,
+  state: LibraryDocument,
+): Promise<void> {
   const snapshot = JSON.stringify(state);
   return writes.run(async () => {
-    const db = await getDatabase();
+    if (erased.has(uid)) throw new Error("このアカウントは削除されています。");
+    const db = await getDatabase(uid);
     await db.withExclusiveTransactionAsync(async (transaction) => {
       await transaction.runAsync(
         "INSERT INTO library (id, document) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET document = excluded.document",
@@ -81,7 +98,10 @@ export async function inspectLocalAudio(uri: string): Promise<AudioInspection> {
   }
 }
 
-export async function importAudio(draftId: string): Promise<LocalClip | null> {
+export async function importAudio(
+  uid: string,
+  draftId: string,
+): Promise<LocalClip | null> {
   const result = await DocumentPicker.getDocumentAsync({
     type: "audio/*",
     copyToCacheDirectory: true,
@@ -89,26 +109,32 @@ export async function importAudio(draftId: string): Promise<LocalClip | null> {
   });
   if (result.canceled) return null;
   const asset = result.assets[0];
-  const inspection = await inspectLocalAudio(asset.uri);
-  inspection.mimeType = mimeTypeForUri(
-    asset.uri,
-    asset.mimeType ?? inspection.mimeType,
-  );
-  const id = `import-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  const directory = new Directory(Paths.document, "audio");
-  directory.create({ idempotent: true, intermediates: true });
   const source = new File(asset.uri);
-  const extension = source.extension || ".audio";
-  const destination = new File(directory, `${id}${extension}`);
-  await source.copy(destination);
-  return importedClip(
-    id,
-    draftId,
-    destination.uri,
-    inspection,
-    new Date().toISOString(),
-    Intl.DateTimeFormat().resolvedOptions().timeZone,
-  );
+  try {
+    const inspection = await inspectLocalAudio(asset.uri);
+    inspection.mimeType = mimeTypeForUri(
+      asset.uri,
+      asset.mimeType ?? inspection.mimeType,
+    );
+    const id = `import-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    const directory = accountAudioDirectory(uid);
+    const destination = new File(
+      directory,
+      `${id}${source.extension || ".audio"}`,
+    );
+    source.copy(destination);
+    return importedClip(
+      id,
+      draftId,
+      destination.uri,
+      inspection,
+      new Date().toISOString(),
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    );
+  } finally {
+    if (source.uri.startsWith(Paths.cache.uri) && source.exists)
+      source.delete();
+  }
 }
 
 export async function readAudioPart(
@@ -132,11 +158,16 @@ export async function readAudioPart(
 }
 
 export async function recoverRecording(
+  uid: string,
   pending: PendingRecording,
 ): Promise<SavedRecording | null> {
   if (!pending.localUri) return null;
   try {
-    const inspection = await inspectLocalAudio(pending.localUri);
+    const candidate = new File(pending.localUri).exists
+      ? pending.localUri
+      : new File(accountAudioDirectory(uid), `${pending.clipId}.m4a`).uri;
+    const inspection = await inspectLocalAudio(candidate);
+    pending = { ...pending, localUri: candidate };
     return pending.purpose === "speaker"
       ? clipFromRecording(pending, inspection)
       : clipFromRecording(pending, inspection);
@@ -145,14 +176,41 @@ export async function recoverRecording(
   }
 }
 
-export async function loadConnection(): Promise<Connection> {
-  const value = await SecureStore.getItemAsync(connectionKey);
-  return value ? (JSON.parse(value) as Connection) : { apiUrl: "", token: "" };
+export async function preserveRecording(
+  uid: string,
+  clip: SavedRecording,
+): Promise<SavedRecording> {
+  const destination = new File(accountAudioDirectory(uid), `${clip.id}.m4a`);
+  if (clip.localUri !== destination.uri) {
+    const source = new File(clip.localUri);
+    if (!destination.exists) source.move(destination);
+  }
+  return { ...clip, localUri: destination.uri };
 }
-
-export async function saveConnection(connection: Connection): Promise<void> {
-  await SecureStore.setItemAsync(connectionKey, JSON.stringify(connection), {
-    keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+export async function eraseLibrary(uid: string): Promise<void> {
+  erased.add(uid);
+  return writes.run(async () => {
+    const library = await loadLibrary(uid);
+    const pending = [
+      library.pendingRecording,
+      ...(library.recoveryFiles ?? []),
+    ];
+    for (const recording of pending) {
+      if (recording?.localUri) {
+        const file = new File(recording.localUri);
+        if (file.exists) file.delete();
+      }
+    }
+    const db = await databases.get(uid);
+    if (db) await db.closeAsync();
+    databases.delete(uid);
+    await deleteDatabaseAsync(`${accountStorageKey(uid)}.db`);
+    const directory = new Directory(
+      Paths.document,
+      "accounts",
+      accountStorageKey(uid),
+    );
+    if (directory.exists) directory.delete();
   });
 }
 export async function readSpeakerAudio(uri: string): Promise<Uint8Array> {

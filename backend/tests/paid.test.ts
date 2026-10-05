@@ -263,8 +263,14 @@ it("allows an explicit retry only when validation failed before submission", asy
 });
 
 it("retains actual cost if deletion finishes while a provider response is in flight", async () => {
+  let ledgerId: string | undefined;
   await expect(
     paidCall(bindings, job, "late-result", "music", 0.08, async () => {
+      ledgerId = (
+        await bindings.DB.prepare(
+          "SELECT ledger_id FROM provider_attempts WHERE id = 'late-result'",
+        ).first<{ ledger_id: string }>()
+      )?.ledger_id;
       await bindings.DB.prepare(
         "INSERT INTO accounts (uid, status) VALUES ('private-tester', 'deleted')",
       ).run();
@@ -276,8 +282,10 @@ it("retains actual cost if deletion finishes while a provider response is in fli
   ).rejects.toBeDefined();
   expect(
     await bindings.DB.prepare(
-      "SELECT status, amount_micros FROM budget_ledger WHERE id = 'late-result'",
-    ).first(),
+      "SELECT status, amount_micros FROM budget_ledger WHERE id = ?",
+    )
+      .bind(ledgerId ?? "")
+      .first(),
   ).toEqual({ status: "cost_overrun", amount_micros: 120000 });
   expect(
     await bindings.AUDIO.head("results/private-tester/late-result.json"),
@@ -295,7 +303,7 @@ it("keeps a known overrun when deletion is pending but its private attempt still
   ).rejects.toBeDefined();
   expect(
     await bindings.DB.prepare(
-      "SELECT status, amount_micros FROM budget_ledger WHERE id = 'deleting-result'",
+      "SELECT status, amount_micros FROM budget_ledger WHERE id = (SELECT ledger_id FROM provider_attempts WHERE id = 'deleting-result')",
     ).first(),
   ).toEqual({ status: "cost_overrun", amount_micros: 120000 });
 });

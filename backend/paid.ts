@@ -16,6 +16,7 @@ export const RESERVATION_USD = { transcribe: 0.6, lyrics: 0.5, music: 0.08 };
 async function retainCost<T>(
   env: Env,
   attemptId: string,
+  ledgerId: string,
   reserve: number,
   output: PaidOutput<T>,
 ) {
@@ -28,7 +29,7 @@ async function retainCost<T>(
     ).bind(status, cost, attemptId),
     env.DB.prepare(
       "UPDATE budget_ledger SET status = ?, amount_micros = ? WHERE id = ?",
-    ).bind(status, cost, attemptId),
+    ).bind(status, cost, ledgerId),
   ]);
 }
 async function settle<T>(
@@ -128,11 +129,17 @@ export async function paidCall<T>(
     if (duplicate) throw new ReconciliationError();
     throw new HttpError(402, "ai_budget_exhausted");
   }
+  const ledger = await env.DB.prepare(
+    "SELECT ledger_id FROM provider_attempts WHERE id = ? AND owner_id = ?",
+  )
+    .bind(attemptId, job.owner_id)
+    .first<{ ledger_id: string }>();
+  if (!ledger?.ledger_id) throw new ReconciliationError();
   try {
     const output = await call();
     if (!Number.isFinite(output.costUsd) || output.costUsd < 0)
       throw new ReconciliationError();
-    await retainCost(env, attemptId, reserve, output);
+    await retainCost(env, attemptId, ledger.ledger_id, reserve, output);
     await assertAccountActive(env, job.owner_id);
     const outputKey = `results/${job.owner_id}/${attemptId}.json`;
     if (!(await env.AUDIO.head(outputKey)))

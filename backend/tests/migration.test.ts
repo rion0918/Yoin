@@ -42,14 +42,27 @@ it("migrates existing spend and unknown reservations without resetting the budge
       .all()
   ).results;
   await applyAccountSchema(db);
+  const ledger = (
+    await db.prepare("SELECT * FROM budget_ledger ORDER BY amount_micros").all()
+  ).results;
   expect(
-    (await db.prepare("SELECT * FROM budget_ledger ORDER BY id").all()).results,
-  ).toEqual(original);
+    ledger.map(({ status, amount_micros }) => ({ status, amount_micros })),
+  ).toEqual(
+    original.map(({ status, amount_micros }) => ({ status, amount_micros })),
+  );
+  expect(
+    ledger.every(({ id }) => !original.some((attempt) => attempt.id === id)),
+  ).toBe(true);
+  expect(new Set(ledger.map(({ id }) => id)).size).toBe(2);
   expect((await db.prepare("SELECT title FROM drafts").first())?.title).toBe(
     "旧データ",
   );
   await db.prepare("DELETE FROM provider_attempts").run();
   expect(
-    (await db.prepare("SELECT * FROM budget_ledger ORDER BY id").all()).results,
-  ).toEqual(original);
+    (
+      await db
+        .prepare("SELECT * FROM budget_ledger ORDER BY amount_micros")
+        .all()
+    ).results,
+  ).toEqual(ledger);
 });

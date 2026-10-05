@@ -10,7 +10,7 @@ Googleログイン、UIDごとの端末・サーバーデータ分離、アカ�
 | :--- | :--- | :--- |
 | `npm run check`・`npm run typecheck`・`npm run backend:typecheck` | 成功 | Nix環境。アプリ・配布設定・バックエンドの静的確認 |
 | `npm test` | 97/97成功 | IDトークン取得、認証失敗時の有料POST再送防止、UID別保存キー、切り替え時の遅延応答・録音停止待ち、配布設定の不足・不一致を含む |
-| `npm run backend:test` | 54/54成功 | 署名・発行元・対象プロジェクト・期限・Google認証・検証済み許可メール、通常API・署名音声URL・話者・コールバックの所有者、削除と音声送信・Workflow作成の競合、削除後の費用保持・全利用者共通上限を確認。Google署名キーと応答はテスト用に置き換え、D1/R2はテストbinding |
+| `npm run backend:test` | 55/55成功 | 署名・発行元・対象プロジェクト・期限・Google認証・検証済み許可メール、通常API・署名音声URL・話者・コールバックの所有者、削除と音声送信・Workflow作成の競合、未作成・消去済みWorkflowの扱い、削除後の費用保持・全利用者共通上限を確認。Google署名キーと応答はテスト用に置き換え、D1/R2はテストbinding |
 | `npm --prefix backend run test:media` | 9/9成功、スキップ0 | NixのFFmpeg/FFprobeで26分・60分の合成音声を処理。Firebase削除の内部APIは認証・入力・冪等性を確認し、Firebase Adminの呼び出しは置き換え |
 | `npm run export` | 成功 | Android・iOS・WebのExpo export。署名付きAABやAndroid実機での起動の確認ではない |
 | Worker `deploy --dry-run` | 成功 | 準備・生成・アカウント削除の3つのWorkflowを含むbundleを確認。実環境へは未反映 |
@@ -18,6 +18,8 @@ Googleログイン、UIDごとの端末・サーバーデータ分離、アカ�
 | `EAS_BUILD_PROFILE=playInternal npx expo config --type public` | 必須設定の不足で意図どおり失敗 | `google-services.json` が未配置。設定済みfixtureでは配布設定の検証が成功することを単体テストで確認 |
 
 認証、利用者分離、遅延応答、削除、費用保持、配布設定の回帰テストは、実装前にRED、実装後にGREENを確認しました。有料AIは呼び出していません。既存の開発テストデータと未確定予約を新しいUIDへ自動移管・初期化していません。
+
+PRレビューで費用台帳のIDと削除再開の2点を修正しました。費用台帳はランダムIDを使用し、会話・ジョブ由来の試行IDとの対応は削除対象の試行テーブルにだけ保存します。削除途中に実費が判明した場合も、独立した台帳IDで金額を保持します。Workflowの不存在エラーだけを除外し、一時的なlookup障害は削除ステップの再試行へ返します。どちらもREDからGREENを確認しました。不存在の扱いは[CloudflareのAPI契約](https://developers.cloudflare.com/workflows/build/workers-api/#get)と使用中のSDK実装を確認していますが、実クラウドでの削除再開は未確認です。
 
 残る作業は[Play内部テストの配布・運用手順](play-internal-release.md)に記載しています。Firebase Authenticationの有効化、3種類の署名証明書、`google-services.json`、EASプロジェクトID、テスター許可リスト、Cloud Run実行アカウントのFirebase削除権限は未設定です。実費・予約の照合、D1移行とサービス反映の後に署名付きAABを作成する必要があります。
 

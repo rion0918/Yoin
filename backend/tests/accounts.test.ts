@@ -82,14 +82,15 @@ beforeEach(async () => {
       await bindings.AUDIO.put(`${category}/${uid}/song.mp3`, "abc");
   }
   bindings.GENERATE = {
-    get: async (id: string) => ({
-      status: async () => ({
-        status: deletedWorkflows.includes(id) ? "unknown" : "running",
-      }),
-      delete: async () => {
-        deletedWorkflows.push(id);
-      },
-    }),
+    get: async (id: string) => {
+      if (deletedWorkflows.includes(id)) throw new Error("instance.not_found");
+      return {
+        status: async () => ({ status: "running" }),
+        delete: async () => {
+          deletedWorkflows.push(id);
+        },
+      };
+    },
   } as unknown as Env["GENERATE"];
 });
 afterEach(() => vi.restoreAllMocks());
@@ -175,6 +176,13 @@ it("deletion resumes after a service failure, removes only its owner, and keeps 
       ).first()
     )?.total,
   ).toBe(160000);
+  const ledger = (
+    await bindings.DB.prepare("SELECT * FROM budget_ledger").all()
+  ).results;
+  expect(ledger).toHaveLength(2);
+  expect(
+    ledger.every(({ id }) => id !== "alice-attempt" && id !== "bob-attempt"),
+  ).toBe(true);
   for (const category of [
     "originals",
     "processed",
@@ -237,6 +245,38 @@ it("requires recent Google authentication and refuses to report an undispatched 
       "SELECT status FROM accounts WHERE uid = 'alice'",
     ).first(),
   ).toEqual({ status: "deleting" });
+});
+
+it("skips undispatched workflows but preserves lookup failures for retry", async () => {
+  await bindings.DB.prepare(
+    "UPDATE accounts SET status = 'deleting' WHERE uid = 'alice'",
+  ).run();
+  const lookup = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("workflow service unavailable"))
+    .mockRejectedValue(new Error("instance.not_found"));
+  bindings.GENERATE = { get: lookup } as unknown as Env["GENERATE"];
+  const service = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async () => Response.json({ deleted: true }));
+  await expect(deleteAccountData(bindings, "alice")).rejects.toThrow(
+    "workflow service unavailable",
+  );
+  expect(service).not.toHaveBeenCalled();
+  expect(
+    await bindings.DB.prepare(
+      "SELECT status FROM accounts WHERE uid = 'alice'",
+    ).first(),
+  ).toEqual({ status: "deleting" });
+  await deleteAccountData(bindings, "alice");
+  expect(
+    await bindings.DB.prepare(
+      "SELECT status FROM accounts WHERE uid = 'alice'",
+    ).first(),
+  ).toEqual({ status: "deleted" });
+  expect(
+    await bindings.DB.prepare("SELECT owner_id FROM jobs").all(),
+  ).toMatchObject({ results: [{ owner_id: "bob" }] });
 });
 
 it("can finish deletion after multipart completion lost its D1 acknowledgement", async () => {

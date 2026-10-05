@@ -90,8 +90,18 @@ export async function deleteAccountData(env: Env, uid: string) {
   for (const job of jobs) {
     const workflow = job.kind === "prepare" ? env.PREPARE : env.GENERATE;
     // Completed and in-flight Workflow results both contain private audio/lyrics.
-    const instance = await workflow.get(job.id);
-    if ((await instance.status()).status !== "unknown") await instance.delete();
+    try {
+      const instance = await workflow.get(job.id);
+      if ((await instance.status()).status !== "unknown")
+        await instance.delete();
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        (error.message !== "instance.not_found" &&
+          !error.message.endsWith("(instance.not_found)"))
+      )
+        throw error;
+    }
   }
   await callMedia(env, "/accounts/delete", { uid });
   const clips = (

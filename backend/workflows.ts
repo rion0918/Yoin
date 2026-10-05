@@ -3,7 +3,11 @@ import {
   type WorkflowEvent,
   type WorkflowStep,
 } from "cloudflare:workers";
-import { type LyricBlock, MAX_AUDIO_MS } from "../shared/contracts.ts";
+import {
+  type LyricBlock,
+  MAX_AUDIO_MS,
+  type RegisteredSpeaker,
+} from "../shared/contracts.ts";
 import {
   clips,
   type JobRow,
@@ -13,7 +17,7 @@ import {
   setJob,
   utterances,
 } from "./database.ts";
-import { inspectClip, probeSong } from "./media.ts";
+import { identifySpeakersInChunk, inspectClip, probeSong } from "./media.ts";
 import { paidCall, RESERVATION_USD } from "./paid.ts";
 import type { SavedMusic } from "./providers.ts";
 import { createLyrics, generateMusic, transcribeAudio } from "./providers.ts";
@@ -44,6 +48,16 @@ const knownStepErrors = new Set([
   "invalid_media_chunk",
   "media_chunk_missing",
   "invalid_generated_audio",
+  "speaker_identification_failed",
+  "invalid_speaker_matches",
+  "invalid_speaker_audio_url",
+  "speaker_audio_download_failed",
+  "speaker_audio_too_large",
+  "speaker_audio_empty",
+  "speaker_audio_invalid",
+  "speaker_sample_too_short",
+  "speaker_sample_silent",
+  "invalid_speaker_embedding",
 ]);
 
 async function failure(env: Env, job: JobRow, error: unknown) {
@@ -192,6 +206,59 @@ export async function prepareDraft(
             return true;
           },
         );
+      }
+    }
+    const snapshot = job.speaker_snapshot_json
+      ? (JSON.parse(job.speaker_snapshot_json) as RegisteredSpeaker[])
+      : [];
+    if (snapshot.length) {
+      for (const { clip, inspection } of inspected) {
+        for (const [index, chunk] of inspection.chunks.entries()) {
+          const candidates = (
+            await utterances(env, job.draft_id, job.owner_id)
+          ).filter(
+            (item) =>
+              item.clipId === clip.id &&
+              item.startMs >= chunk.offsetMs &&
+              item.endMs <= chunk.offsetMs + chunk.durationMs,
+          );
+          if (!candidates.length) continue;
+          const matches = await step.do(
+            `identify-${clip.id}-${chunk.offsetMs}`,
+            mediaStep,
+            () =>
+              identifySpeakersInChunk(env, job, clip, {
+                index,
+                offsetMs: chunk.offsetMs,
+                durationMs: chunk.durationMs,
+                utterances: candidates.map(({ speaker, startMs, endMs }) => ({
+                  speaker,
+                  startMs,
+                  endMs,
+                })),
+                profiles: snapshot,
+              }),
+          );
+          for (const match of matches) {
+            if (!match.speakerProfileId) continue;
+            const profile = snapshot.find(
+              (item) => item.id === match.speakerProfileId,
+            );
+            if (!profile) throw new HttpError(502, "invalid_speaker_matches");
+            await env.DB.prepare(
+              "UPDATE utterances SET speaker_profile_id = ?, speaker_name = ? WHERE clip_id = ? AND speaker = ? AND start_ms >= ? AND end_ms <= ?",
+            )
+              .bind(
+                profile.id,
+                profile.name,
+                clip.id,
+                match.speaker,
+                chunk.offsetMs,
+                chunk.offsetMs + chunk.durationMs,
+              )
+              .run();
+          }
+        }
       }
     }
     const source = await utterances(env, job.draft_id, job.owner_id);

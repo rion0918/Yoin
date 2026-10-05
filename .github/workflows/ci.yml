@@ -35,7 +35,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.npm
-          key: ubuntu-24.04-npm-${{ hashFiles('package-lock.json', 'backend/package-lock.json') }}
+          key: ubuntu-24.04-npm-${{ hashFiles('package-lock.json', 'backend/package-lock.json', 'backend/media/package-lock.json') }}
           restore-keys: ubuntu-24.04-npm-
 
       - name: Lint workflow and shell definitions

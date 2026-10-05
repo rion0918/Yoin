@@ -1,4 +1,4 @@
-# ADR 0012: GitHub Actionsで検証と本番デプロイを行う
+# ADR 0013: GitHub Actionsで検証と本番デプロイを行う
 
 Date: 2026-10-05
 

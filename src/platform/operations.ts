@@ -1,4 +1,15 @@
-import { type LocalClip, UPLOAD_PART_BYTES } from "../../shared/contracts.ts";
+import {
+  type ConversationPendingRecording,
+  type ConversationRecordingMetadata,
+  type LocalClip,
+  type LocalSpeakerSample,
+  type RecordingMetadata,
+  type SavedRecording,
+  SPEAKER_SAMPLE_MS,
+  type SpeakerPendingRecording,
+  type SpeakerRecordingMetadata,
+  UPLOAD_PART_BYTES,
+} from "../../shared/contracts.ts";
 import type { AudioInspection, PendingRecording } from "./types.ts";
 
 export function createSerialQueue() {
@@ -27,6 +38,13 @@ export function createSingleFlight() {
       return settled;
     },
   };
+}
+
+export function shouldStopSpeakerRecording(
+  pending: PendingRecording,
+  durationMs: number,
+) {
+  return pending.purpose === "speaker" && durationMs >= SPEAKER_SAMPLE_MS;
 }
 
 export function audioPartRange(
@@ -63,10 +81,26 @@ export function validateInspection(
 }
 
 export function clipFromRecording(
+  pending: ConversationPendingRecording,
+  inspection: AudioInspection,
+): LocalClip;
+export function clipFromRecording(
+  pending: SpeakerPendingRecording,
+  inspection: AudioInspection,
+): LocalSpeakerSample;
+export function clipFromRecording(
   pending: PendingRecording,
   inspection: AudioInspection,
-): LocalClip {
+): SavedRecording {
   if (!pending.localUri) throw new Error("録音ファイルが見つかりません。");
+  if (pending.purpose === "speaker")
+    return {
+      ...validateInspection(inspection),
+      purpose: "speaker",
+      id: pending.clipId,
+      speakerProfileId: pending.speakerProfileId,
+      localUri: pending.localUri,
+    };
   return {
     ...validateInspection(inspection),
     id: pending.clipId,
@@ -79,14 +113,31 @@ export function clipFromRecording(
   };
 }
 
+type PreparedRecorder = {
+  uri: string | null;
+  prepareToRecordAsync: () => Promise<void>;
+  record: () => void;
+};
+type PersistPending = (pending: PendingRecording) => Promise<void>;
+
+export function beginPreparedRecording(
+  recorder: PreparedRecorder,
+  metadata: ConversationRecordingMetadata,
+  onPrepared: PersistPending,
+): Promise<ConversationPendingRecording>;
+export function beginPreparedRecording(
+  recorder: PreparedRecorder,
+  metadata: SpeakerRecordingMetadata,
+  onPrepared: PersistPending,
+): Promise<SpeakerPendingRecording>;
 export async function beginPreparedRecording(
   recorder: {
     uri: string | null;
     prepareToRecordAsync: () => Promise<void>;
     record: () => void;
   },
-  metadata: Omit<PendingRecording, "localUri">,
-  onPrepared: (pending: PendingRecording) => Promise<void>,
+  metadata: RecordingMetadata,
+  onPrepared: PersistPending,
 ): Promise<PendingRecording> {
   await recorder.prepareToRecordAsync();
   if (!recorder.uri)

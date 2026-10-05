@@ -25,8 +25,8 @@ flowchart TD
 | Expoアプリ | 録音、取り込み、下書き保存、歌詞編集、状態取得、再生 | [セッション操作](../src/useSession.ts) |
 | 端末内保存 | Documentsに音声、SQLiteに状態、SecureStoreにAPI接続先とトークン | [保存](../src/platform/storage.native.ts) |
 | Workers API | 認証、所有者確認、multipart、ジョブ受付、署名URL、内部callback | [API](../backend/api.ts) |
-| D1 | 下書き、発話、歌詞版、ジョブ、有料試行、音声参照 | [初期スキーマ](../backend/migrations/0001_initial.sql)・[実行権の追加](../backend/migrations/0002_audio_runtime.sql) |
-| R2 | 元音声、分割音声、生成MP3、生応答、回復用結果 | [音声API](../backend/media-api.ts)・[callback](../backend/runtime-api.ts) |
+| D1 | 下書き、発話、歌詞版、ジョブ、有料試行、話者名・登録状態・所有者付き声特徴 | [初期スキーマ](../backend/migrations/0001_initial.sql)・[実行権の追加](../backend/migrations/0002_audio_runtime.sql)・[話者登録](../backend/migrations/0003_speaker_profiles.sql) |
+| R2 | 元音声、分割音声、生成MP3、生応答、回復用結果、非公開の登録音声 | [音声API](../backend/media-api.ts)・[callback](../backend/runtime-api.ts)・[話者API](../backend/speakers.ts) |
 | Workflows | 準備と曲生成を別ジョブとして進める | [Workflows](../backend/workflows.ts) |
 | Cloud Run | 実時間検査、変換、分割、Google応答処理、音声の取得・保存 | [音声サービス](../backend/media/server.mjs)・[プロバイダー処理](../backend/media/providers.mjs) |
 | Google API | 文字起こし・歌詞案・音楽生成 | [Googleアダプター](../pipeline/google.ts) |
@@ -38,9 +38,10 @@ flowchart TD
 3. 準備WorkflowがCloud Runへ元音声の署名URLと分割音声の保存URLを渡す。
 4. Cloud RunがFFmpeg / ffprobeで実時間・形式を検査し、モノラル16kHz・AACへ変換して25分単位に分割する。区間のoffsetを保持してR2へ保存する。
 5. WorkflowがD1で予算を予約し、Cloud Runが分割音声をGoogleへ送る。元音声内の時刻を持つ発話をD1へ保存し、元発話IDを持つ歌詞案を作る。
-6. アプリで歌詞を確認・編集し、リビジョンを確定する。
-7. 生成Workflowがそのリビジョンから曲を生成する。Cloud RunがMP3・生応答・回復用結果をR2へ保存する。Workflowが歌詞照合・実時間検査を行い、完成曲を登録する。
-8. アプリがジョブと曲を取得し、期限付きURLで曲と元会話を再生する。
+6. 文字起こしを保存した後、ジョブ開始時に固定した話者プロフィールでチャンク内の非重複発話を照合する。一致が曖昧な仮話者は元ラベルのまま残し、識別名はD1と歌詞作成へ渡す。
+7. アプリで歌詞を確認・編集し、リビジョンを確定する。
+8. 生成Workflowがそのリビジョンから曲を生成する。Cloud RunがMP3・生応答・回復用結果をR2へ保存する。Workflowが歌詞照合・実時間検査を行い、完成曲を登録する。
+9. アプリがジョブと曲を取得し、期限付きURLで曲と元会話を再生する。
 
 大きなGoogle応答のJSON解析・Base64復号と音源の展開はCloud Runで行います。Workerに返すのは発話・歌詞・音源メタデータ・料金です。長い発話一覧の検証や保存はWorker側に残るため、無料枠への適合は[実測の範囲](audio-pipeline-verification.md#実クラウドへの配置と接続確認)と区別します。
 
@@ -52,6 +53,7 @@ flowchart TD
 | :--- | :--- |
 | AudioClip / LocalClip | 下書きに属する音声。録音日時・取り込み日時・タイムゾーン・場所を保持。端末側はURIと送信進行も保持 |
 | Utterance | 音声ID、仮の話者、元ファイル内の開始・終了時刻、文字起こし |
+| SpeakerProfile | 所有者付きの名前、サーバー登録状態、モデル版。端末側は登録音声のDocuments参照を保持 |
 | LyricBlock / LyricRevision | 歌詞ブロックと元発話ID、編集ごとに増えるリビジョン |
 | DraftDocument / LocalDraft | 下書き、音声一覧、発話、歌詞、状態、ジョブID。端末側は冪等キーも保持 |
 | JobDocument | 準備または生成の種類、状態、処理段階、エラー、完成曲ID |

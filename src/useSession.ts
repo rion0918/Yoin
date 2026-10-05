@@ -3,14 +3,19 @@ import { AppState } from "react-native";
 import {
   emptyLibrary,
   type LibraryDocument,
-  type LocalClip,
   type LocalDraft,
   type LyricBlock,
   MAX_AUDIO_BYTES,
   MAX_AUDIO_MS,
+  MAX_SPEAKER_SAMPLE_BYTES,
+  MAX_SPEAKER_SAMPLE_MS,
+  MIN_SPEAKER_SAMPLE_MS,
+  type SavedRecording,
   type SongDocument,
+  type SpeakerProfile,
+  type SpeakerSampleDocument,
 } from "../shared/contracts";
-import { type Connection, createApi } from "./pipeline/api";
+import { ApiError, type Connection, createApi } from "./pipeline/api";
 import {
   addSavedClip,
   completeSong,
@@ -26,10 +31,16 @@ import {
   playbackTransition,
 } from "./pipeline/playback";
 import {
+  assertCanRecordConversation,
+  mergeSpeakerProfiles,
+} from "./pipeline/speakers";
+import {
+  deleteSpeakerAudio,
   importAudio,
   loadConnection,
   loadLibrary,
   readAudioPart,
+  readSpeakerAudio,
   recoverRecording,
   saveConnection,
   saveLibrary,
@@ -54,8 +65,9 @@ export function useSession() {
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  const clearError = useCallback(() => setError(null), []);
   const queue = useRef(Promise.resolve());
-  const unsavedClip = useRef<LocalClip | null>(null);
+  const unsavedClip = useRef<SavedRecording | null>(null);
   const activeSong = useRef<SongDocument | null>(null);
   const [playback, setPlayback] = useState(initPlayback);
   const playbackRef = useRef(playback);
@@ -82,8 +94,16 @@ export function useSession() {
   );
 
   const nativeStopped = useCallback(
-    (clip: LocalClip) => {
-      return commit((current) => addSavedClip(current, clip));
+    async (clip: SavedRecording) => {
+      const previous =
+        "purpose" in clip && clip.purpose === "speaker"
+          ? stateRef.current.speakerProfiles?.find(
+              (profile) => profile.id === clip.speakerProfileId,
+            )?.sample?.localUri
+          : undefined;
+      await commit((current) => addSavedClip(current, clip));
+      if (previous && previous !== clip.localUri)
+        await deleteSpeakerAudio(previous);
     },
     [commit],
   );
@@ -97,17 +117,27 @@ export function useSession() {
       .then(async ([stored, savedConnection]) => {
         let restored = stored;
         if (stored.pendingRecording) {
-          const recovered = stored.drafts.some(
-            (draft) => draft.id === stored.pendingRecording?.draftId,
-          )
+          const pending = stored.pendingRecording;
+          const canRecover =
+            pending.purpose === "speaker"
+              ? stored.speakerProfiles?.some(
+                  (profile) => profile.id === pending.speakerProfileId,
+                )
+              : stored.drafts.some((draft) => draft.id === pending.draftId);
+          const recovered = canRecover
             ? await recoverRecording(stored.pendingRecording)
             : null;
           restored = restoreRecording(stored, recovered);
           await saveLibrary(restored);
         }
         for (const pending of stored.recoveryFiles ?? []) {
-          if (!restored.drafts.some((draft) => draft.id === pending.draftId))
-            continue;
+          const exists =
+            pending.purpose === "speaker"
+              ? restored.speakerProfiles?.some(
+                  (profile) => profile.id === pending.speakerProfileId,
+                )
+              : restored.drafts.some((draft) => draft.id === pending.draftId);
+          if (!exists) continue;
           const recovered = await recoverRecording(pending);
           if (recovered) {
             restored = addSavedClip(restored, recovered);
@@ -128,6 +158,21 @@ export function useSession() {
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!ready || !connection.apiUrl || !connection.token) return;
+    let active = true;
+    void createApi(connection)
+      .speakers()
+      .then((profiles) => {
+        if (active)
+          return commit((current) => mergeSpeakerProfiles(current, profiles));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [ready, connection, commit]);
 
   async function run<T>(action: () => Promise<T>): Promise<T | undefined> {
     if (!ready || busyRef.current) return undefined;
@@ -160,6 +205,7 @@ export function useSession() {
   }
   async function newRecording() {
     return run(async () => {
+      assertCanRecordConversation(stateRef.current);
       if (unsavedClip.current) await stopAndSave();
       await audioRef.current.stopPlayback();
       const draftId = id("draft");
@@ -179,6 +225,7 @@ export function useSession() {
         await stopAndSave();
         return;
       }
+      assertCanRecordConversation(stateRef.current);
       if (unsavedClip.current || stateRef.current.pendingRecording)
         await stopAndSave();
       const draft = getDraft(draftId);
@@ -201,9 +248,255 @@ export function useSession() {
         await commit((current) => ({ ...current, pendingRecording: pending }));
     });
   }
+  async function createSpeaker(name: string) {
+    return run(async () => {
+      const cleanName = name.trim();
+      if (!cleanName || cleanName.length > 80)
+        throw new Error("名前を80文字以内で入力してください。");
+      if (!connectionRef.current.apiUrl || !connectionRef.current.token)
+        throw new Error("先に接続設定を保存してください。");
+      const api = createApi(connectionRef.current);
+      const speakerId = id("speaker");
+      let profile: SpeakerProfile;
+      try {
+        profile = await api.createSpeaker(speakerId, cleanName);
+      } catch (failure) {
+        try {
+          const recovered = await api.speaker(speakerId);
+          if (recovered.name !== cleanName) throw failure;
+          profile = recovered;
+        } catch {
+          throw failure;
+        }
+      }
+      await commit((current) => {
+        const previous = current.speakerProfiles ?? [];
+        return {
+          ...current,
+          speakerProfiles: [
+            ...previous.filter((item) => item.id !== profile.id),
+            {
+              ...profile,
+              sample: previous.find((item) => item.id === profile.id)?.sample,
+            },
+          ],
+        };
+      });
+      return profile;
+    });
+  }
+  async function startSpeakerSample(speakerProfileId: string) {
+    return run(async () => {
+      if (
+        !stateRef.current.speakerProfiles?.some(
+          (profile) => profile.id === speakerProfileId,
+        )
+      )
+        throw new Error("話者プロフィールが見つかりません。");
+      if (unsavedClip.current || stateRef.current.pendingRecording)
+        await stopAndSave();
+      await audioRef.current.stopPlayback();
+      await audioRef.current.startRecording(
+        id("speaker-sample"),
+        "",
+        new Date().toISOString(),
+        Intl.DateTimeFormat().resolvedOptions().timeZone,
+        async (prepared) => {
+          await commit((current) => ({
+            ...current,
+            pendingRecording: prepared,
+          }));
+        },
+        speakerProfileId,
+      );
+      return true;
+    });
+  }
+  async function stopSpeakerSample() {
+    return run(async () => {
+      if (stateRef.current.pendingRecording?.purpose !== "speaker")
+        throw new Error("声の録音は開始されていません。");
+      await stopAndSave();
+      return true;
+    });
+  }
+  async function previewSpeakerSample(speakerProfileId: string) {
+    return run(async () => {
+      const sample = stateRef.current.speakerProfiles?.find(
+        (profile) => profile.id === speakerProfileId,
+      )?.sample;
+      if (!sample) throw new Error("試聴できる声の録音がありません。");
+      await audioRef.current.stopPlayback();
+      await audioRef.current.play(sample.localUri, 0, sample.durationMs);
+      return true;
+    });
+  }
+  async function stopSpeakerPreview() {
+    await audioRef.current.stopPlayback();
+  }
+  async function registerSpeaker(speakerProfileId: string) {
+    return run(async () => {
+      const profile = stateRef.current.speakerProfiles?.find(
+        (item) => item.id === speakerProfileId,
+      );
+      const sample = profile?.sample;
+      if (!profile || !sample)
+        throw new Error("声を録音してから登録してください。");
+      if (
+        sample.durationMs < MIN_SPEAKER_SAMPLE_MS ||
+        sample.durationMs > MAX_SPEAKER_SAMPLE_MS
+      )
+        throw new Error("10秒以上30秒以内の声を録音してください。");
+      if (sample.sizeBytes > MAX_SPEAKER_SAMPLE_BYTES)
+        throw new Error("録音が大きすぎます。短く録り直してください。");
+      if (!connectionRef.current.apiUrl || !connectionRef.current.token)
+        throw new Error("声の登録には接続設定が必要です。");
+      const api = createApi(connectionRef.current);
+      const metadata = {
+        id: sample.id,
+        mimeType: sample.mimeType,
+        sizeBytes: sample.sizeBytes,
+        durationMs: sample.durationMs,
+      };
+      let remoteSample: SpeakerSampleDocument;
+      try {
+        remoteSample = await api.createSpeakerSample(
+          speakerProfileId,
+          metadata,
+        );
+      } catch (failure) {
+        try {
+          remoteSample = await api.speakerSample(speakerProfileId, sample.id);
+        } catch {
+          throw failure;
+        }
+      }
+      if (remoteSample.status === "uploading") {
+        try {
+          remoteSample = await api.uploadSpeakerSample(
+            speakerProfileId,
+            sample.id,
+            await readSpeakerAudio(sample.localUri),
+          );
+        } catch (failure) {
+          try {
+            remoteSample = await api.speakerSample(speakerProfileId, sample.id);
+            if (remoteSample.status === "uploading") throw failure;
+          } catch {
+            throw failure;
+          }
+        }
+      }
+      if (remoteSample.status !== "uploaded" && remoteSample.status !== "ready")
+        throw new Error("声のアップロードを確認できませんでした。");
+      let remote: SpeakerProfile;
+      try {
+        remote = await api.enrollSpeaker(speakerProfileId, sample.id);
+      } catch (failure) {
+        try {
+          const recovered = await api.speaker(speakerProfileId);
+          if (recovered.status !== "ready" || recovered.sampleId !== sample.id)
+            throw failure;
+          remote = recovered;
+        } catch {
+          throw failure;
+        }
+      }
+      if (remote.status !== "ready" || remote.sampleId !== sample.id)
+        throw new Error("声の登録結果を確認できませんでした。");
+      await commit((current) => {
+        const previous = current.speakerProfiles ?? [];
+        return {
+          ...current,
+          speakerProfiles: [
+            ...previous.filter((item) => item.id !== remote.id),
+            {
+              ...remote,
+              sample: previous.find((item) => item.id === remote.id)?.sample,
+            },
+          ],
+        };
+      });
+      return remote;
+    });
+  }
+  async function renameSpeaker(speakerProfileId: string, name: string) {
+    return run(async () => {
+      const cleanName = name.trim();
+      if (!cleanName || cleanName.length > 80)
+        throw new Error("名前を80文字以内で入力してください。");
+      const api = createApi(connectionRef.current);
+      let remote: SpeakerProfile;
+      try {
+        remote = await api.renameSpeaker(speakerProfileId, cleanName);
+      } catch (failure) {
+        try {
+          const recovered = await api.speaker(speakerProfileId);
+          if (recovered.name !== cleanName) throw failure;
+          remote = recovered;
+        } catch {
+          throw failure;
+        }
+      }
+      await commit((current) => ({
+        ...current,
+        speakerProfiles: (current.speakerProfiles ?? []).map((profile) =>
+          profile.id === speakerProfileId
+            ? { ...remote, sample: profile.sample }
+            : profile,
+        ),
+      }));
+      return true;
+    });
+  }
+  async function deleteSpeaker(speakerProfileId: string) {
+    return run(async () => {
+      const api = createApi(connectionRef.current);
+      try {
+        await api.deleteSpeaker(speakerProfileId);
+      } catch (failure) {
+        try {
+          await api.speaker(speakerProfileId);
+          throw failure;
+        } catch (check) {
+          if (!(check instanceof ApiError) || check.status !== 404)
+            throw failure;
+        }
+      }
+      const profile = stateRef.current.speakerProfiles?.find(
+        (item) => item.id === speakerProfileId,
+      );
+      const files = [
+        profile?.sample?.localUri,
+        ...(stateRef.current.recoveryFiles ?? [])
+          .filter(
+            (pending) =>
+              pending.purpose === "speaker" &&
+              pending.speakerProfileId === speakerProfileId,
+          )
+          .map((pending) => pending.localUri),
+      ].filter((value): value is string => Boolean(value));
+      await commit((current) => ({
+        ...current,
+        speakerProfiles: (current.speakerProfiles ?? []).filter(
+          (item) => item.id !== speakerProfileId,
+        ),
+        recoveryFiles: (current.recoveryFiles ?? []).filter(
+          (pending) =>
+            pending.purpose !== "speaker" ||
+            pending.speakerProfileId !== speakerProfileId,
+        ),
+      }));
+      for (const file of files) await deleteSpeakerAudio(file);
+      return true;
+    });
+  }
   async function leave(draftId: string) {
     return run(async () => {
-      if (stateRef.current.pendingRecording?.draftId === draftId)
+      if (
+        stateRef.current.pendingRecording?.purpose !== "speaker" &&
+        stateRef.current.pendingRecording?.draftId === draftId
+      )
         await stopAndSave();
       await commit((current) => ({
         ...current,
@@ -212,7 +505,8 @@ export function useSession() {
             draft.id !== draftId ||
             draft.clips.length > 0 ||
             current.recoveryFiles?.some(
-              (pending) => pending.draftId === draftId,
+              (pending) =>
+                pending.purpose !== "speaker" && pending.draftId === draftId,
             ),
         ),
       }));
@@ -500,16 +794,25 @@ export function useSession() {
         token: value.token.trim(),
       };
       setConnection(connectionRef.current);
-      const songs = await createApi(connectionRef.current).songs();
-      await commit((current) => ({
-        ...current,
-        songs: [
-          ...songs,
-          ...current.songs.filter(
-            (song) => !songs.some((remote) => remote.id === song.id),
-          ),
-        ],
-      }));
+      const api = createApi(connectionRef.current);
+      const [songs, speakers] = await Promise.all([
+        api.songs(),
+        api.speakers(),
+      ]);
+      await commit((current) =>
+        mergeSpeakerProfiles(
+          {
+            ...current,
+            songs: [
+              ...songs,
+              ...current.songs.filter(
+                (song) => !songs.some((remote) => remote.id === song.id),
+              ),
+            ],
+          },
+          speakers,
+        ),
+      );
       return true;
     });
   }
@@ -601,12 +904,20 @@ export function useSession() {
     ready,
     busy,
     error: error || audio.state.error,
-    clearError: () => setError(null),
+    clearError,
     connection,
     configure,
     recorder: audio.state,
     newRecording,
     toggleRecording,
+    createSpeaker,
+    startSpeakerSample,
+    stopSpeakerSample,
+    previewSpeakerSample,
+    stopSpeakerPreview,
+    registerSpeaker,
+    renameSpeaker,
+    deleteSpeaker,
     leave,
     finishRecording,
     importClip,

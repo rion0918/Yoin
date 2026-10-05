@@ -210,9 +210,15 @@ export function createMediaServer({
     }
     if (
       request.method !== "POST" ||
-      !["/inspect", "/probe", "/transcribe", "/lyrics", "/music"].includes(
-        request.url,
-      )
+      ![
+        "/inspect",
+        "/probe",
+        "/transcribe",
+        "/lyrics",
+        "/music",
+        "/enroll-speaker",
+        "/identify-speakers",
+      ].includes(request.url)
     ) {
       response.writeHead(404);
       response.end();
@@ -230,20 +236,25 @@ export function createMediaServer({
       for await (const part of request) {
         size += part.length;
         parts.push(part);
-        if (size > 400_000) throw new Error("request_too_large");
+        if (size > 2_000_000) throw new Error("request_too_large");
       }
       const body = JSON.parse(Buffer.concat(parts).toString("utf8"));
-      const result = ["/inspect", "/probe"].includes(request.url)
-        ? await inspect(
-            body,
-            { origin, ffmpeg, ffprobe },
-            request.url === "/inspect",
-          )
-        : await runProvider(request.url.slice(1), body, {
-            origin,
-            apiKey,
-            providerFetch,
-          });
+      const result =
+        request.url === "/enroll-speaker"
+          ? await enrollSpeaker(body, { origin, ffmpeg, ffprobe })
+          : request.url === "/identify-speakers"
+            ? await identifySpeakers(body, { origin, ffmpeg, ffprobe })
+            : ["/inspect", "/probe"].includes(request.url)
+              ? await inspect(
+                  body,
+                  { origin, ffmpeg, ffprobe },
+                  request.url === "/inspect",
+                )
+              : await runProvider(request.url.slice(1), body, {
+                  origin,
+                  apiKey,
+                  providerFetch,
+                });
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify(result));
     } catch (error) {
@@ -253,7 +264,14 @@ export function createMediaServer({
           ? { "X-Provider-Input-Rejected": "true" }
           : {}),
       });
-      response.end(JSON.stringify({ error: "media_processing_failed" }));
+      const code =
+        error instanceof GoogleProviderError && error.kind === "input"
+          ? "provider_input_rejected"
+          : typeof error?.message === "string" &&
+              /^[a-z_]+$/.test(error.message)
+            ? error.message
+            : "media_processing_failed";
+      response.end(JSON.stringify({ error: code }));
     } finally {
       busy = false;
     }
@@ -270,3 +288,5 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   });
   server.listen(Number(process.env.PORT ?? 8080), "0.0.0.0");
 }
+
+import { enrollSpeaker, identifySpeakers } from "./speakers.mjs";

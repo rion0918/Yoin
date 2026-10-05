@@ -50,6 +50,7 @@ export type JobRow = {
   blocks_json: string | null;
   song_id: string | null;
   created_at: string;
+  speaker_snapshot_json?: string | null;
 };
 export type AudioRow = {
   id: string;
@@ -127,11 +128,17 @@ export async function utterances(
 ): Promise<Utterance[]> {
   return (
     await env.DB.prepare(
-      "SELECT u.id, u.clip_id AS clipId, u.start_ms AS startMs, u.end_ms AS endMs, u.speaker, u.text FROM utterances u JOIN clips c ON c.id = u.clip_id WHERE c.draft_id = ? AND c.owner_id = ? ORDER BY c.rowid, u.start_ms",
+      "SELECT u.id, u.clip_id AS clipId, u.start_ms AS startMs, u.end_ms AS endMs, u.speaker, u.text, u.speaker_profile_id AS speakerProfileId, u.speaker_name AS speakerName FROM utterances u JOIN clips c ON c.id = u.clip_id WHERE c.draft_id = ? AND c.owner_id = ? ORDER BY c.rowid, u.start_ms",
     )
       .bind(draftId, owner)
       .all<Utterance>()
-  ).results;
+  ).results.map((item) => {
+    if (!item.speakerProfileId || !item.speakerName) {
+      const { speakerProfileId: _id, speakerName: _name, ...legacy } = item;
+      return legacy;
+    }
+    return item;
+  });
 }
 export async function lyrics(
   env: Env,

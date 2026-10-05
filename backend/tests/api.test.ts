@@ -3,8 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { handleRequest } from "../api.ts";
 import initialSchema from "../migrations/0001_initial.sql?raw";
 import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
+import speakerSchema from "../migrations/0003_speaker_profiles.sql?raw";
 
-const schema = `${initialSchema}\n${runtimeSchema}`;
+const schema = `${initialSchema}\n${runtimeSchema}\n${speakerSchema}`;
 
 import { sha256 } from "../security.ts";
 import type { Env } from "../types.ts";
@@ -49,6 +50,21 @@ function request(
 }
 
 describe("private API", () => {
+  it("offers authenticated speaker registration instead of anonymous labels only", async () => {
+    const created = await request("/speakers", "POST", {
+      id: "speaker-a",
+      name: "あおい",
+    });
+    expect(created.status).toBe(201);
+    expect(await created.json()).toMatchObject({
+      id: "speaker-a",
+      name: "あおい",
+      status: "pending",
+    });
+    const listed = await request("/speakers");
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toHaveLength(1);
+  });
   it("rejects a wrong credential before accessing storage", async () => {
     expect((await request("/songs", "GET", undefined, "wrong")).status).toBe(
       401,

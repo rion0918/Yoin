@@ -3,6 +3,7 @@ set -euo pipefail
 
 npm ci
 npm --prefix backend ci
+npm --prefix backend/media ci
 npm run check
 npm run typecheck
 npm test

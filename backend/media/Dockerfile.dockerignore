@@ -3,6 +3,9 @@
 !backend/media/
 !backend/media/server.mjs
 !backend/media/providers.mjs
+!backend/media/speakers.mjs
+!backend/media/package.json
+!backend/media/package-lock.json
 !pipeline/
 !pipeline/google.ts
 !shared/

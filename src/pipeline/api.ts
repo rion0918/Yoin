@@ -7,6 +7,8 @@ import type {
   LyricBlock,
   LyricRevision,
   SongDocument,
+  SpeakerProfile,
+  SpeakerSampleDocument,
   UploadCreated,
 } from "../../shared/contracts.ts";
 import { explainError } from "./messages.ts";
@@ -65,6 +67,74 @@ export function createApi(
     }
   }
   return {
+    speakers: () => request<SpeakerProfile[]>("/speakers"),
+    createSpeaker: (id: string, name: string) =>
+      request<SpeakerProfile>("/speakers", "POST", { id, name }),
+    speaker: (id: string) =>
+      request<SpeakerProfile>(`/speakers/${encodeURIComponent(id)}`),
+    renameSpeaker: (id: string, name: string) =>
+      request<SpeakerProfile>(`/speakers/${encodeURIComponent(id)}`, "PATCH", {
+        name,
+      }),
+    async deleteSpeaker(id: string) {
+      await request<{ deleted: true }>(
+        `/speakers/${encodeURIComponent(id)}`,
+        "DELETE",
+      );
+    },
+    createSpeakerSample: (
+      speakerId: string,
+      sample: {
+        id: string;
+        mimeType: string;
+        sizeBytes: number;
+        durationMs: number;
+      },
+    ) =>
+      request<SpeakerSampleDocument>(
+        `/speakers/${encodeURIComponent(speakerId)}/samples`,
+        "POST",
+        sample,
+      ),
+    speakerSample: (speakerId: string, sampleId: string) =>
+      request<SpeakerSampleDocument>(
+        `/speakers/${encodeURIComponent(speakerId)}/samples/${encodeURIComponent(sampleId)}`,
+      ),
+    async uploadSpeakerSample(
+      speakerId: string,
+      sampleId: string,
+      bytes: Uint8Array,
+    ) {
+      const response = await fetcher(
+        `${connection.apiUrl.replace(/\/$/, "")}/speakers/${encodeURIComponent(speakerId)}/samples/${encodeURIComponent(sampleId)}/audio`,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${connection.token}`,
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(bytes.byteLength),
+          },
+          body: bytes.slice().buffer,
+          signal: AbortSignal.timeout(120000),
+        },
+      );
+      if (!response.ok) {
+        const value = (await response.json()) as { error?: string };
+        throw new ApiError(
+          response.status,
+          value.error
+            ? explainError(value.error)
+            : "声の登録を続けられませんでした。",
+        );
+      }
+      return (await response.json()) as SpeakerSampleDocument;
+    },
+    enrollSpeaker: (speakerId: string, sampleId: string) =>
+      request<SpeakerProfile>(
+        `/speakers/${encodeURIComponent(speakerId)}/samples/${encodeURIComponent(sampleId)}/enroll`,
+        "POST",
+        {},
+      ),
     createDraft: (draft: LocalDraft) =>
       request<DraftDocument>("/drafts", "POST", {
         id: draft.id,

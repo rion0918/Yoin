@@ -2,6 +2,7 @@ import {
   emptyLibrary,
   type LibraryDocument,
   type LocalClip,
+  type SavedRecording,
 } from "../../shared/contracts";
 import { createSerialQueue } from "./operations";
 import type { AudioInspection, Connection, PendingRecording } from "./types";
@@ -16,7 +17,9 @@ export async function loadLibrary(): Promise<LibraryDocument> {
     typeof localStorage === "undefined"
       ? null
       : localStorage.getItem("yoin.library");
-  return value ? (JSON.parse(value) as LibraryDocument) : emptyLibrary();
+  if (!value) return emptyLibrary();
+  const stored = JSON.parse(value) as LibraryDocument;
+  return { ...stored, speakerProfiles: stored.speakerProfiles ?? [] };
 }
 
 export function saveLibrary(state: LibraryDocument): Promise<void> {
@@ -43,7 +46,7 @@ export async function readAudioPart(
 }
 export async function recoverRecording(
   _pending: PendingRecording,
-): Promise<LocalClip | null> {
+): Promise<SavedRecording | null> {
   return null;
 }
 export async function loadConnection(): Promise<Connection> {
@@ -58,4 +61,10 @@ export async function loadConnection(): Promise<Connection> {
 export async function saveConnection(connection: Connection): Promise<void> {
   localStorage.setItem("yoin.apiUrl", connection.apiUrl);
   sessionToken = connection.token;
+}
+export async function readSpeakerAudio(_uri: string): Promise<Uint8Array> {
+  throw nativeOnly();
+}
+export async function deleteSpeakerAudio(_uri: string): Promise<void> {
+  throw nativeOnly();
 }

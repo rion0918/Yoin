@@ -25,7 +25,7 @@ AI予算0での接続確認と、有料APIを使う確認は区別します。�
 
 ## GitHub Actionsの本番配置設定
 
-[ADR 0012](adr/0012-github-actions-cicd.md)に従い、PRで全チェックを実行し、成功したmainだけを既存のCloud Run・D1・Workerへ反映します。`.github/workflows/ci.yml`が設定の入口です。PR検証には読み取り権限だけを付け、本番配置ジョブは`production` Environmentに限定します。
+[ADR 0013](adr/0013-github-actions-cicd.md)に従い、PRで全チェックを実行し、成功したmainだけを既存のCloud Run・D1・Workerへ反映します。`.github/workflows/ci.yml`が設定の入口です。PR検証には読み取り権限だけを付け、本番配置ジョブは`production` Environmentに限定します。
 
 ### Google CloudのOIDCと配置権限
 
@@ -87,7 +87,7 @@ Cloudflareで対象アカウントだけを指定し、Workers Scripts Edit、D1
 1. [Google AI StudioのAPIキー画面](https://aistudio.google.com/apikey)を開き、Yoin検証用のプロジェクトを選びます。既存キーを使うか、Create API keyから作成します。
 2. プロジェクトのBilling Tierを確認します。FreeならSet up billingから有料設定を行います。支払い・規約同意は自分で行ってください。新しいPrepayアカウントは最低5ドルの入金が必要で、既存アカウントでは表示が異なる場合があります。[Googleの設定手順](https://ai.google.dev/gemini-api/docs/billing)
 3. Yoin直下に `.env.local.example` をコピーして `.env.local` を作り、エディタで `GEMINI_API_KEY=` の後にキーを保存します。キーをチャットへ貼らず、Gitにも含めません。アプリの `EXPO_PUBLIC_*` には置きません。[APIキーの扱い](https://ai.google.dev/gemini-api/docs/api-key)
-4. 最初の試聴は3〜5分の日本語会話で行います。2人、3人、雑音ありの違いを確認します。話者ラベル `spk_1` などは仮ラベルで、人名を自動推測しません。
+4. 初回は接続設定後に話者の名前と声を登録します。準備処理で登録済み音声と文字起こしの発話を照合し、確度が足りない場合は仮ラベルを残します。登録名は利用者が入力した名前のみを表示し、人名を自動推測しません。
 
 有料音楽生成の候補はLyria 3.5です。日本語の聞き取りやすさ・地名人名の読み・編集歌詞の歌唱は未確認で、利用できない場合も自動で他の有料サービスへ切り替えません。[音楽生成の仕様](https://ai.google.dev/gemini-api/docs/music-generation)
 
@@ -228,6 +228,8 @@ gcloud iam service-accounts create yoin-audio --project="$YOIN_PROJECT_ID" --dis
 
 リポジトリ直下で、初回配置でも使ったローカルビルド→Artifact Registryへのpushを行います。Docker実行環境と上記のプロジェクト・リポジトリが必要です。
 
+Cloud Runイメージは `backend/media/package-lock.json` で固定した `sherpa-onnx-node` 1.13.8 とWeSpeaker ResNet34 LM ONNXモデルを含みます。モデルは[sherpa-onnxのspeaker recognition配布](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models)から取得し、SHA-256 `e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012` をDockerビルド時に検証します。WeSpeakerのモデル名と配布元、チェックサムを保持し、再取得時も別モデルへ置き換えません。日本語の識別精度は実機で確認します。
+
 ```sh
 gcloud auth configure-docker asia-northeast1-docker.pkg.dev
 docker build --platform linux/amd64 -f backend/media/Dockerfile -t yoin-audio:local .
@@ -284,7 +286,7 @@ npx wrangler d1 create yoin
 npx wrangler r2 bucket create yoin-private-audio
 ```
 
-R2の公開 `r2.dev` URLを無効にし、公開カスタムドメインも設定しません。初回は `AI_BUDGET_USD=0`、クラウドでは `MEDIA_API_URL` を設定せず `PUBLIC_API_URL` を使います。
+R2の公開 `r2.dev` URLを無効にし、公開カスタムドメインも設定しません。初回は `AI_BUDGET_USD=0`、クラウドでは `MEDIA_API_URL` を設定せず `PUBLIC_API_URL` を使います。話者テーブル・発話の識別項目・ジョブ開始時のプロフィールsnapshotを追加する `0003_speaker_profiles.sql` も適用します。Cloud Runには `/enroll-speaker` と `/identify-speakers` の認証付き処理が含まれます。
 
 既存トークンのSHA256、32文字以上の署名秘密、Cloud Runと同じサービス用トークンを登録します。値は端末・Worker・Cloud Runの対応を確認し、秘密入力または権限600のファイルを使います。
 
@@ -296,7 +298,7 @@ npx wrangler d1 migrations apply yoin --remote
 npx wrangler deploy
 ```
 
-GoogleキーをWorkerへ登録しません。`0002_audio_runtime.sql` は有料試行の実行権を排他取得するための列を追加します。移管後の有料APIを有効化する場合は[残予算の移管](#残予算の移管)に従ってvarsを更新します。
+GoogleキーをWorkerへ登録しません。D1移行は `0001`〜`0003` を番号順に適用します。`0002_audio_runtime.sql` は有料試行の実行権を排他取得し、`0003_speaker_profiles.sql` は話者プロフィールと識別結果を保存します。移管後の有料APIを有効化する場合は[残予算の移管](#残予算の移管)に従ってvarsを更新します。
 
 ## 配置後の確認
 

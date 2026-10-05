@@ -39,9 +39,11 @@ import type {
 } from "./shared/contracts";
 import { ActionButton, useReducedMotion } from "./src/components/ActionButton";
 import { NativeSheet } from "./src/components/NativeSheet";
+import { SpeakerEnrollmentSheet } from "./src/components/SpeakerEnrollmentSheet";
 import { formatTime } from "./src/domain/session";
 import { blockContext, sourceContext } from "./src/pipeline/library";
 import { explainError } from "./src/pipeline/messages";
+import { hasRegisteredSpeaker, speakerLabel } from "./src/pipeline/speakers";
 import { LibraryScreen } from "./src/screens/LibraryScreen";
 import { MusicScreen } from "./src/screens/MusicScreen";
 import { RecordingScreen } from "./src/screens/RecordingScreen";
@@ -61,7 +63,7 @@ type Overlay =
       block?: LyricBlock;
       draftId?: string;
     }
-  | { kind: "settings" };
+  | { kind: "settings" | "speakers" };
 type Controller = ReturnType<typeof useSession> & {
   show: (overlay: Overlay) => void;
 };
@@ -97,7 +99,17 @@ function LibraryRoute({
       songs={app.state.songs}
       drafts={app.state.drafts}
       onSettings={() => app.show({ kind: "settings" })}
+      onSpeakerSettings={() => app.show({ kind: "speakers" })}
       onNewRecording={() => {
+        if (!hasRegisteredSpeaker(app.state)) {
+          app.show({
+            kind:
+              app.connection.apiUrl && app.connection.token
+                ? "speakers"
+                : "settings",
+          });
+          return;
+        }
         void app.newRecording().then((draftId) => {
           if (draftId) navigation.navigate("Recording", { draftId });
         });
@@ -123,12 +135,14 @@ function RecordingRoute({
   const { draftId } = route.params;
   const draft = app.state.drafts.find((value) => value.id === draftId);
   const recording =
+    app.state.pendingRecording?.purpose !== "speaker" &&
     app.state.pendingRecording?.draftId === draftId &&
     app.recorder.recorderState === "recording";
   const exiting = useRef(false);
   const saving =
     app.busy ||
-    app.state.pendingRecording?.draftId === draftId ||
+    (app.state.pendingRecording?.purpose !== "speaker" &&
+      app.state.pendingRecording?.draftId === draftId) ||
     ["preparing", "saving"].includes(app.recorder.recorderState);
   usePreventRemove(saving, ({ data }) => {
     if (exiting.current || app.busy) return;
@@ -252,31 +266,53 @@ export default function App() {
     void app.closeSource();
     setSheetOpen(false);
   };
-  const show = (next: Overlay) => {
-    Keyboard.dismiss();
-    app.clearError();
-    if (next.kind === "finish")
-      setFinishTitle(
-        app.state.drafts.find((draft) => draft.id === next.draftId)?.title ??
-          "",
-      );
-    if (next.kind === "review")
-      setEditedBlocks(
-        app.state.drafts.find((draft) => draft.id === next.draftId)?.lyrics
-          ?.blocks ?? [],
-      );
-    if (next.kind === "source") setPlace(next.clip?.place ?? "");
-    if (next.kind === "settings") {
-      setApiUrl(app.connection.apiUrl);
-      setToken(app.connection.token);
-    }
-    setOverlay(next);
-    setSheetOpen(true);
-  };
+  const show = useCallback(
+    (next: Overlay) => {
+      Keyboard.dismiss();
+      app.clearError();
+      if (next.kind === "finish")
+        setFinishTitle(
+          app.state.drafts.find((draft) => draft.id === next.draftId)?.title ??
+            "",
+        );
+      if (next.kind === "review")
+        setEditedBlocks(
+          app.state.drafts.find((draft) => draft.id === next.draftId)?.lyrics
+            ?.blocks ?? [],
+        );
+      if (next.kind === "source") setPlace(next.clip?.place ?? "");
+      if (next.kind === "settings") {
+        setApiUrl(app.connection.apiUrl);
+        setToken(app.connection.token);
+      }
+      setOverlay(next);
+      setSheetOpen(true);
+    },
+    [
+      app.clearError,
+      app.connection.apiUrl,
+      app.connection.token,
+      app.state.drafts,
+    ],
+  );
   const draft =
     overlay && "draftId" in overlay
       ? app.state.drafts.find((value) => value.id === overlay.draftId)
       : undefined;
+  const firstRunGuidanceShown = useRef(false);
+  const speakerRegistered = hasRegisteredSpeaker(app.state);
+  const hasConnection = Boolean(app.connection.apiUrl && app.connection.token);
+  useEffect(() => {
+    if (!app.ready || firstRunGuidanceShown.current) return;
+    if (speakerRegistered) {
+      firstRunGuidanceShown.current = true;
+      return;
+    }
+    firstRunGuidanceShown.current = true;
+    show({
+      kind: hasConnection ? "speakers" : "settings",
+    });
+  }, [app.ready, speakerRegistered, hasConnection, show]);
   const overlayKind =
     overlay?.kind === "progress" && draft?.status === "waiting_review"
       ? "review"
@@ -317,23 +353,27 @@ export default function App() {
   const title =
     overlayKind === "settings"
       ? "接続設定"
-      : overlayKind === "source"
-        ? "あのときの会話"
-        : overlayKind === "review"
-          ? "この歌詞で、残そう。"
-          : overlayKind === "progress"
-            ? statusLabel[draft?.status ?? "preparing"]
-            : "思い出を一曲に";
+      : overlayKind === "speakers"
+        ? "話者の声を登録"
+        : overlayKind === "source"
+          ? "あのときの会話"
+          : overlayKind === "review"
+            ? "この歌詞で、残そう。"
+            : overlayKind === "progress"
+              ? statusLabel[draft?.status ?? "preparing"]
+              : "思い出を一曲に";
   const description =
     overlayKind === "settings"
       ? "検証用の接続先とトークンを設定します。"
-      : overlayKind === "review"
-        ? "会話を確かめながら、言葉を整えられます。"
-        : overlayKind === "source"
-          ? "歌詞の元になった音声を聴き返せます。"
-          : overlayKind === "progress"
-            ? "この画面を閉じても、記録は残ります。"
-            : "残した音声を確かめて、名前を付けよう。";
+      : overlayKind === "speakers"
+        ? "名前と声を登録すると、次の会話から発話者を名前で表示します。"
+        : overlayKind === "review"
+          ? "会話を確かめながら、言葉を整えられます。"
+          : overlayKind === "source"
+            ? "歌詞の元になった音声を聴き返せます。"
+            : overlayKind === "progress"
+              ? "この画面を閉じても、記録は残ります。"
+              : "残した音声を確かめて、名前を付けよう。";
   let sourceUtterances: Utterance[] = [];
   let sourceClips: AudioClip[] = [];
   if (overlay?.kind === "source") {
@@ -385,8 +425,13 @@ export default function App() {
             </Text>
           </ActionButton>
         )}
+        <SpeakerEnrollmentSheet
+          open={sheetOpen && overlayKind === "speakers"}
+          onClose={() => setSheetOpen(false)}
+          app={app}
+        />
         <NativeSheet
-          open={sheetOpen}
+          open={sheetOpen && overlayKind !== "speakers"}
           onClose={close}
           title={title}
           description={description}
@@ -432,7 +477,10 @@ export default function App() {
                 label="接続を保存"
                 onPress={() => {
                   void app.configure({ apiUrl, token }).then((success) => {
-                    if (success) close();
+                    if (success) {
+                      if (hasRegisteredSpeaker(app.state)) close();
+                      else show({ kind: "speakers" });
+                    }
                   });
                 }}
                 disabled={app.busy}
@@ -641,7 +689,7 @@ export default function App() {
                       <Text
                         style={{ width: 50, color: "#6f5d4e", fontSize: 12 }}
                       >
-                        {utterance.speaker}
+                        {speakerLabel(utterance)}
                       </Text>
                       <Text
                         style={[styles.story, { flex: 1, marginBottom: 0 }]}

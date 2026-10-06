@@ -17,6 +17,7 @@ import { sourceContext } from "../pipeline/library";
 
 type RecordingScreenProps = {
   draft: LocalDraft;
+  speakerNames: string[];
   recording: boolean;
   busy: boolean;
   stateLabel?: string;
@@ -30,6 +31,7 @@ type RecordingScreenProps = {
 
 export function RecordingScreen({
   draft,
+  speakerNames,
   recording,
   busy,
   stateLabel,
@@ -94,6 +96,11 @@ export function RecordingScreen({
         <Text style={styles.date}>
           {displayDate(draft.createdAt.slice(0, 10))}
         </Text>
+        {!!speakerNames.length && (
+          <Text style={styles.participants}>
+            参加する人 · {speakerNames.join("、")}
+          </Text>
+        )}
 
         <View style={[styles.focus, { paddingTop: focusSpacing }]}>
           <View style={styles.stateCircle}>
@@ -242,6 +249,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 21,
     fontVariant: ["tabular-nums"],
+  },
+  participants: {
+    marginTop: 4,
+    color: "#544033",
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: "500",
   },
   focus: { alignItems: "center" },
   stateCircle: {

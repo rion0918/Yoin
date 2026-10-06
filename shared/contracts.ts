@@ -139,6 +139,7 @@ export type DraftDocument = {
   id: string;
   title: string;
   createdAt: string;
+  speakerProfileIds?: string[];
   clips: AudioClip[];
   utterances: Utterance[];
   lyrics: LyricRevision | null;
@@ -158,6 +159,7 @@ export type SongDocument = {
   draftId: string;
   title: string;
   createdAt: string;
+  speakerProfileIds?: string[];
   clips: AudioClip[];
   utterances: Utterance[];
   lyrics: LyricRevision;

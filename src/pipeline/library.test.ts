@@ -68,6 +68,15 @@ test("native save completion adds exactly one real clip without inventing dialog
   assert.deepEqual(once.songs, []);
 });
 
+test("a new memory stores its selected registered speakers", () => {
+  const draft = createLocalDraft("d1", "2026-10-03T14:59:59Z", [
+    "speaker-a",
+    "speaker-b",
+  ]);
+
+  assert.deepEqual(draft.speakerProfileIds, ["speaker-a", "speaker-b"]);
+});
+
 test("imported audio does not use import date as recording time or invent a place", () => {
   const imported = {
     ...clip,

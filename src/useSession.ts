@@ -240,16 +240,20 @@ export function useSession(identity: SessionIdentity) {
       unsavedClip.current = null;
     }
   }, [commit, identity.uid]);
-  async function newRecording() {
+  async function newRecording(speakerProfileIds: string[]) {
     return run(async () => {
-      assertCanRecordConversation(stateRef.current);
+      assertCanRecordConversation(stateRef.current, speakerProfileIds);
       if (unsavedClip.current) await stopAndSave();
       await audioRef.current.stopPlayback();
       const draftId = id("draft");
       await commit((current) => ({
         ...current,
         drafts: [
-          createLocalDraft(draftId, new Date().toISOString()),
+          createLocalDraft(
+            draftId,
+            new Date().toISOString(),
+            speakerProfileIds,
+          ),
           ...current.drafts,
         ],
       }));

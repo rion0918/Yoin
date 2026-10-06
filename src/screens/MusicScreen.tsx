@@ -24,6 +24,7 @@ const background = require("../../assets/season-background.png");
 
 type MusicScreenProps = {
   song: SongDocument;
+  speakerNames: string[];
   playing: boolean;
   position: number;
   onBack: () => void;
@@ -35,6 +36,7 @@ type MusicScreenProps = {
 
 export function MusicScreen({
   song,
+  speakerNames,
   playing,
   position,
   onBack,
@@ -87,6 +89,11 @@ export function MusicScreen({
             {song.title}
           </Text>
           <Text style={styles.tripDate}>{songDate(song)}</Text>
+          {!!speakerNames.length && (
+            <Text style={styles.members}>
+              参加した人 · {speakerNames.join("、")}
+            </Text>
+          )}
           <Image
             source={artwork}
             resizeMode="cover"

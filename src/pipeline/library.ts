@@ -8,12 +8,17 @@ import type {
   SongDocument,
 } from "../../shared/contracts.ts";
 
-export function createLocalDraft(id: string, createdAt: string): LocalDraft {
+export function createLocalDraft(
+  id: string,
+  createdAt: string,
+  speakerProfileIds: string[] = [],
+): LocalDraft {
   const date = new Date(createdAt);
   return {
     id,
     title: `${date.getMonth() + 1}月${date.getDate()}日からの記録`,
     createdAt,
+    speakerProfileIds,
     clips: [],
     utterances: [],
     lyrics: null,

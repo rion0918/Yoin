@@ -9,6 +9,7 @@ import { handleRequest } from "../api.ts";
 import initial from "../migrations/0001_initial.sql?raw";
 import runtime from "../migrations/0002_audio_runtime.sql?raw";
 import speakers from "../migrations/0003_speaker_profiles.sql?raw";
+import draftSpeakers from "../migrations/0005_draft_speaker_profiles.sql?raw";
 import { signedUrl } from "../security.ts";
 import type { Env } from "../types.ts";
 import { firebaseToken, mockFirebaseKeys } from "./auth-fixture.ts";
@@ -26,7 +27,7 @@ beforeEach(async () => {
     MEDIA_SIGNING_SECRET: "s".repeat(64),
   } as unknown as Env;
   await bindings.DB.batch(
-    `${initial}\n${runtime}\n${speakers}`
+    `${initial}\n${runtime}\n${speakers}\n${draftSpeakers}`
       .split(";")
       .map((sql) => sql.trim())
       .filter(Boolean)

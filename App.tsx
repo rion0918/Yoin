@@ -101,14 +101,11 @@ function LibraryRoute({
     <LibraryScreen
       songs={app.state.songs}
       drafts={app.state.drafts}
+      speakers={app.state.speakerProfiles ?? []}
       onSettings={() => app.show({ kind: "settings" })}
       onSpeakerSettings={() => app.show({ kind: "speakers" })}
-      onNewRecording={() => {
-        if (!hasRegisteredSpeaker(app.state)) {
-          app.show({ kind: "speakers" });
-          return;
-        }
-        void app.newRecording().then((draftId) => {
+      onNewRecording={(speakerProfileIds) => {
+        void app.newRecording(speakerProfileIds).then((draftId) => {
           if (draftId) navigation.navigate("Recording", { draftId });
         });
       }}
@@ -158,6 +155,14 @@ function RecordingRoute({
   return (
     <RecordingScreen
       draft={draft}
+      speakerNames={(draft.speakerProfileIds ?? [])
+        .map(
+          (speakerId) =>
+            app.state.speakerProfiles?.find(
+              (speaker) => speaker.id === speakerId,
+            )?.name,
+        )
+        .filter((name): name is string => !!name)}
       recording={recording}
       busy={
         app.busy || ["preparing", "saving"].includes(app.recorder.recorderState)
@@ -229,6 +234,14 @@ function MusicRoute({
   return (
     <MusicScreen
       song={song}
+      speakerNames={(song.speakerProfileIds ?? [])
+        .map(
+          (speakerId) =>
+            app.state.speakerProfiles?.find(
+              (speaker) => speaker.id === speakerId,
+            )?.name,
+        )
+        .filter((name): name is string => !!name)}
       playing={app.playing}
       position={app.position}
       onBack={() => {

@@ -332,17 +332,6 @@ function SessionApp({
     overlay && "draftId" in overlay
       ? app.state.drafts.find((value) => value.id === overlay.draftId)
       : undefined;
-  const firstRunGuidanceShown = useRef(false);
-  const speakerRegistered = hasRegisteredSpeaker(app.state);
-  useEffect(() => {
-    if (!app.ready || firstRunGuidanceShown.current) return;
-    if (speakerRegistered) {
-      firstRunGuidanceShown.current = true;
-      return;
-    }
-    firstRunGuidanceShown.current = true;
-    show({ kind: "speakers" });
-  }, [app.ready, speakerRegistered, show]);
   const deletionExit = useRef(false);
   useEffect(() => {
     if (app.accountDeleted && !deletionExit.current) {

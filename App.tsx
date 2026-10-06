@@ -46,7 +46,7 @@ import { SpeakerEnrollmentSheet } from "./src/components/SpeakerEnrollmentSheet"
 import { formatTime } from "./src/domain/session";
 import { blockContext, sourceContext } from "./src/pipeline/library";
 import { explainError } from "./src/pipeline/messages";
-import { hasRegisteredSpeaker, speakerLabel } from "./src/pipeline/speakers";
+import { speakerLabel } from "./src/pipeline/speakers";
 import { LibraryScreen } from "./src/screens/LibraryScreen";
 import { MusicScreen } from "./src/screens/MusicScreen";
 import { RecordingScreen } from "./src/screens/RecordingScreen";

@@ -12,6 +12,7 @@ const initial: AudioEngineState = {
   positionMs: 0,
   durationMs: 0,
   error: null,
+  locationStatus: "off",
 };
 
 export function useAudioEngine(
@@ -73,6 +74,7 @@ export function useAudioEngine(
   return {
     state,
     startRecording: unavailable,
+    setLocationEnabled: async () => false,
     stopRecording: async () => null,
     play: async (source, startMs = 0, endMs) => {
       const element = audio.current;

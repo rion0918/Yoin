@@ -163,6 +163,11 @@ function RecordingRoute({
         app.busy || ["preparing", "saving"].includes(app.recorder.recorderState)
       }
       liveSeconds={recording ? app.recorder.elapsedMs / 1000 : 0}
+      locationEnabled={draft.locationEnabled ?? false}
+      locationStatus={app.recorder.locationStatus}
+      onLocationEnabledChange={(enabled) => {
+        void app.setRecordingLocationEnabled(draftId, enabled);
+      }}
       stateLabel={
         recording
           ? "録音中"

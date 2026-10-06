@@ -1,3 +1,4 @@
+import * as Location from "expo-location";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 import {
@@ -22,9 +23,15 @@ import {
   completeSong,
   createLocalDraft,
   editLyricBlock,
+  markLocationUploaded,
   mergeRemoteDraft,
   restoreRecording,
 } from "./pipeline/library";
+import {
+  localityName,
+  pendingLocationUploads,
+  resolveRepresentativePlaces,
+} from "./pipeline/location";
 import { confirmLyrics } from "./pipeline/lyrics";
 import {
   initPlayback,
@@ -86,6 +93,8 @@ export function useSession(identity: SessionIdentity) {
   const [error, setError] = useState<string | null>(null);
   const clearError = useCallback(() => setError(null), []);
   const queue = useRef(Promise.resolve());
+  const locationSync = useRef(Promise.resolve());
+  const startupLocationRetry = useRef(false);
   const unsavedClip = useRef<SavedRecording | null>(null);
   const activeSong = useRef<SongDocument | null>(null);
   const [playback, setPlayback] = useState(initPlayback);
@@ -113,6 +122,14 @@ export function useSession(identity: SessionIdentity) {
     },
     [scope, identity.uid],
   );
+
+  async function waitForLocationSync() {
+    let pending: Promise<void>;
+    do {
+      pending = locationSync.current;
+      await pending;
+    } while (pending !== locationSync.current);
+  }
 
   const nativeStopped = useCallback(
     async (clip: SavedRecording) => {
@@ -225,11 +242,11 @@ export function useSession(identity: SessionIdentity) {
       setBusy(false);
     }
   }
-  const getDraft = (draftId: string) => {
+  const getDraft = useCallback((draftId: string) => {
     const draft = stateRef.current.drafts.find((value) => value.id === draftId);
     if (!draft) throw new Error("記録が見つかりません。");
     return draft;
-  };
+  }, []);
   const stopAndSave = useCallback(async () => {
     const clip =
       unsavedClip.current ?? (await audioRef.current.stopRecording());
@@ -272,6 +289,7 @@ export function useSession(identity: SessionIdentity) {
       const draft = getDraft(draftId);
       if (draft.status !== "local")
         throw new Error("仕上げ中の記録には録音を追加できません。");
+      await waitForLocationSync();
       await audioRef.current.stopPlayback();
       const pending = await audioRef.current.startRecording(
         id("clip"),
@@ -284,6 +302,8 @@ export function useSession(identity: SessionIdentity) {
             pendingRecording: prepared,
           }));
         },
+        undefined,
+        draft.locationEnabled ?? false,
       );
       if (stateRef.current.pendingRecording?.clipId !== pending.clipId)
         await commit((current) => ({ ...current, pendingRecording: pending }));
@@ -334,6 +354,7 @@ export function useSession(identity: SessionIdentity) {
         throw new Error("話者プロフィールが見つかりません。");
       if (unsavedClip.current || stateRef.current.pendingRecording)
         await stopAndSave();
+      await waitForLocationSync();
       await audioRef.current.stopPlayback();
       await audioRef.current.startRecording(
         id("speaker-sample"),
@@ -565,16 +586,32 @@ export function useSession(identity: SessionIdentity) {
       if (clip) await commit((current) => addSavedClip(current, clip));
     });
   }
-  async function updateDraft(
+  const updateDraft = useCallback(
+    async (draftId: string, change: (draft: LocalDraft) => LocalDraft) => {
+      await commit((current) => ({
+        ...current,
+        drafts: current.drafts.map((draft) =>
+          draft.id === draftId ? change(draft) : draft,
+        ),
+      }));
+    },
+    [commit],
+  );
+  async function setRecordingLocationEnabled(
     draftId: string,
-    change: (draft: LocalDraft) => LocalDraft,
+    enabled: boolean,
   ) {
-    await commit((current) => ({
-      ...current,
-      drafts: current.drafts.map((draft) =>
-        draft.id === draftId ? change(draft) : draft,
-      ),
-    }));
+    return run(async () => {
+      if (getDraft(draftId).status !== "local")
+        throw new Error("仕上げ中は位置情報の設定を変更できません。");
+      const allowed = await audioRef.current.setLocationEnabled(enabled);
+      const selected = enabled && allowed;
+      await updateDraft(draftId, (draft) => ({
+        ...draft,
+        locationEnabled: selected,
+      }));
+      return !enabled || allowed;
+    });
   }
   async function setPlace(draftId: string, clipId: string, place: string) {
     return run(async () => {
@@ -588,6 +625,116 @@ export function useSession(identity: SessionIdentity) {
       }));
     });
   }
+  const syncLocationRoutes = useCallback(
+    async (draftId?: string, resolvePlaces = false) => {
+      const previous = locationSync.current;
+      let release!: () => void;
+      locationSync.current = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      try {
+        if (
+          audioRef.current.state.recorderState !== "off" ||
+          AppState.currentState !== "active"
+        )
+          return;
+        if (resolvePlaces && draftId) {
+          const draft = getDraft(draftId);
+          const routes = (stateRef.current.locationRoutes ?? []).filter(
+            (entry) => entry.route.draftId === draftId,
+          );
+          if (
+            routes.some((entry) => !entry.preparedForUpload && !entry.uploaded)
+          ) {
+            try {
+              const geocodingDeadline = Date.now() + 9000;
+              const resolved = await resolveRepresentativePlaces(
+                routes,
+                stateRef.current.locationPlaceCache ?? [],
+                draft.locationGeocodingAttempts ?? 0,
+                async (sample) => {
+                  let timer: ReturnType<typeof setTimeout> | undefined;
+                  const remainingMs = geocodingDeadline - Date.now();
+                  if (remainingMs <= 0) return null;
+                  try {
+                    const result = await Promise.race([
+                      Location.reverseGeocodeAsync({
+                        latitude: sample.latitude,
+                        longitude: sample.longitude,
+                      }).then((addresses) => addresses[0] ?? null),
+                      new Promise<null>((resolve) => {
+                        timer = setTimeout(
+                          () => resolve(null),
+                          Math.min(3000, remainingMs),
+                        );
+                      }),
+                    ]);
+                    return localityName(result);
+                  } finally {
+                    if (timer) clearTimeout(timer);
+                  }
+                },
+                async (attempted) =>
+                  updateDraft(draftId, (value) => ({
+                    ...value,
+                    locationGeocodingAttempts: attempted,
+                  })),
+              );
+              const byClip = new Map(
+                resolved.routes.map((entry) => [entry.route.clipId, entry]),
+              );
+              await commit((current) => ({
+                ...current,
+                locationRoutes: (current.locationRoutes ?? []).map(
+                  (entry) => byClip.get(entry.route.clipId) ?? entry,
+                ),
+                locationPlaceCache: resolved.cache,
+              }));
+            } catch {
+              // Location naming is optional; recording and preparation remain usable.
+            }
+          }
+        }
+
+        const pending = pendingLocationUploads(
+          stateRef.current.locationRoutes ?? [],
+          draftId,
+        );
+        const api = createApi(connectionRef.current);
+        for (const entry of pending) {
+          if (
+            audioRef.current.state.recorderState !== "off" ||
+            AppState.currentState !== "active"
+          )
+            return;
+          try {
+            const uploaded = await api.uploadLocation(entry.route.clipId, {
+              route: entry.route,
+              representativeTimestamps:
+                entry.summary.representativeLocations.map(
+                  (sample) => sample.timestamp,
+                ),
+              places: entry.summary.places,
+            });
+            await commit((current) =>
+              markLocationUploaded(
+                current,
+                entry.route.clipId,
+                uploaded.summary,
+              ),
+            );
+          } catch {
+            // Keep failed routes locally for the next explicit or startup retry.
+          }
+        }
+      } finally {
+        release();
+      }
+    },
+    [commit, getDraft, updateDraft],
+  );
+
   async function prepare(draftId: string, title: string) {
     return run(async () => {
       let draft = getDraft(draftId);
@@ -687,6 +834,7 @@ export function useSession(identity: SessionIdentity) {
           ),
         }));
       }
+      await syncLocationRoutes(draftId, true);
       await updateDraft(draftId, (value) => ({
         ...value,
         status: "preparing",
@@ -703,6 +851,39 @@ export function useSession(identity: SessionIdentity) {
       return true;
     });
   }
+
+  useEffect(() => {
+    if (!ready || startupLocationRetry.current) return;
+    const retryPendingLocations = () => {
+      if (
+        startupLocationRetry.current ||
+        busyRef.current ||
+        audioRef.current.state.recorderState !== "off" ||
+        AppState.currentState !== "active"
+      )
+        return;
+      startupLocationRetry.current = true;
+      void syncLocationRoutes();
+    };
+    const subscription = AppState.addEventListener(
+      "change",
+      retryPendingLocations,
+    );
+    return () => subscription.remove();
+  }, [ready, syncLocationRoutes]);
+
+  useEffect(() => {
+    if (
+      !ready ||
+      startupLocationRetry.current ||
+      busy ||
+      audio.state.recorderState !== "off" ||
+      AppState.currentState !== "active"
+    )
+      return;
+    startupLocationRetry.current = true;
+    void syncLocationRoutes();
+  }, [ready, busy, audio.state.recorderState, syncLocationRoutes]);
   async function generate(draftId: string, blocks: LyricBlock[]) {
     return run(async () => {
       const draft = getDraft(draftId);
@@ -973,6 +1154,7 @@ export function useSession(identity: SessionIdentity) {
     recorder: audio.state,
     newRecording,
     toggleRecording,
+    setRecordingLocationEnabled,
     createSpeaker,
     startSpeakerSample,
     stopSpeakerSample,

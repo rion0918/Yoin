@@ -125,6 +125,111 @@ describe("private API", () => {
     });
   });
 
+  it("stores a bounded owner-scoped location route once and returns its summary", async () => {
+    await request("/drafts", "POST", {
+      id: draftId,
+      title: "大阪の記録",
+      createdAt: "2026-10-06T00:00:00.000Z",
+    });
+    const clipId = "location-clip";
+    const recordedAt = "2026-10-06T00:00:00.000Z";
+    await bindings.DB.prepare(
+      "INSERT INTO clips (id, draft_id, owner_id, mime_type, size_bytes, duration_ms, recorded_at, timezone, object_key, status) VALUES (?, ?, 'private-tester', 'audio/mp4', 10, 1000, ?, 'Asia/Tokyo', 'originals/private-tester/location-clip', 'uploaded')",
+    )
+      .bind(clipId, draftId, recordedAt)
+      .run();
+    const timestamp = Date.parse(recordedAt);
+    const body = {
+      route: {
+        version: 1,
+        draftId,
+        clipId,
+        recordedAt,
+        endedAt: new Date(timestamp + 60_000).toISOString(),
+        segments: [
+          {
+            startedAt: timestamp,
+            endedAt: timestamp + 60_000,
+            samples: [
+              {
+                latitude: 34.66871,
+                longitude: 135.50131,
+                accuracy: 24,
+                timestamp,
+              },
+            ],
+          },
+        ],
+      },
+      representativeTimestamps: [timestamp],
+      places: [{ timestamp, name: "大阪市中央区" }],
+    };
+    const competingBody = {
+      ...body,
+      places: [{ timestamp, name: "大阪市北区" }],
+    };
+    const routeWrite = vi.spyOn(bindings.AUDIO, "put");
+    const [first, competing] = await Promise.all([
+      request(`/clips/${clipId}/location`, "PUT", body),
+      request(`/clips/${clipId}/location`, "PUT", competingBody),
+    ]);
+    expect([first.status, competing.status].sort()).toEqual([200, 409]);
+    const accepted = first.status === 200 ? first : competing;
+    const acceptedBody = first.status === 200 ? body : competingBody;
+    const rejected = first.status === 409 ? first : competing;
+    expect(await rejected.json()).toMatchObject({
+      error: "location_route_conflict",
+    });
+    const summary = await accepted.json<{
+      summary: { places: { name: string }[]; routeObjectKey: string };
+    }>();
+    expect(summary.summary).toMatchObject({
+      routeObjectKey: `locations/private-tester/${draftId}/${clipId}/location.json`,
+    });
+    const stored = await bindings.AUDIO.get(summary.summary.routeObjectKey);
+    expect(await stored?.json()).toMatchObject({ route: body.route });
+
+    const writesAfterFirstSave = routeWrite.mock.calls.length;
+    const retry = await request(
+      `/clips/${clipId}/location`,
+      "PUT",
+      acceptedBody,
+    );
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toEqual(summary);
+    expect(routeWrite).toHaveBeenCalledTimes(writesAfterFirstSave);
+    const draft = await (await request(`/drafts/${draftId}`)).json<{
+      clips: { locationSummary?: unknown }[];
+    }>();
+    expect(draft.clips[0].locationSummary).toEqual(summary.summary);
+    expect(
+      (
+        await request(
+          `/clips/${clipId}/location`,
+          "GET",
+          undefined,
+          await firebaseToken("other-owner"),
+        )
+      ).status,
+    ).toBe(404);
+  });
+
+  it("rejects location routes larger than 128 KiB", async () => {
+    const large = "x".repeat(128 * 1024);
+    const response = await handleRequest(
+      new Request("https://yoin.test/clips/missing/location", {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${testerToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ large }),
+      }),
+      bindings,
+    );
+    expect(response.status).toBe(413);
+  });
+
   it("stores each memory's selected speakers and freezes only that selection for matching", async () => {
     for (const [id, name] of [
       ["speaker-a", "あおい"],

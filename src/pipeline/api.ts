@@ -1,11 +1,13 @@
 import type {
   AudioClip,
+  AudioLocationSummary,
   AudioUrl,
   DraftDocument,
   JobDocument,
   LocalDraft,
   LyricBlock,
   LyricRevision,
+  RecordingLocationRoute,
   SongDocument,
   SpeakerProfile,
   SpeakerSampleDocument,
@@ -68,6 +70,7 @@ export function createApi(
     path: string,
     method = "GET",
     body?: unknown,
+    timeoutMs = 30000,
   ): Promise<T> {
     try {
       const response = await authenticatedFetch(
@@ -79,7 +82,7 @@ export function createApi(
           },
           body: body === undefined ? undefined : JSON.stringify(body),
         },
-        30000,
+        timeoutMs,
       );
       const value = (await response.json()) as T & { error?: string };
       if (!response.ok)
@@ -193,6 +196,27 @@ export function createApi(
         "POST",
         clip,
       ),
+    uploadLocation: (
+      clipId: string,
+      body: {
+        route: RecordingLocationRoute;
+        representativeTimestamps: number[];
+        places: { timestamp: number; name: string }[];
+      },
+    ) =>
+      request<{ summary: AudioLocationSummary }>(
+        `/clips/${encodeURIComponent(clipId)}/location`,
+        "PUT",
+        body,
+        10000,
+      ),
+    location: (clipId: string) =>
+      request<{
+        route: RecordingLocationRoute;
+        representativeTimestamps: number[];
+        places: { timestamp: number; name: string }[];
+        routeHash: string;
+      }>(`/clips/${encodeURIComponent(clipId)}/location`),
     async uploadPart(
       clipId: string,
       uploadId: string,

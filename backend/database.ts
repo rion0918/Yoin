@@ -36,6 +36,8 @@ export type ClipRow = {
   upload_id: string | null;
   status: string;
   inspection_json: string | null;
+  location_summary_json: string | null;
+  location_hash: string | null;
 };
 export type JobRow = {
   id: string;
@@ -120,6 +122,13 @@ export function audioClip(row: ClipRow): AudioClip {
     importedAt: row.imported_at,
     timezone: row.timezone,
     place: row.place,
+    ...(row.location_summary_json
+      ? {
+          locationSummary: JSON.parse(
+            row.location_summary_json,
+          ) as AudioClip["locationSummary"],
+        }
+      : {}),
   };
 }
 export async function utterances(

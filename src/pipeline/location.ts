@@ -17,6 +17,14 @@ const MIN_DWELL_MS = 3 * 60_000;
 const MAX_LOCATION_PLACE_CACHE = 128;
 const LOCATION_PLACE_CACHE_MS = 30 * 24 * 60 * 60_000;
 
+export function shouldSkipLocationSync(
+  resolvePlaces: boolean,
+  recorderState: string,
+  appState: string,
+) {
+  return !resolvePlaces && (recorderState !== "off" || appState !== "active");
+}
+
 function validSample(sample: LocationSample) {
   return (
     Number.isFinite(sample.latitude) &&

@@ -31,6 +31,7 @@ import {
   localityName,
   pendingLocationUploads,
   resolveRepresentativePlaces,
+  shouldSkipLocationSync,
 } from "./pipeline/location";
 import { confirmLyrics } from "./pipeline/lyrics";
 import {
@@ -635,8 +636,11 @@ export function useSession(identity: SessionIdentity) {
       await previous;
       try {
         if (
-          audioRef.current.state.recorderState !== "off" ||
-          AppState.currentState !== "active"
+          shouldSkipLocationSync(
+            resolvePlaces,
+            audioRef.current.state.recorderState,
+            AppState.currentState,
+          )
         )
           return;
         if (resolvePlaces && draftId) {

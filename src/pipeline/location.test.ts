@@ -16,6 +16,7 @@ import {
   pendingLocationUploads,
   resolveRepresentativePlaces,
   selectRepresentativeLocations,
+  shouldSkipLocationSync,
 } from "./location.ts";
 
 const origin = Date.parse("2026-10-06T00:00:00.000Z");
@@ -24,6 +25,13 @@ const point = (timestamp: number, latitude = 34.66871): LocationSample => ({
   longitude: 135.50131,
   accuracy: 24,
   timestamp,
+});
+
+test("place preparation runs while inactive but background retries wait", () => {
+  assert.equal(shouldSkipLocationSync(true, "recording", "background"), false);
+  assert.equal(shouldSkipLocationSync(false, "recording", "active"), true);
+  assert.equal(shouldSkipLocationSync(false, "off", "background"), true);
+  assert.equal(shouldSkipLocationSync(false, "off", "active"), false);
 });
 
 test("an active conversation can start location capture after recording begins", () => {

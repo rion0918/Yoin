@@ -63,6 +63,30 @@ test("conversation recording requires a server-confirmed voice registration, inc
   );
 });
 
+test("conversation recording accepts only the speakers selected for that memory", () => {
+  const readyA = {
+    ...profile,
+    status: "ready" as const,
+    sampleId: "sample-a",
+    modelVersion: "model-v1",
+  };
+  const readyB = {
+    ...readyA,
+    id: "speaker-b",
+    name: "れん",
+  };
+  const state = {
+    ...emptyLibrary(),
+    speakerProfiles: [readyA, readyB],
+  };
+
+  assert.doesNotThrow(() => assertCanRecordConversation(state, [readyA.id]));
+  assert.throws(
+    () => assertCanRecordConversation(state, ["speaker-missing"]),
+    /選んでください/,
+  );
+});
+
 test("voice capture and native completion stay outside conversation drafts", () => {
   const state = {
     ...emptyLibrary(),

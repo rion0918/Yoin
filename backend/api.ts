@@ -74,12 +74,46 @@ async function createDraft(request: Request, env: Env, owner: string) {
   const createdAt = text(body.createdAt, 100);
   if (!Number.isFinite(Date.parse(createdAt)))
     throw new HttpError(422, "invalid_date");
+  let selectedSpeakerIds: string[] | null = null;
+  if (body.speakerProfileIds !== undefined) {
+    if (
+      !Array.isArray(body.speakerProfileIds) ||
+      !body.speakerProfileIds.length ||
+      body.speakerProfileIds.some(
+        (speakerId) =>
+          typeof speakerId !== "string" ||
+          !speakerId.length ||
+          speakerId.length > 128,
+      ) ||
+      new Set(body.speakerProfileIds).size !== body.speakerProfileIds.length
+    )
+      throw new HttpError(422, "invalid_speaker_selection");
+    selectedSpeakerIds = body.speakerProfileIds as string[];
+    const available = new Set(
+      (await registeredSpeakers(env, owner)).map((speaker) => speaker.id),
+    );
+    if (selectedSpeakerIds.some((speakerId) => !available.has(speakerId)))
+      throw new HttpError(422, "invalid_speaker_selection");
+  }
   const result = await env.DB.prepare(
-    "INSERT OR IGNORE INTO drafts (id, owner_id, title, created_at) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
+    "INSERT OR IGNORE INTO drafts (id, owner_id, title, created_at, speaker_profile_ids_json) SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
   )
-    .bind(draftId, owner, title, createdAt, owner)
+    .bind(
+      draftId,
+      owner,
+      title,
+      createdAt,
+      JSON.stringify(selectedSpeakerIds ?? []),
+      owner,
+    )
     .run();
   const document = await draftDocument(env, draftId, owner);
+  if (
+    selectedSpeakerIds &&
+    JSON.stringify(document.speakerProfileIds) !==
+      JSON.stringify(selectedSpeakerIds)
+  )
+    throw new HttpError(409, "draft_speaker_selection_conflict");
   return Response.json(document, {
     status: result.meta.changes === 1 ? 201 : 200,
   });
@@ -280,6 +314,10 @@ async function prepare(
 ) {
   const body = await json(request);
   const sourceClips = await clips(env, draftId, owner);
+  const draft = await ownedDraft(env, draftId, owner);
+  const speakerProfileIds = JSON.parse(
+    draft.speaker_profile_ids_json,
+  ) as string[];
   if (
     !sourceClips.length ||
     sourceClips.some((clip) => clip.status !== "uploaded")
@@ -294,7 +332,11 @@ async function prepare(
     null,
     null,
     await sha256(
-      JSON.stringify({ draftId, clips: sourceClips.map((clip) => clip.id) }),
+      JSON.stringify({
+        draftId,
+        clips: sourceClips.map((clip) => clip.id),
+        speakerProfileIds,
+      }),
     ),
   );
 }
@@ -403,10 +445,17 @@ async function submitJob(
   const jobId = crypto.randomUUID();
   const state = kind === "prepare" ? "preparing" : "generating";
   const created = new Date().toISOString();
-  const speakerSnapshot =
-    kind === "prepare"
-      ? JSON.stringify(await registeredSpeakers(env, owner))
-      : null;
+  let speakerSnapshot: string | null = null;
+  if (kind === "prepare") {
+    const available = await registeredSpeakers(env, owner);
+    const selected = JSON.parse(draft.speaker_profile_ids_json) as string[];
+    const snapshot = selected.length
+      ? available.filter((profile) => selected.includes(profile.id))
+      : available;
+    if (snapshot.length !== (selected.length || available.length))
+      throw new HttpError(409, "speaker_selection_unavailable");
+    speakerSnapshot = JSON.stringify(snapshot);
+  }
   const result = await env.DB.batch([
     env.DB.prepare(
       "INSERT OR IGNORE INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, created_at, speaker_snapshot_json) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND owner_id = ? AND status = ? AND job_id IS ? AND lyric_revision = ?) AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",

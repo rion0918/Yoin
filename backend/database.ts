@@ -15,6 +15,7 @@ export type DraftRow = {
   owner_id: string;
   title: string;
   created_at: string;
+  speaker_profile_ids_json: string;
   status: DraftStatus;
   lyric_revision: number;
   job_id: string | null;
@@ -165,6 +166,7 @@ export async function draftDocument(
     id: row.id,
     title: row.title,
     createdAt: row.created_at,
+    speakerProfileIds: JSON.parse(row.speaker_profile_ids_json) as string[],
     clips: (await clips(env, draftId, owner)).map(audioClip),
     utterances: await utterances(env, draftId, owner),
     lyrics: await lyrics(env, draftId, row.lyric_revision),
@@ -190,7 +192,7 @@ export async function songDocument(
   owner: string,
 ): Promise<SongDocument> {
   const row = await env.DB.prepare(
-    "SELECT s.*, a.duration_ms FROM songs s JOIN audio_objects a ON a.id = s.audio_id WHERE s.id = ? AND s.owner_id = ?",
+    "SELECT s.*, a.duration_ms, d.speaker_profile_ids_json FROM songs s JOIN audio_objects a ON a.id = s.audio_id JOIN drafts d ON d.id = s.draft_id WHERE s.id = ? AND s.owner_id = ?",
   )
     .bind(songId, owner)
     .first<{
@@ -198,6 +200,7 @@ export async function songDocument(
       draft_id: string;
       title: string;
       created_at: string;
+      speaker_profile_ids_json: string;
       lyric_revision: number;
       audio_id: string;
       duration_ms: number;
@@ -210,6 +213,7 @@ export async function songDocument(
     draftId: row.draft_id,
     title: row.title,
     createdAt: row.created_at,
+    speakerProfileIds: JSON.parse(row.speaker_profile_ids_json) as string[],
     clips: (await clips(env, row.draft_id, owner)).map(audioClip),
     utterances: await utterances(env, row.draft_id, owner),
     lyrics: revision,

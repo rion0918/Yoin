@@ -4,9 +4,10 @@ import { handleRequest } from "../api.ts";
 import initialSchema from "../migrations/0001_initial.sql?raw";
 import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
 import speakerSchema from "../migrations/0003_speaker_profiles.sql?raw";
+import draftSpeakersSchema from "../migrations/0005_draft_speaker_profiles.sql?raw";
 import { applyAccountSchema } from "./schema.ts";
 
-const schema = `${initialSchema}\n${runtimeSchema}\n${speakerSchema}`;
+const schema = `${initialSchema}\n${runtimeSchema}\n${speakerSchema}\n${draftSpeakersSchema}`;
 
 import { firebaseToken, mockFirebaseKeys } from "./auth-fixture.ts";
 
@@ -122,6 +123,70 @@ describe("private API", () => {
       title: "秋の旅",
       clips: [],
     });
+  });
+
+  it("stores each memory's selected speakers and freezes only that selection for matching", async () => {
+    for (const [id, name] of [
+      ["speaker-a", "あおい"],
+      ["speaker-b", "れん"],
+    ]) {
+      await bindings.DB.prepare(
+        "INSERT INTO speaker_profiles (id, owner_id, name, sample_id, model_version, embedding_json, created_at) VALUES (?, 'private-tester', ?, ?, 'model-v1', ?, '2026-10-06')",
+      )
+        .bind(id, name, `${id}-sample`, JSON.stringify([1]))
+        .run();
+    }
+
+    const selected = await request("/drafts", "POST", {
+      id: draftId,
+      title: "あおいとの記録",
+      createdAt: "2026-10-06T01:00:00Z",
+      speakerProfileIds: ["speaker-a"],
+    });
+    expect(selected.status).toBe(201);
+    expect(await selected.json()).toMatchObject({
+      speakerProfileIds: ["speaker-a"],
+    });
+    expect(
+      (
+        await request("/drafts", "POST", {
+          id: "other-memory",
+          title: "れんとの記録",
+          createdAt: "2026-10-06T02:00:00Z",
+          speakerProfileIds: ["speaker-b"],
+        })
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await request("/drafts", "POST", {
+          id: "invalid-memory",
+          title: "未登録の話者",
+          createdAt: "2026-10-06T03:00:00Z",
+          speakerProfileIds: ["other-owner-speaker"],
+        })
+      ).status,
+    ).toBe(422);
+
+    await bindings.DB.prepare(
+      "INSERT INTO clips (id, draft_id, owner_id, mime_type, size_bytes, duration_ms, timezone, object_key, status) VALUES ('selected-clip', ?, 'private-tester', 'audio/mp4', 10, 1000, 'Asia/Tokyo', 'clips/selected', 'uploaded')",
+    )
+      .bind(draftId)
+      .run();
+    const prepared = await request(`/drafts/${draftId}/prepare`, "POST", {
+      idempotencyKey: "prepare-selected-speaker",
+    });
+    expect(prepared.status).toBe(202);
+    const job = await bindings.DB.prepare(
+      "SELECT speaker_snapshot_json AS snapshot FROM jobs WHERE draft_id = ?",
+    )
+      .bind(draftId)
+      .first<{ snapshot: string }>();
+    expect(
+      JSON.parse(job?.snapshot ?? "[]").map(
+        (speaker: { id: string }) => speaker.id,
+      ),
+    ).toEqual(["speaker-a"]);
   });
 
   it("rejects source references that do not belong to the draft", async () => {

@@ -8,6 +8,7 @@ import { enrollSpeakerAudio } from "../media.ts";
 import initialSchema from "../migrations/0001_initial.sql?raw";
 import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
 import speakerSchema from "../migrations/0003_speaker_profiles.sql?raw";
+import draftSpeakersSchema from "../migrations/0005_draft_speaker_profiles.sql?raw";
 import { handleSpeakers } from "../speakers.ts";
 import type { Env } from "../types.ts";
 import { applyAccountSchema } from "./schema.ts";
@@ -24,7 +25,7 @@ beforeEach(async () => {
   vi.resetAllMocks();
   bindings = { ...env } as unknown as Env;
   await bindings.DB.batch(
-    `${initialSchema}\n${runtimeSchema}\n${speakerSchema}`
+    `${initialSchema}\n${runtimeSchema}\n${speakerSchema}\n${draftSpeakersSchema}`
       .split(";")
       .map((statement) => statement.trim())
       .filter(Boolean)

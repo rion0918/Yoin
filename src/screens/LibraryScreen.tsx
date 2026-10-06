@@ -1,4 +1,5 @@
 import { Feather } from "@expo/vector-icons";
+import { useState } from "react";
 import {
   Image,
   ScrollView,
@@ -8,15 +9,21 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { LocalDraft, SongDocument } from "../../shared/contracts";
+import type {
+  LocalDraft,
+  LocalSpeakerProfile,
+  SongDocument,
+} from "../../shared/contracts";
 import { ActionButton } from "../components/ActionButton";
+import { NativeSheet } from "../components/NativeSheet";
 import { formatTime } from "../domain/session";
 import { songDate } from "../pipeline/library";
 
 type LibraryScreenProps = {
   songs: SongDocument[];
   drafts: LocalDraft[];
-  onNewRecording: () => void;
+  speakers: LocalSpeakerProfile[];
+  onNewRecording: (speakerProfileIds: string[]) => void;
   onSettings: () => void;
   onSpeakerSettings: () => void;
   onOpenDraft: (draft: LocalDraft) => void;
@@ -28,14 +35,45 @@ const artwork = require("../../assets/season-background.png");
 export function LibraryScreen({
   songs,
   drafts,
+  speakers,
   onNewRecording,
   onSettings,
   onSpeakerSettings,
   onOpenDraft,
   onOpenSong,
 }: LibraryScreenProps) {
+  const [speakerSelectionOpen, setSpeakerSelectionOpen] = useState(false);
+  const [selectedSpeakerProfileIds, setSelectedSpeakerProfileIds] = useState<
+    string[]
+  >([]);
   const { width } = useWindowDimensions();
   const albumWidth = (Math.min(width, 390) - 48) / 2;
+  const registeredSpeakers = speakers.filter(
+    (speaker) =>
+      speaker.status === "ready" && speaker.sampleId && speaker.modelVersion,
+  );
+
+  function openNewRecording() {
+    if (!registeredSpeakers.length) {
+      onSpeakerSettings();
+      return;
+    }
+    setSelectedSpeakerProfileIds([]);
+    setSpeakerSelectionOpen(true);
+  }
+
+  function startRecording() {
+    setSpeakerSelectionOpen(false);
+    onNewRecording(selectedSpeakerProfileIds);
+  }
+
+  function toggleSpeaker(speakerId: string) {
+    setSelectedSpeakerProfileIds((selected) =>
+      selected.includes(speakerId)
+        ? selected.filter((value) => value !== speakerId)
+        : [...selected, speakerId],
+    );
+  }
 
   return (
     <SafeAreaView style={styles.screen} testID="home">
@@ -60,7 +98,7 @@ export function LibraryScreen({
           </ActionButton>
           <ActionButton
             label="新しい記録"
-            onPress={onNewRecording}
+            onPress={openNewRecording}
             style={styles.newRecording}
             testID="new-recording"
           >
@@ -140,6 +178,51 @@ export function LibraryScreen({
           ))}
         </View>
       </ScrollView>
+      <NativeSheet
+        open={speakerSelectionOpen}
+        onClose={() => setSpeakerSelectionOpen(false)}
+        title="参加する人を選ぶ"
+        description="この記録で話した人を選んでください。記録ごとに別の組み合わせを選べます。"
+        snap={0.66}
+        footer={
+          <ActionButton
+            label="選んだ話者で新しい記録を始める"
+            onPress={startRecording}
+            disabled={!selectedSpeakerProfileIds.length}
+            style={styles.startRecording}
+            testID="start-memory-recording"
+          >
+            <Text style={styles.startRecordingLabel}>
+              選んだ人で記録をはじめる
+            </Text>
+          </ActionButton>
+        }
+      >
+        <View testID="speaker-selection-sheet">
+          {registeredSpeakers.map((speaker) => {
+            const selected = selectedSpeakerProfileIds.includes(speaker.id);
+            return (
+              <ActionButton
+                key={speaker.id}
+                label={`${speaker.name}${selected ? "を選択済み" : "を選ぶ"}`}
+                onPress={() => toggleSpeaker(speaker.id)}
+                style={styles.speakerOption}
+                testID={`select-speaker-${speaker.id}`}
+              >
+                <View style={styles.speakerOptionCopy}>
+                  <Text style={styles.speakerName}>{speaker.name}</Text>
+                  <Text style={styles.speakerHint}>登録済みの話者</Text>
+                </View>
+                <Feather
+                  name={selected ? "check-circle" : "circle"}
+                  size={22}
+                  color={selected ? "#9c5d2e" : "#aaa19a"}
+                />
+              </ActionButton>
+            );
+          })}
+        </View>
+      </NativeSheet>
     </SafeAreaView>
   );
 }
@@ -246,5 +329,35 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
     fontVariant: ["tabular-nums"],
+  },
+  speakerOption: {
+    minHeight: 64,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#e5ded8",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  speakerOptionCopy: { gap: 2 },
+  speakerName: {
+    color: "#332317",
+    fontSize: 16,
+    lineHeight: 23,
+    fontWeight: "600",
+  },
+  speakerHint: { color: "#726d69", fontSize: 12, lineHeight: 18 },
+  startRecording: {
+    minHeight: 52,
+    justifyContent: "center",
+    alignItems: "center",
+    borderRadius: 14,
+    backgroundColor: "#493020",
+  },
+  startRecordingLabel: {
+    color: "#fff8f0",
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: "600",
   },
 });

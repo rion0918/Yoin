@@ -6,10 +6,11 @@ import { identifySpeakersInChunk, inspectClip, probeSong } from "../media.ts";
 import initialSchema from "../migrations/0001_initial.sql?raw";
 import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
 import speakerSchema from "../migrations/0003_speaker_profiles.sql?raw";
+import draftSpeakersSchema from "../migrations/0005_draft_speaker_profiles.sql?raw";
 import { createLyrics, generateMusic, transcribeAudio } from "../providers.ts";
 import { applyAccountSchema } from "./schema.ts";
 
-const schema = `${initialSchema}\n${runtimeSchema}\n${speakerSchema}`;
+const schema = `${initialSchema}\n${runtimeSchema}\n${speakerSchema}\n${draftSpeakersSchema}`;
 
 import type { Env } from "../types.ts";
 import { generateSong, prepareDraft } from "../workflows.ts";
@@ -281,6 +282,11 @@ it("retries failed speaker matching from cached transcripts without another paid
 });
 
 it("persists an approved song with its measured duration and immutable source revision", async () => {
+  await bindings.DB.prepare(
+    "UPDATE drafts SET speaker_profile_ids_json = ? WHERE id = 'draft'",
+  )
+    .bind(JSON.stringify(["speaker-a"]))
+    .run();
   await approveAndGenerate();
   const job = await ownedJob(bindings, "generate-job", "private-tester");
   expect(job.status).toBe("ready");
@@ -293,6 +299,7 @@ it("persists an approved song with its measured duration and immutable source re
     title: "秋の京都",
     durationMs: 123456,
     audioId: "song-audio-generate-job",
+    speakerProfileIds: ["speaker-a"],
     lyrics: { revision: 1, blocks },
   });
   const bytes = await bindings.AUDIO.get(

@@ -21,7 +21,7 @@ npm --prefix backend ci
 3. ローカルバックエンド、またはクラウドの一方に接続を設定する。
 4. [内部テストの開始条件](internal-testing.md#開始条件)と実際の設定を確認して端末で試す。
 
-AI予算0での接続確認と、有料APIを使う確認は区別します。予算0の試験は文字起こし・曲生成を開始しません。既存環境の累積枠を0や10へ書き戻さないでください。基盤の料金はAI累積10ドルとは別です。
+AI予算0での接続確認と、有料APIを使う確認は区別します。予算0に設定した環境では文字起こし・曲生成を開始しません。既存環境の累積枠を0や10へ書き戻さないでください。配置済み環境の予算は[検証記録](audio-pipeline-verification.md#現在の確認状況)で確認してください。基盤の料金はAI累積10ドルとは別です。
 
 ## GitHub Actionsの本番配置設定
 
@@ -81,7 +81,6 @@ Cloudflareで対象アカウントだけを指定し、Workers Scripts EditとD1
 ### デプロイ失敗時の再開
 
 段階が失敗すると、その後の本番変更へ進みません。同じmainコミットのActions runを再実行します。D1適用後にCloud Run更新が停止した場合は、適用済みmigrationを保持して同じコミットから再開します。D1適用後にWorker反映が止まった場合は、Wranglerが適用済みのmigrationを認識するため再実行できます。Worker反映後の確認で停止した場合は、同じバージョンを再配置して原因を調べます。予算台帳や有料試行を初期化して復旧しないでください。配置のコミット、イメージdigest、Cloud Run revisionはActions summaryに残します。
-
 ## Google APIの設定
 
 1. [Google AI StudioのAPIキー画面](https://aistudio.google.com/apikey)を開き、Yoin検証用のプロジェクトを選びます。既存キーを使うか、Create API keyから作成します。

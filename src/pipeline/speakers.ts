@@ -59,10 +59,23 @@ export function hasRegisteredSpeaker(state: LibraryDocument) {
   );
 }
 
-export function assertCanRecordConversation(state: LibraryDocument) {
-  if (!hasRegisteredSpeaker(state))
+export function assertCanRecordConversation(
+  state: LibraryDocument,
+  selectedSpeakerProfileIds?: string[],
+) {
+  const registeredIds = (state.speakerProfiles ?? [])
+    .filter(
+      (profile) =>
+        profile.status === "ready" && profile.sampleId && profile.modelVersion,
+    )
+    .map((profile) => profile.id);
+  const selectedIds = selectedSpeakerProfileIds ?? registeredIds;
+  if (
+    !selectedIds.length ||
+    selectedIds.some((id) => !registeredIds.includes(id))
+  )
     throw new Error(
-      "録音を始める前に、少なくとも1人の名前と声を登録してください。",
+      "録音を始める前に、参加する話者の名前と声を登録し、1人以上選んでください。",
     );
 }
 

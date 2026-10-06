@@ -183,6 +183,9 @@ export function createApi(
         id: draft.id,
         title: draft.title,
         createdAt: draft.createdAt,
+        ...(draft.speakerProfileIds?.length
+          ? { speakerProfileIds: draft.speakerProfileIds }
+          : {}),
       }),
     createUpload: (clip: AudioClip) =>
       request<UploadCreated>(

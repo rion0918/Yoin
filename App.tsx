@@ -46,7 +46,7 @@ import { SpeakerEnrollmentSheet } from "./src/components/SpeakerEnrollmentSheet"
 import { formatTime } from "./src/domain/session";
 import { blockContext, sourceContext } from "./src/pipeline/library";
 import { explainError } from "./src/pipeline/messages";
-import { hasRegisteredSpeaker, speakerLabel } from "./src/pipeline/speakers";
+import { speakerLabel } from "./src/pipeline/speakers";
 import { LibraryScreen } from "./src/screens/LibraryScreen";
 import { MusicScreen } from "./src/screens/MusicScreen";
 import { RecordingScreen } from "./src/screens/RecordingScreen";
@@ -101,14 +101,11 @@ function LibraryRoute({
     <LibraryScreen
       songs={app.state.songs}
       drafts={app.state.drafts}
+      speakers={app.state.speakerProfiles ?? []}
       onSettings={() => app.show({ kind: "settings" })}
       onSpeakerSettings={() => app.show({ kind: "speakers" })}
-      onNewRecording={() => {
-        if (!hasRegisteredSpeaker(app.state)) {
-          app.show({ kind: "speakers" });
-          return;
-        }
-        void app.newRecording().then((draftId) => {
+      onNewRecording={(speakerProfileIds) => {
+        void app.newRecording(speakerProfileIds).then((draftId) => {
           if (draftId) navigation.navigate("Recording", { draftId });
         });
       }}
@@ -137,12 +134,7 @@ function RecordingRoute({
     app.state.pendingRecording?.draftId === draftId &&
     app.recorder.recorderState === "recording";
   const exiting = useRef(false);
-  const saving =
-    app.busy ||
-    (app.state.pendingRecording?.purpose !== "speaker" &&
-      app.state.pendingRecording?.draftId === draftId) ||
-    ["preparing", "saving"].includes(app.recorder.recorderState);
-  usePreventRemove(saving, ({ data }) => {
+  usePreventRemove(true, ({ data }) => {
     if (exiting.current || app.busy) return;
     exiting.current = true;
     void app
@@ -158,6 +150,14 @@ function RecordingRoute({
   return (
     <RecordingScreen
       draft={draft}
+      speakerNames={(draft.speakerProfileIds ?? [])
+        .map(
+          (speakerId) =>
+            app.state.speakerProfiles?.find(
+              (speaker) => speaker.id === speakerId,
+            )?.name,
+        )
+        .filter((name): name is string => !!name)}
       recording={recording}
       busy={
         app.busy || ["preparing", "saving"].includes(app.recorder.recorderState)
@@ -178,11 +178,7 @@ function RecordingRoute({
       onImport={() => {
         void app.importClip(draftId);
       }}
-      onBack={() => {
-        void app.leave(draftId).then((left) => {
-          if (left) navigation.goBack();
-        });
-      }}
+      onBack={() => navigation.goBack()}
       onFinish={() => {
         void app.finishRecording(draftId).then((saved) => {
           if (saved?.clips.length)
@@ -229,6 +225,14 @@ function MusicRoute({
   return (
     <MusicScreen
       song={song}
+      speakerNames={(song.speakerProfileIds ?? [])
+        .map(
+          (speakerId) =>
+            app.state.speakerProfiles?.find(
+              (speaker) => speaker.id === speakerId,
+            )?.name,
+        )
+        .filter((name): name is string => !!name)}
       playing={app.playing}
       position={app.position}
       onBack={() => {
@@ -332,17 +336,6 @@ function SessionApp({
     overlay && "draftId" in overlay
       ? app.state.drafts.find((value) => value.id === overlay.draftId)
       : undefined;
-  const firstRunGuidanceShown = useRef(false);
-  const speakerRegistered = hasRegisteredSpeaker(app.state);
-  useEffect(() => {
-    if (!app.ready || firstRunGuidanceShown.current) return;
-    if (speakerRegistered) {
-      firstRunGuidanceShown.current = true;
-      return;
-    }
-    firstRunGuidanceShown.current = true;
-    show({ kind: "speakers" });
-  }, [app.ready, speakerRegistered, show]);
   const deletionExit = useRef(false);
   useEffect(() => {
     if (app.accountDeleted && !deletionExit.current) {

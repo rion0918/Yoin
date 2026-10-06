@@ -2,7 +2,7 @@
 
 [ドキュメントの目次](README.md)へ
 
-Google Playから導入したAndroid配布版で、Googleログイン → 名前と声の登録 → ライブラリ → 録音・取り込み → 歌詞確認・編集 → 曲生成 → 再生を確認します。[配布準備](play-internal-release.md)と[検証記録](audio-pipeline-verification.md)を参照してください。
+Google Playから導入したAndroid配布版で、Googleログイン → ライブラリ → 話者設定または「＋」から名前と声を登録 → 録音・取り込み → 歌詞確認・編集 → 曲生成 → 再生を確認します。初回ログイン後は登録画面を自動で開かず、ライブラリを表示します。[配布準備](play-internal-release.md)と[検証記録](audio-pipeline-verification.md)を参照してください。
 
 ## 開始条件
 

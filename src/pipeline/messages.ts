@@ -48,6 +48,12 @@ const explanations: Record<string, string> = {
   provider_outcome_unconfirmed:
     "曲の受付を確認できませんでした。音声と歌詞は保存されています。この状態では作り直せません。時間をおいて状況を確認してください。",
   draft_not_ready: "この記録は処理中です。保存した生成状況を確認してください。",
+  invalid_speaker_selection:
+    "選んだ話者を確認できません。話者設定を確認して、もう一度選んでください。",
+  speaker_selection_unavailable:
+    "この記録に選んだ話者が見つかりません。話者設定を確認して、新しい記録を作成してください。",
+  draft_speaker_selection_conflict:
+    "この記録の参加者を確認できません。新しい記録を作成してください。",
   expired_or_invalid_media_url:
     "再生リンクの期限が切れました。もう一度再生を押してください。",
 };

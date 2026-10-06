@@ -134,12 +134,7 @@ function RecordingRoute({
     app.state.pendingRecording?.draftId === draftId &&
     app.recorder.recorderState === "recording";
   const exiting = useRef(false);
-  const saving =
-    app.busy ||
-    (app.state.pendingRecording?.purpose !== "speaker" &&
-      app.state.pendingRecording?.draftId === draftId) ||
-    ["preparing", "saving"].includes(app.recorder.recorderState);
-  usePreventRemove(saving, ({ data }) => {
+  usePreventRemove(true, ({ data }) => {
     if (exiting.current || app.busy) return;
     exiting.current = true;
     void app
@@ -183,11 +178,7 @@ function RecordingRoute({
       onImport={() => {
         void app.importClip(draftId);
       }}
-      onBack={() => {
-        void app.leave(draftId).then((left) => {
-          if (left) navigation.goBack();
-        });
-      }}
+      onBack={() => navigation.goBack()}
       onFinish={() => {
         void app.finishRecording(draftId).then((saved) => {
           if (saved?.clips.length)

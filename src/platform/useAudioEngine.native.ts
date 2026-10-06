@@ -9,9 +9,18 @@ import {
   useAudioRecorder,
   useAudioRecorderState,
 } from "expo-audio";
+import * as Location from "expo-location";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Platform } from "react-native";
-import type { SavedRecording } from "../../shared/contracts";
+import type {
+  LocationSample,
+  RecordingLocationRoute,
+  SavedRecording,
+} from "../../shared/contracts";
+import {
+  type createLocationRouteRecorder,
+  locationRouteRecorderForRecording,
+} from "../pipeline/location";
 import { waitUntilLoaded } from "./audio.native";
 import {
   beginPreparedRecording,
@@ -37,6 +46,8 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
   const [recorderState, setRecorderState] = useState<RecorderPhase>("off");
   const [elapsedMs, setElapsedMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [locationStatus, setLocationStatus] =
+    useState<AudioEngine["state"]["locationStatus"]>("off");
   const pending = useRef<PendingRecording | null>(null);
   const capturing = useRef(false);
   const manualStopId = useRef<string | null>(null);
@@ -55,6 +66,144 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
   const playbackEnd = useRef<number | undefined>(undefined);
   const queue = useRef(createSerialQueue()).current;
   const stops = useRef(createSingleFlight()).current;
+  const locationSubscription = useRef<Location.LocationSubscription | null>(
+    null,
+  );
+  const locationRecorder = useRef<ReturnType<
+    typeof createLocationRouteRecorder
+  > | null>(null);
+  const completedLocationRoute = useRef<RecordingLocationRoute | null>(null);
+  const locationGeneration = useRef(0);
+  const locationEnabled = useRef(false);
+
+  const stopLocationWatch = useCallback(() => {
+    locationGeneration.current++;
+    locationSubscription.current?.remove();
+    locationSubscription.current = null;
+  }, []);
+
+  const pauseLocationCapture = useCallback(() => {
+    stopLocationWatch();
+    locationRecorder.current?.pause(Date.now());
+    if (locationEnabled.current) setLocationStatus("acquiring");
+  }, [stopLocationWatch]);
+
+  const startLocationWatch = useCallback(async () => {
+    const current = pending.current;
+    if (
+      !locationEnabled.current ||
+      !current ||
+      current.purpose === "speaker" ||
+      !capturing.current
+    )
+      return;
+    if (AppState.currentState !== "active") {
+      locationRecorder.current?.pause(Date.now());
+      setLocationStatus("acquiring");
+      return;
+    }
+    stopLocationWatch();
+    const generation = locationGeneration.current;
+    const recorderForClip = locationRecorder.current;
+    if (!recorderForClip) return;
+    setLocationStatus("acquiring");
+    try {
+      const permission = await Location.getForegroundPermissionsAsync();
+      if (generation !== locationGeneration.current) return;
+      if (permission.status !== "granted") {
+        setLocationStatus("unavailable");
+        return;
+      }
+      recorderForClip.resume(Date.now());
+      const subscription = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.Balanced,
+          timeInterval: 60_000,
+          distanceInterval: 0,
+          mayShowUserSettingsDialog: false,
+        },
+        (location) => {
+          if (
+            generation !== locationGeneration.current ||
+            !capturing.current ||
+            pending.current?.clipId !== current.clipId ||
+            AppState.currentState !== "active" ||
+            typeof location.coords.accuracy !== "number"
+          )
+            return;
+          const sample: LocationSample = {
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude,
+            accuracy: location.coords.accuracy,
+            timestamp: Math.trunc(location.timestamp),
+          };
+          recorderForClip.add(sample);
+        },
+      );
+      if (
+        generation !== locationGeneration.current ||
+        pending.current?.clipId !== current.clipId ||
+        !capturing.current
+      ) {
+        subscription.remove();
+        if (generation === locationGeneration.current)
+          recorderForClip.pause(Date.now());
+        return;
+      }
+      locationSubscription.current = subscription;
+      setLocationStatus("tracking");
+    } catch {
+      if (generation === locationGeneration.current) {
+        recorderForClip.pause(Date.now());
+        setLocationStatus("unavailable");
+      }
+    }
+  }, [stopLocationWatch]);
+
+  const finishLocationCapture = useCallback(() => {
+    stopLocationWatch();
+    if (!completedLocationRoute.current)
+      completedLocationRoute.current =
+        locationRecorder.current?.finish(Date.now()) ?? null;
+    locationRecorder.current = null;
+    setLocationStatus(locationEnabled.current ? "acquiring" : "off");
+    return completedLocationRoute.current;
+  }, [stopLocationWatch]);
+
+  const setLocationEnabled: AudioEngine["setLocationEnabled"] = useCallback(
+    async (enabled) => {
+      if (!enabled) {
+        locationEnabled.current = false;
+        pauseLocationCapture();
+        setLocationStatus("off");
+        return true;
+      }
+      setLocationStatus("acquiring");
+      try {
+        const permission = await Location.requestForegroundPermissionsAsync();
+        if (permission.status !== "granted") {
+          locationEnabled.current = false;
+          setLocationStatus("unavailable");
+          return false;
+        }
+        locationEnabled.current = true;
+        if (capturing.current) {
+          locationRecorder.current = locationRouteRecorderForRecording(
+            locationRecorder.current,
+            pending.current,
+          );
+          if (locationRecorder.current) await startLocationWatch();
+          else setLocationStatus("unavailable");
+        } else setLocationStatus("acquiring");
+        return true;
+      } catch {
+        locationEnabled.current = false;
+        setLocationStatus("unavailable");
+        return false;
+      }
+    },
+    [pauseLocationCapture, startLocationWatch],
+  );
 
   const completeRecording = useCallback(
     (
@@ -69,20 +218,29 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
         queue.run(async () => {
           setRecorderState("saving");
           capturing.current = false;
+          const locationRoute =
+            current.purpose === "speaker" ? null : finishLocationCapture();
           try {
             if (!alreadyStopped) await recorder.stop();
             const uri = finishedUri ?? recorder.uri ?? current.localUri;
             if (!uri) throw new Error("録音ファイルが見つかりません。");
             const inspection = await inspectLocalAudio(uri);
-            const clip =
+            const saved =
               current.purpose === "speaker"
                 ? clipFromRecording({ ...current, localUri: uri }, inspection)
                 : clipFromRecording({ ...current, localUri: uri }, inspection);
+            const clip =
+              locationRoute && saved.purpose !== "speaker"
+                ? { ...saved, locationRoute }
+                : saved;
             if (native && manualStopId.current !== current.clipId)
               await nativeCallback.current?.(clip);
             pending.current = null;
+            completedLocationRoute.current = null;
+            locationRecorder.current = null;
             setElapsedMs(0);
             setRecorderState("off");
+            if (!locationEnabled.current) setLocationStatus("off");
             return clip;
           } catch (cause) {
             setRecorderState("interrupted");
@@ -96,7 +254,7 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
         }),
       );
     },
-    [queue, recorder, stops],
+    [finishLocationCapture, queue, recorder, stops],
   );
 
   recorderListener.current = (status) => {
@@ -145,11 +303,26 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
-      if (next === "active") reconcileRecorder();
-      else if (playbackEnd.current !== undefined) player.pause();
+      if (next === "active") {
+        reconcileRecorder();
+        if (capturing.current) void startLocationWatch();
+      } else {
+        if (capturing.current) pauseLocationCapture();
+        if (playbackEnd.current !== undefined) player.pause();
+      }
     });
-    return () => subscription.remove();
-  }, [player, reconcileRecorder]);
+    return () => {
+      subscription.remove();
+      stopLocationWatch();
+      locationRecorder.current?.pause(Date.now());
+    };
+  }, [
+    pauseLocationCapture,
+    player,
+    reconcileRecorder,
+    startLocationWatch,
+    stopLocationWatch,
+  ]);
 
   useEffect(() => {
     if (
@@ -160,7 +333,15 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
   }, [player, playerStatus.currentTime]);
 
   const startRecording: AudioEngine["startRecording"] = useCallback(
-    (clipId, draftId, recordedAt, timezone, onPrepared, speakerProfileId) =>
+    (
+      clipId,
+      draftId,
+      recordedAt,
+      timezone,
+      onPrepared,
+      speakerProfileId,
+      locationEnabledForClip = false,
+    ) =>
       queue.run(async () => {
         if (pending.current)
           throw new Error("今の録音を保存してから次の録音を開始してください。");
@@ -208,10 +389,18 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
               );
           capturing.current = true;
           setRecorderState("recording");
+          locationEnabled.current = !speakerProfileId && locationEnabledForClip;
+          locationRecorder.current = locationEnabled.current
+            ? locationRouteRecorderForRecording(null, pending.current)
+            : null;
+          completedLocationRoute.current = null;
+          if (locationEnabled.current) void startLocationWatch();
+          else setLocationStatus("off");
           return prepared;
         } catch (cause) {
           pending.current = null;
           capturing.current = false;
+          finishLocationCapture();
           try {
             await recorder.stop();
           } catch {}
@@ -224,7 +413,7 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
           throw cause;
         }
       }),
-    [player, queue, recorder],
+    [finishLocationCapture, player, queue, recorder, startLocationWatch],
   );
 
   const play: AudioEngine["play"] = useCallback(
@@ -308,8 +497,10 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
       positionMs: Math.round(playerStatus.currentTime * 1000),
       durationMs: Math.round(playerStatus.duration * 1000),
       error: error ?? playerStatus.error,
+      locationStatus,
     },
     startRecording,
+    setLocationEnabled,
     stopRecording,
     play,
     pause,

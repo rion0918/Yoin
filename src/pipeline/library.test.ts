@@ -10,6 +10,7 @@ import {
   completeSong,
   createLocalDraft,
   editLyricBlock,
+  markLocationUploaded,
   mergeRemoteDraft,
   restoreRecording,
   sourceContext,
@@ -95,6 +96,30 @@ test("imported audio does not use import date as recording time or invent a plac
   });
 });
 
+test("source context selects the locality nearest to the requested clip offset", () => {
+  const recordedAt = Date.parse(clip.recordedAt ?? "");
+  const withLocations = {
+    ...clip,
+    locationSummary: {
+      startLocation: null,
+      endLocation: null,
+      representativeLocations: [],
+      places: [
+        { name: "大阪市中央区", timestamp: recordedAt },
+        { name: "京都市左京区", timestamp: recordedAt + 10 * 60_000 },
+      ],
+      routeObjectKey: "locations/owner/d1/c1/location.json",
+    },
+  };
+  assert.equal(sourceContext(withLocations, 0).place, "大阪市中央区");
+  assert.equal(sourceContext(withLocations, 9 * 60_000).place, "京都市左京区");
+  assert.equal(
+    sourceContext({ ...withLocations, place: "手入力の場所" }, 9 * 60_000)
+      .place,
+    "手入力の場所",
+  );
+});
+
 test("remote preparation merges metadata while retaining local files and multipart progress", () => {
   const state = saved();
   state.drafts[0].clips[0].upload = {
@@ -111,6 +136,72 @@ test("remote preparation merges metadata while retaining local files and multipa
   assert.equal(merged.drafts[0].clips[0].localUri, clip.localUri);
   assert.equal(merged.drafts[0].clips[0].upload?.parts[0].etag, "etag");
   assert.equal(merged.drafts[0].clips[0].durationMs, 2950);
+});
+
+test("a clip moves its private route into the library and keeps it after song completion", () => {
+  const timestamp = Date.parse("2026-10-06T00:00:00.000Z");
+  const route = {
+    version: 1 as const,
+    draftId: "d1",
+    clipId: "c1",
+    recordedAt: new Date(timestamp).toISOString(),
+    endedAt: new Date(timestamp + 60_000).toISOString(),
+    segments: [
+      {
+        startedAt: timestamp,
+        endedAt: timestamp + 60_000,
+        samples: [
+          {
+            latitude: 34.66871,
+            longitude: 135.50131,
+            accuracy: 24,
+            timestamp,
+          },
+        ],
+      },
+    ],
+  };
+  const state = addSavedClip(
+    {
+      ...emptyLibrary(),
+      drafts: [createLocalDraft("d1", new Date(timestamp).toISOString())],
+    },
+    { ...clip, locationRoute: route },
+  );
+  assert.equal(state.drafts[0].clips[0].locationRoute, undefined);
+  assert.equal(state.locationRoutes?.[0].route.clipId, "c1");
+  assert.equal(state.locationRoutes?.[0].uploaded, false);
+
+  const uploaded = markLocationUploaded(state, "c1", {
+    startLocation: route.segments[0].samples[0],
+    endLocation: route.segments[0].samples[0],
+    representativeLocations: route.segments[0].samples,
+    places: [{ name: "大阪市中央区", timestamp }],
+    routeObjectKey: "locations/owner/d1/c1/location.json",
+  });
+  assert.equal(uploaded.locationRoutes?.[0].uploaded, true);
+  assert.equal(
+    sourceContext(uploaded.drafts[0].clips[0]).place,
+    "大阪市中央区",
+  );
+
+  const song: SongDocument = {
+    id: "s1",
+    draftId: "d1",
+    title: "旅",
+    createdAt: new Date(timestamp).toISOString(),
+    clips: [uploaded.drafts[0].clips[0]],
+    utterances: [],
+    lyrics: { revision: 1, blocks: [] },
+    audioId: "audio-s1",
+    durationMs: 113400,
+  };
+  const completed = completeSong(uploaded, song);
+  assert.equal(completed.locationRoutes?.[0].route.clipId, "c1");
+  assert.equal(
+    completed.songs[0].clips[0].locationSummary?.places[0].name,
+    "大阪市中央区",
+  );
 });
 
 test("editing a lyric keeps its source and never changes another block", () => {

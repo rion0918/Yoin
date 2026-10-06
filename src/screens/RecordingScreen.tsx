@@ -2,6 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import {
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   useWindowDimensions,
   View,
@@ -20,6 +21,9 @@ type RecordingScreenProps = {
   speakerNames: string[];
   recording: boolean;
   busy: boolean;
+  locationEnabled: boolean;
+  locationStatus: "off" | "acquiring" | "tracking" | "unavailable";
+  onLocationEnabledChange: (enabled: boolean) => void;
   stateLabel?: string;
   onImport: () => void;
   liveSeconds: number;
@@ -34,6 +38,9 @@ export function RecordingScreen({
   speakerNames,
   recording,
   busy,
+  locationEnabled,
+  locationStatus,
+  onLocationEnabledChange,
   stateLabel,
   onImport,
   liveSeconds,
@@ -52,6 +59,17 @@ export function RecordingScreen({
       ? "録音を再開"
       : "録音をはじめる";
   const stateColor = recording ? "#9c5d2e" : "#6b625a";
+  const locationLabel = recording
+    ? locationEnabled && locationStatus === "tracking"
+      ? "位置情報を使用中"
+      : locationEnabled && locationStatus === "acquiring"
+        ? "位置情報を取得中"
+        : "位置情報なしで録音"
+    : locationStatus === "unavailable"
+      ? "許可されていないため、位置情報なしで録音します"
+      : locationEnabled
+        ? "録音中、アプリ表示中だけ位置情報を取得します"
+        : "録音時に位置情報を付けます（初期設定はオフ）";
 
   return (
     <SafeAreaView style={styles.screen} testID="record-screen">
@@ -101,6 +119,30 @@ export function RecordingScreen({
             参加する人 · {speakerNames.join("、")}
           </Text>
         )}
+
+        <View style={styles.locationPreference}>
+          <View style={styles.locationCopy}>
+            <Text style={styles.locationTitle}>位置情報を付ける</Text>
+            <Text
+              style={styles.locationDescription}
+              accessibilityLiveRegion="polite"
+            >
+              {locationLabel}
+            </Text>
+            <Text style={styles.locationNote}>
+              場所は市・区まで記録します。画面を離れると取得を一時停止します。
+            </Text>
+          </View>
+          <Switch
+            accessibilityLabel="位置情報を付ける"
+            testID="recording-location-switch"
+            value={locationEnabled}
+            onValueChange={onLocationEnabledChange}
+            disabled={busy || draft.status !== "local"}
+            trackColor={{ false: "#d7d1cb", true: "#aa7755" }}
+            thumbColor={locationEnabled ? "#493020" : "#fff"}
+          />
+        </View>
 
         <View style={[styles.focus, { paddingTop: focusSpacing }]}>
           <View style={styles.stateCircle}>
@@ -256,6 +298,34 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
     fontWeight: "500",
+  },
+  locationPreference: {
+    width: "100%",
+    marginTop: 18,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderRadius: 14,
+    backgroundColor: "#f5f3f1",
+  },
+  locationCopy: { flex: 1, gap: 3 },
+  locationTitle: {
+    color: "#332317",
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "600",
+  },
+  locationDescription: {
+    color: "#544033",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  locationNote: {
+    color: "#726d69",
+    fontSize: 11,
+    lineHeight: 16,
   },
   focus: { alignItems: "center" },
   stateCircle: {

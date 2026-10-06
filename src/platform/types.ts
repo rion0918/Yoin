@@ -19,6 +19,7 @@ export type AudioEngineState = {
   positionMs: number;
   durationMs: number;
   error: string | null;
+  locationStatus: "off" | "acquiring" | "tracking" | "unavailable";
 };
 export type NativeStopListener = (clip: SavedRecording) => void | Promise<void>;
 export type PreparedListener = (pending: PendingRecording) => Promise<void>;
@@ -31,7 +32,9 @@ export type AudioEngine = {
     timezone: string,
     onPrepared?: PreparedListener,
     speakerProfileId?: string,
+    locationEnabled?: boolean,
   ) => Promise<PendingRecording>;
+  setLocationEnabled: (enabled: boolean) => Promise<boolean>;
   stopRecording: () => Promise<SavedRecording | null>;
   play: (uri: string, startMs?: number, endMs?: number) => Promise<void>;
   pause: () => Promise<void>;

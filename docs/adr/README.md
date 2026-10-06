@@ -24,10 +24,11 @@ ADR（Architecture Decision Record）は、1つの重要な判断について、
 | [0014: FirebaseのGoogle認証とUID単位の保存・削除を使用する](0014-firebase-account-isolation.md) | Proposed | 2026-10-05 |
 | [0015: Google Play内部テスト用の配布ビルドを使用する](0015-google-play-internal-distribution.md) | Proposed | 2026-10-05 |
 | [0016: 思い出ごとに参加する話者を選ぶ](0016-memory-speaker-selection.md) | Accepted | 2026-10-06 |
+| [0017: 録音位置を端末取得し、クリップ単位で保存する](0017-recording-location.md) | Proposed | 2026-10-06 |
 
 Accepted の記録が現在の採用済み判断です。Proposed は提案段階であり、採用済みとして扱いません。記録の追加・状態変更時には、この一覧も更新します。
 
-番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0016-<short-title>.md` です。
+番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0018-<short-title>.md` です。
 
 ## 作業前に読む
 

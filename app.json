@@ -19,6 +19,15 @@
     "plugins": [
       "expo-font",
       [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "位置情報を使うと選択した録音中の現在地を端末に保存します。",
+          "isAndroidBackgroundLocationEnabled": false,
+          "isAndroidForegroundServiceEnabled": false,
+          "isIosBackgroundLocationEnabled": false
+        }
+      ],
+      [
         "expo-audio",
         {
           "enableBackgroundRecording": true,

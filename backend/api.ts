@@ -1,4 +1,6 @@
 import {
+  type AudioLocationSummary,
+  type LocationSample,
   MAX_AUDIO_MS,
   UPLOAD_PART_BYTES,
   type UploadCreated,
@@ -42,6 +44,7 @@ import {
   id,
   integer,
   json,
+  locationPayload,
   text,
   validateBlocks,
 } from "./validation.ts";
@@ -151,7 +154,9 @@ async function createClip(
     .bind(metadata.id, owner)
     .first<ClipRow>();
   if (clip) {
-    if (JSON.stringify(audioClip(clip)) !== JSON.stringify(metadata))
+    const storedMetadata = audioClip(clip);
+    delete storedMetadata.locationSummary;
+    if (JSON.stringify(storedMetadata) !== JSON.stringify(metadata))
       throw new HttpError(409, "clip_metadata_conflict");
   } else {
     if (draft.status !== "uploading")
@@ -198,6 +203,100 @@ async function createClip(
     clip = await ownedClip(env, clip.id, owner);
   }
   return Response.json(await uploadDocument(env, clip), { status: 200 });
+}
+
+function routeObjectKey(owner: string, draftId: string, clipId: string) {
+  return `locations/${owner}/${draftId}/${clipId}/location.json`;
+}
+
+function locationSummary(
+  payload: ReturnType<typeof locationPayload>,
+  key: string,
+): AudioLocationSummary {
+  const samples = payload.route.segments.flatMap((segment) => segment.samples);
+  const byTimestamp = new Map(
+    samples.map((sample) => [sample.timestamp, sample]),
+  );
+  return {
+    startLocation: samples[0] ?? null,
+    endLocation: samples.at(-1) ?? null,
+    representativeLocations: payload.representativeTimestamps
+      .map((timestamp) => byTimestamp.get(timestamp))
+      .filter((sample): sample is LocationSample => !!sample),
+    places: payload.places,
+    routeObjectKey: key,
+  };
+}
+
+async function saveLocationRoute(
+  request: Request,
+  env: Env,
+  owner: string,
+  clipId: string,
+) {
+  const raw = await request.text();
+  if (new TextEncoder().encode(raw).byteLength > 128 * 1024)
+    throw new HttpError(413, "location_route_too_large");
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    throw new HttpError(400, "invalid_json");
+  }
+  const clip = await ownedClip(env, clipId, owner);
+  const payload = locationPayload(body, clip);
+  const serialized = JSON.stringify(payload);
+  const hash = await sha256(serialized);
+  const key = routeObjectKey(owner, clip.draft_id, clip.id);
+  if (clip.location_hash) {
+    if (clip.location_hash !== hash)
+      throw new HttpError(409, "location_route_conflict");
+    return Response.json({ summary: locationSummary(payload, key) });
+  }
+
+  const serializedRoute = JSON.stringify({ ...payload, routeHash: hash });
+  const storedRoute = await env.AUDIO.put(key, serializedRoute, {
+    onlyIf: { etagDoesNotMatch: "*" },
+    httpMetadata: { contentType: "application/json" },
+    customMetadata: { routeHash: hash },
+  });
+  if (!storedRoute) {
+    const existing = await env.AUDIO.head(key);
+    if (existing?.customMetadata?.routeHash !== hash)
+      throw new HttpError(409, "location_route_conflict");
+  }
+  await finishOwnedUpload(env, owner, key);
+  const summary = locationSummary(payload, key);
+  const result = await env.DB.prepare(
+    "UPDATE clips SET location_summary_json = ?, location_hash = ? WHERE id = ? AND owner_id = ? AND location_hash IS NULL AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
+  )
+    .bind(JSON.stringify(summary), hash, clip.id, owner, owner)
+    .run();
+  if (result.meta.changes !== 1) {
+    const current = await ownedClip(env, clip.id, owner);
+    if (current.location_hash === hash)
+      return Response.json({ summary: locationSummary(payload, key) });
+    await env.AUDIO.delete(key);
+    throw new HttpError(409, "location_route_conflict");
+  }
+  return Response.json({ summary });
+}
+
+async function getLocationRoute(env: Env, owner: string, clipId: string) {
+  const clip = await ownedClip(env, clipId, owner);
+  if (!clip.location_summary_json)
+    throw new HttpError(404, "location_route_not_found");
+  const summary = JSON.parse(
+    clip.location_summary_json,
+  ) as AudioLocationSummary;
+  const object = await env.AUDIO.get(summary.routeObjectKey);
+  if (!object) throw new HttpError(404, "location_route_not_found");
+  return new Response(object.body, {
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "private, no-store",
+    },
+  });
 }
 
 async function uploadPart(
@@ -581,6 +680,11 @@ export async function handleRequest(request: Request, env: Env) {
     const complete = /^\/clips\/([a-zA-Z0-9_-]+)\/complete$/.exec(path);
     if (complete && request.method === "POST")
       return await completeUpload(request, env, owner, id(complete[1]));
+    const location = /^\/clips\/([a-zA-Z0-9_-]+)\/location$/.exec(path);
+    if (location && request.method === "PUT")
+      return await saveLocationRoute(request, env, owner, id(location[1]));
+    if (location && request.method === "GET")
+      return await getLocationRoute(env, owner, id(location[1]));
     const job = /^\/jobs\/([a-zA-Z0-9_-]+)$/.exec(path);
     if (job && request.method === "GET") {
       const row = await ownedJob(env, id(job[1]), owner);

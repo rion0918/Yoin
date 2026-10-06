@@ -122,6 +122,7 @@ export async function deleteAccountData(env: Env, uid: string) {
     "voices",
     "songs",
     "results",
+    "locations",
   ]) {
     let cursor: string | undefined;
     do {

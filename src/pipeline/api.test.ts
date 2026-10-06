@@ -26,6 +26,62 @@ test("uses a fresh Firebase token for each JSON request and binary upload", asyn
   ]);
 });
 
+test("uploads and retrieves location routes with owner authentication", async () => {
+  const timestamp = Date.parse("2026-10-06T00:00:00.000Z");
+  const route = {
+    version: 1 as const,
+    draftId: "draft-a",
+    clipId: "clip-a",
+    recordedAt: new Date(timestamp).toISOString(),
+    endedAt: new Date(timestamp + 60_000).toISOString(),
+    segments: [
+      {
+        startedAt: timestamp,
+        endedAt: timestamp + 60_000,
+        samples: [
+          {
+            latitude: 34.66871,
+            longitude: 135.50131,
+            accuracy: 24,
+            timestamp,
+          },
+        ],
+      },
+    ],
+  };
+  const requests: { url: string; method: string; body: unknown }[] = [];
+  const api = createApi(
+    { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
+    async (url, options) => {
+      requests.push({
+        url: String(url),
+        method: options?.method ?? "GET",
+        body: options?.body,
+      });
+      return Response.json({
+        summary: {
+          startLocation: route.segments[0].samples[0],
+          endLocation: route.segments[0].samples[0],
+          representativeLocations: route.segments[0].samples,
+          places: [],
+          routeObjectKey: "locations/owner/draft-a/clip-a/location.json",
+        },
+      });
+    },
+  );
+  const body = { route, representativeTimestamps: [timestamp], places: [] };
+  const uploaded = await api.uploadLocation("clip-a", body);
+  assert.equal(
+    uploaded.summary.routeObjectKey,
+    "locations/owner/draft-a/clip-a/location.json",
+  );
+  assert.equal(requests[0].method, "PUT");
+  assert.equal(requests[0].url, "https://test.invalid/clips/clip-a/location");
+  assert.equal(requests[0].body, JSON.stringify(body));
+  await api.location("clip-a");
+  assert.equal(requests[1].method, "GET");
+});
+
 test("a lost generation response is never automatically sent twice", async () => {
   let requests = 0;
   const api = createApi(

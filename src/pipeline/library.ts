@@ -1,5 +1,6 @@
 import type {
   AudioClip,
+  AudioLocationSummary,
   DraftDocument,
   LibraryDocument,
   LocalDraft,
@@ -7,6 +8,7 @@ import type {
   SavedRecording,
   SongDocument,
 } from "../../shared/contracts.ts";
+import { createLocalLocationSummary } from "./location.ts";
 
 export function createLocalDraft(
   id: string,
@@ -19,6 +21,7 @@ export function createLocalDraft(
     title: `${date.getMonth() + 1}月${date.getDate()}日からの記録`,
     createdAt,
     speakerProfileIds,
+    locationEnabled: false,
     clips: [],
     utterances: [],
     lyrics: null,
@@ -55,26 +58,75 @@ export function addSavedClip(
       ),
     };
   }
-  const draft = state.drafts.find((value) => value.id === clip.draftId);
+  const locationRoute = clip.locationRoute;
+  const savedClip = { ...clip };
+  delete savedClip.locationRoute;
+  const withLocation = (next: LibraryDocument): LibraryDocument => {
+    if (!locationRoute) return next;
+    const existing = next.locationRoutes ?? [];
+    if (existing.some((item) => item.route.clipId === locationRoute.clipId))
+      return next;
+    return {
+      ...next,
+      locationRoutes: [
+        ...existing,
+        {
+          route: locationRoute,
+          summary: createLocalLocationSummary(locationRoute),
+          preparedForUpload: false,
+          uploaded: false,
+        },
+      ],
+    };
+  };
+  const draft = state.drafts.find((value) => value.id === savedClip.draftId);
   if (!draft) throw new Error("記録が見つかりません。");
-  if (draft.clips.some((value) => value.id === clip.id))
+  if (draft.clips.some((value) => value.id === savedClip.id))
     return state.pendingRecording?.clipId === clip.id
-      ? { ...state, pendingRecording: null }
-      : state;
-  return {
+      ? withLocation({ ...state, pendingRecording: null })
+      : withLocation(state);
+  return withLocation({
     ...state,
     recoveryFiles: state.recoveryFiles?.filter(
-      (pending) => pending.clipId !== clip.id,
+      (pending) => pending.clipId !== savedClip.id,
     ),
     pendingRecording:
-      state.pendingRecording?.clipId === clip.id
+      state.pendingRecording?.clipId === savedClip.id
         ? null
         : state.pendingRecording,
     drafts: state.drafts.map((value) =>
-      value.id === clip.draftId
-        ? { ...value, clips: [...value.clips, clip], error: null }
+      value.id === savedClip.draftId
+        ? { ...value, clips: [...value.clips, savedClip], error: null }
         : value,
     ),
+  });
+}
+
+export function markLocationUploaded(
+  state: LibraryDocument,
+  clipId: string,
+  summary: AudioLocationSummary,
+): LibraryDocument {
+  const { routeObjectKey: _routeObjectKey, ...localSummary } = summary;
+  return {
+    ...state,
+    locationRoutes: (state.locationRoutes ?? []).map((entry) =>
+      entry.route.clipId === clipId
+        ? { ...entry, summary: localSummary, uploaded: true }
+        : entry,
+    ),
+    drafts: state.drafts.map((draft) => ({
+      ...draft,
+      clips: draft.clips.map((clip) =>
+        clip.id === clipId ? { ...clip, locationSummary: summary } : clip,
+      ),
+    })),
+    songs: state.songs.map((song) => ({
+      ...song,
+      clips: song.clips.map((clip) =>
+        clip.id === clipId ? { ...clip, locationSummary: summary } : clip,
+      ),
+    })),
   };
 }
 
@@ -166,8 +218,22 @@ export function sourceContext(
   clip: AudioClip,
   offsetMs = 0,
 ): { date: string; time: string; place: string } {
-  if (!clip.recordedAt)
-    return { date: "日時不明", time: "", place: clip.place || "場所不明" };
+  const places = clip.locationSummary?.places ?? [];
+  let nearestPlace = places[0];
+  if (clip.recordedAt && Number.isFinite(Date.parse(clip.recordedAt))) {
+    const timestamp = Date.parse(clip.recordedAt) + offsetMs;
+    for (const place of places.slice(1)) {
+      if (
+        Math.abs(place.timestamp - timestamp) <
+        Math.abs(
+          (nearestPlace?.timestamp ?? Number.POSITIVE_INFINITY) - timestamp,
+        )
+      )
+        nearestPlace = place;
+    }
+  }
+  const place = clip.place || nearestPlace?.name || "場所不明";
+  if (!clip.recordedAt) return { date: "日時不明", time: "", place };
   const date = new Date(Date.parse(clip.recordedAt) + offsetMs);
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: clip.timezone,
@@ -183,7 +249,7 @@ export function sourceContext(
   return {
     date: `${get("year")}-${get("month")}-${get("day")}`,
     time: `${get("hour")}:${get("minute")}`,
-    place: clip.place || "場所不明",
+    place,
   };
 }
 

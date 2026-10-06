@@ -1,5 +1,6 @@
 import {
   type AudioClip,
+  type LocationSample,
   type LyricBlock,
   MAX_AUDIO_BYTES,
   MAX_AUDIO_MS,
@@ -45,6 +46,153 @@ export async function json(request: Request): Promise<Record<string, unknown>> {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new HttpError(400, "invalid_json");
   return value as Record<string, unknown>;
+}
+
+export type ValidatedLocationPayload = {
+  route: import("../shared/contracts.ts").RecordingLocationRoute;
+  representativeTimestamps: number[];
+  places: { timestamp: number; name: string }[];
+};
+
+export function locationPayload(
+  body: unknown,
+  clip: { id: string; draft_id: string; recorded_at: string | null },
+): ValidatedLocationPayload {
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    throw new HttpError(400, "invalid_location_route");
+  const value = body as Record<string, unknown>;
+  const route = value.route as Record<string, unknown> | undefined;
+  if (
+    !route ||
+    typeof route !== "object" ||
+    Array.isArray(route) ||
+    route.version !== 1 ||
+    route.clipId !== clip.id ||
+    route.draftId !== clip.draft_id ||
+    typeof route.recordedAt !== "string" ||
+    !Number.isFinite(Date.parse(route.recordedAt)) ||
+    (clip.recorded_at !== null && route.recordedAt !== clip.recorded_at) ||
+    typeof route.endedAt !== "string" ||
+    !Number.isFinite(Date.parse(route.endedAt)) ||
+    Date.parse(route.endedAt) < Date.parse(route.recordedAt) ||
+    !Array.isArray(route.segments) ||
+    route.segments.length < 1 ||
+    route.segments.length > 512
+  )
+    throw new HttpError(422, "invalid_location_route");
+
+  let sampleCount = 0;
+  let previousTimestamp = -1;
+  let previousSegmentEnd = -1;
+  const sampleTimestamps = new Set<number>();
+  const segments: ValidatedLocationPayload["route"]["segments"] = [];
+  for (const segment of route.segments) {
+    if (
+      !segment ||
+      typeof segment !== "object" ||
+      Array.isArray(segment) ||
+      typeof segment.startedAt !== "number" ||
+      !Number.isSafeInteger(segment.startedAt) ||
+      typeof segment.endedAt !== "number" ||
+      !Number.isSafeInteger(segment.endedAt) ||
+      segment.endedAt < segment.startedAt ||
+      segment.startedAt < Date.parse(route.recordedAt) ||
+      segment.endedAt > Date.parse(route.endedAt) ||
+      segment.startedAt < previousSegmentEnd ||
+      !Array.isArray(segment.samples) ||
+      segment.samples.length < 1
+    )
+      throw new HttpError(422, "invalid_location_segment");
+    let segmentPrevious = -1;
+    const samples: LocationSample[] = [];
+    for (const sample of segment.samples) {
+      if (
+        !sample ||
+        typeof sample !== "object" ||
+        Array.isArray(sample) ||
+        typeof sample.latitude !== "number" ||
+        sample.latitude < -90 ||
+        sample.latitude > 90 ||
+        typeof sample.longitude !== "number" ||
+        sample.longitude < -180 ||
+        sample.longitude > 180 ||
+        typeof sample.accuracy !== "number" ||
+        !Number.isFinite(sample.accuracy) ||
+        sample.accuracy < 0 ||
+        typeof sample.timestamp !== "number" ||
+        !Number.isSafeInteger(sample.timestamp) ||
+        sample.timestamp < segment.startedAt ||
+        sample.timestamp > segment.endedAt ||
+        sample.timestamp <= segmentPrevious ||
+        (previousTimestamp >= 0 &&
+          sample.timestamp - previousTimestamp < 60_000) ||
+        sample.timestamp <= previousTimestamp ||
+        sampleTimestamps.has(sample.timestamp)
+      )
+        throw new HttpError(422, "invalid_location_sample");
+      sampleCount++;
+      if (sampleCount > 512)
+        throw new HttpError(413, "location_route_too_large");
+      sampleTimestamps.add(sample.timestamp);
+      segmentPrevious = sample.timestamp;
+      previousTimestamp = sample.timestamp;
+      samples.push({
+        latitude: sample.latitude,
+        longitude: sample.longitude,
+        accuracy: sample.accuracy,
+        timestamp: sample.timestamp,
+      });
+    }
+    previousSegmentEnd = segment.endedAt;
+    segments.push({
+      startedAt: segment.startedAt,
+      endedAt: segment.endedAt,
+      samples,
+    });
+  }
+  const representativeTimestamps = value.representativeTimestamps;
+  if (
+    !Array.isArray(representativeTimestamps) ||
+    representativeTimestamps.length > 3 ||
+    new Set(representativeTimestamps).size !==
+      representativeTimestamps.length ||
+    representativeTimestamps.some(
+      (timestamp) =>
+        typeof timestamp !== "number" || !sampleTimestamps.has(timestamp),
+    ) ||
+    !Array.isArray(value.places) ||
+    value.places.length > 3
+  )
+    throw new HttpError(422, "invalid_location_summary");
+  const placeTimestamps = new Set<number>();
+  const places = value.places.map((place) => {
+    if (
+      !place ||
+      typeof place !== "object" ||
+      Array.isArray(place) ||
+      typeof place.timestamp !== "number" ||
+      !representativeTimestamps.includes(place.timestamp) ||
+      typeof place.name !== "string" ||
+      !place.name.trim() ||
+      place.name.length > 100 ||
+      placeTimestamps.has(place.timestamp)
+    )
+      throw new HttpError(422, "invalid_location_summary");
+    placeTimestamps.add(place.timestamp);
+    return { timestamp: place.timestamp, name: place.name.trim() };
+  });
+  return {
+    route: {
+      version: 1,
+      draftId: clip.draft_id,
+      clipId: clip.id,
+      recordedAt: route.recordedAt,
+      endedAt: route.endedAt,
+      segments,
+    },
+    representativeTimestamps: representativeTimestamps as number[],
+    places,
+  };
 }
 export function clipMetadata(
   value: Record<string, unknown>,

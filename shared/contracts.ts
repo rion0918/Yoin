@@ -62,6 +62,41 @@ export type SpeakerRecordingMetadata = {
 export type RecordingMetadata =
   | ConversationRecordingMetadata
   | SpeakerRecordingMetadata;
+
+export type LocationSample = {
+  latitude: number;
+  longitude: number;
+  accuracy: number;
+  timestamp: number;
+};
+export type LocationSegment = {
+  startedAt: number;
+  endedAt: number;
+  samples: LocationSample[];
+};
+export type RecordingLocationRoute = {
+  version: 1;
+  draftId: string;
+  clipId: string;
+  recordedAt: string;
+  endedAt: string;
+  segments: LocationSegment[];
+};
+export type NamedLocation = LocationSample & { name: string };
+export type AudioLocationSummary = {
+  startLocation: LocationSample | null;
+  endLocation: LocationSample | null;
+  representativeLocations: LocationSample[];
+  places: { name: string; timestamp: number }[];
+  routeObjectKey: string;
+};
+export type LocalLocationRoute = {
+  route: RecordingLocationRoute;
+  summary: Omit<AudioLocationSummary, "routeObjectKey">;
+  preparedForUpload?: boolean;
+  uploaded: boolean;
+};
+export type LocalLocationPlaceCache = NamedLocation & { cachedAt: number };
 export type ConversationPendingRecording = {
   purpose?: "conversation";
   draftId: string;
@@ -92,6 +127,7 @@ export type AudioClip = {
   importedAt: string | null;
   timezone: string;
   place: string | null;
+  locationSummary?: AudioLocationSummary;
 };
 
 export type UploadProgress = {
@@ -104,6 +140,7 @@ export type LocalClip = AudioClip & {
   purpose?: "conversation";
   localUri: string;
   upload?: UploadProgress;
+  locationRoute?: RecordingLocationRoute;
 };
 export type SavedRecording = LocalClip | LocalSpeakerSample;
 
@@ -152,6 +189,8 @@ export type LocalDraft = Omit<DraftDocument, "clips"> & {
   clips: LocalClip[];
   prepareKey?: string;
   generateKey?: string;
+  locationEnabled?: boolean;
+  locationGeocodingAttempts?: number;
 };
 
 export type SongDocument = {
@@ -189,6 +228,8 @@ export type LibraryDocument = {
   speakerProfiles?: LocalSpeakerProfile[];
   pendingRecording: PendingRecording | null;
   recoveryFiles?: NonNullable<LibraryDocument["pendingRecording"]>[];
+  locationRoutes?: LocalLocationRoute[];
+  locationPlaceCache?: LocalLocationPlaceCache[];
 };
 
 export type MediaChunk = {

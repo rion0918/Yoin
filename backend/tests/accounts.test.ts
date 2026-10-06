@@ -79,6 +79,7 @@ beforeEach(async () => {
       "voices",
       "songs",
       "results",
+      "locations",
     ])
       await bindings.AUDIO.put(`${category}/${uid}/song.mp3`, "abc");
   }
@@ -190,6 +191,7 @@ it("deletion resumes after a service failure, removes only its owner, and keeps 
     "voices",
     "songs",
     "results",
+    "locations",
   ]) {
     expect(await bindings.AUDIO.head(`${category}/alice/song.mp3`)).toBeNull();
     expect(

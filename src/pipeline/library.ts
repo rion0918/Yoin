@@ -218,8 +218,22 @@ export function sourceContext(
   clip: AudioClip,
   offsetMs = 0,
 ): { date: string; time: string; place: string } {
-  if (!clip.recordedAt)
-    return { date: "日時不明", time: "", place: clip.place || "場所不明" };
+  const places = clip.locationSummary?.places ?? [];
+  let nearestPlace = places[0];
+  if (clip.recordedAt && Number.isFinite(Date.parse(clip.recordedAt))) {
+    const timestamp = Date.parse(clip.recordedAt) + offsetMs;
+    for (const place of places.slice(1)) {
+      if (
+        Math.abs(place.timestamp - timestamp) <
+        Math.abs(
+          (nearestPlace?.timestamp ?? Number.POSITIVE_INFINITY) - timestamp,
+        )
+      )
+        nearestPlace = place;
+    }
+  }
+  const place = clip.place || nearestPlace?.name || "場所不明";
+  if (!clip.recordedAt) return { date: "日時不明", time: "", place };
   const date = new Date(Date.parse(clip.recordedAt) + offsetMs);
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: clip.timezone,
@@ -235,7 +249,7 @@ export function sourceContext(
   return {
     date: `${get("year")}-${get("month")}-${get("day")}`,
     time: `${get("hour")}:${get("minute")}`,
-    place: clip.place || clip.locationSummary?.places[0]?.name || "場所不明",
+    place,
   };
 }
 

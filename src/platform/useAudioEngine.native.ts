@@ -17,7 +17,10 @@ import type {
   RecordingLocationRoute,
   SavedRecording,
 } from "../../shared/contracts";
-import { createLocationRouteRecorder } from "../pipeline/location";
+import {
+  type createLocationRouteRecorder,
+  locationRouteRecorderForRecording,
+} from "../pipeline/location";
 import { waitUntilLoaded } from "./audio.native";
 import {
   beginPreparedRecording,
@@ -184,8 +187,14 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
           return false;
         }
         locationEnabled.current = true;
-        if (capturing.current) await startLocationWatch();
-        else setLocationStatus("acquiring");
+        if (capturing.current) {
+          locationRecorder.current = locationRouteRecorderForRecording(
+            locationRecorder.current,
+            pending.current,
+          );
+          if (locationRecorder.current) await startLocationWatch();
+          else setLocationStatus("unavailable");
+        } else setLocationStatus("acquiring");
         return true;
       } catch {
         locationEnabled.current = false;
@@ -382,7 +391,7 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
           setRecorderState("recording");
           locationEnabled.current = !speakerProfileId && locationEnabledForClip;
           locationRecorder.current = locationEnabled.current
-            ? createLocationRouteRecorder(draftId, clipId, prepared.recordedAt)
+            ? locationRouteRecorderForRecording(null, pending.current)
             : null;
           completedLocationRoute.current = null;
           if (locationEnabled.current) void startLocationWatch();

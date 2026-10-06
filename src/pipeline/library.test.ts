@@ -96,6 +96,30 @@ test("imported audio does not use import date as recording time or invent a plac
   });
 });
 
+test("source context selects the locality nearest to the requested clip offset", () => {
+  const recordedAt = Date.parse(clip.recordedAt ?? "");
+  const withLocations = {
+    ...clip,
+    locationSummary: {
+      startLocation: null,
+      endLocation: null,
+      representativeLocations: [],
+      places: [
+        { name: "大阪市中央区", timestamp: recordedAt },
+        { name: "京都市左京区", timestamp: recordedAt + 10 * 60_000 },
+      ],
+      routeObjectKey: "locations/owner/d1/c1/location.json",
+    },
+  };
+  assert.equal(sourceContext(withLocations, 0).place, "大阪市中央区");
+  assert.equal(sourceContext(withLocations, 9 * 60_000).place, "京都市左京区");
+  assert.equal(
+    sourceContext({ ...withLocations, place: "手入力の場所" }, 9 * 60_000)
+      .place,
+    "手入力の場所",
+  );
+});
+
 test("remote preparation merges metadata while retaining local files and multipart progress", () => {
   const state = saved();
   state.drafts[0].clips[0].upload = {

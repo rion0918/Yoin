@@ -4,6 +4,7 @@ import type {
   LocalLocationRoute,
   LocationSample,
   LocationSegment,
+  PendingRecording,
   RecordingLocationRoute,
   Utterance,
 } from "../../shared/contracts.ts";
@@ -122,6 +123,18 @@ export function createLocationRouteRecorder(
       };
     },
   };
+}
+
+export function locationRouteRecorderForRecording(
+  existing: ReturnType<typeof createLocationRouteRecorder> | null,
+  pending: PendingRecording | null,
+) {
+  if (existing || !pending || pending.purpose === "speaker") return existing;
+  return createLocationRouteRecorder(
+    pending.draftId,
+    pending.clipId,
+    pending.recordedAt,
+  );
 }
 
 function flatten(route: RecordingLocationRoute) {

@@ -4,12 +4,14 @@ import type {
   AudioClip,
   LocalLocationRoute,
   LocationSample,
+  PendingRecording,
   RecordingLocationRoute,
   Utterance,
 } from "../../shared/contracts.ts";
 import {
   createLocationRouteRecorder,
   localityName,
+  locationRouteRecorderForRecording,
   nearestLocationForUtterance,
   pendingLocationUploads,
   resolveRepresentativePlaces,
@@ -22,6 +24,34 @@ const point = (timestamp: number, latitude = 34.66871): LocationSample => ({
   longitude: 135.50131,
   accuracy: 24,
   timestamp,
+});
+
+test("an active conversation can start location capture after recording begins", () => {
+  const pending: PendingRecording = {
+    purpose: "conversation",
+    draftId: "draft-a",
+    clipId: "clip-a",
+    recordedAt: new Date(origin).toISOString(),
+    timezone: "Asia/Tokyo",
+    localUri: "file:///clip-a.m4a",
+  };
+  const recorder = locationRouteRecorderForRecording(null, pending);
+  assert.ok(recorder);
+  recorder.resume(origin);
+  assert.equal(recorder.add(point(origin)), true);
+  assert.equal(recorder.finish(origin + 60_000)?.clipId, "clip-a");
+  assert.equal(locationRouteRecorderForRecording(recorder, pending), recorder);
+  assert.equal(
+    locationRouteRecorderForRecording(null, {
+      purpose: "speaker",
+      speakerProfileId: "speaker-a",
+      clipId: "speaker-clip",
+      recordedAt: new Date(origin).toISOString(),
+      timezone: "Asia/Tokyo",
+      localUri: "file:///speaker.m4a",
+    }),
+    null,
+  );
 });
 
 function localRoute(index: number, dwellMinutes: number): LocalLocationRoute {

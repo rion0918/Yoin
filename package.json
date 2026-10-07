@@ -20,6 +20,8 @@
     "export": "expo export --platform all",
     "poc": "node --env-file-if-exists=.env.local pipeline/poc.ts",
     "setup:local": "node scripts/setup-local.mjs",
+    "android:check-play-version": "node --env-file-if-exists=.env.local scripts/android-play-internal.mjs --check",
+    "android:build:play-internal": "node --env-file-if-exists=.env.local scripts/android-play-internal.mjs",
     "backend:dev": "npm --prefix backend run dev",
     "backend:test": "npm --prefix backend test",
     "backend:typecheck": "npm --prefix backend run typecheck",

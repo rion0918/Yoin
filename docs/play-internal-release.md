@@ -25,7 +25,18 @@
 EAS_BUILD_PROFILE=playInternal npx expo config --type public
 ```
 
-HTTPS URL、Firebase project ID・プロジェクト番号・アプリID・API設定、Android package、Web OAuth client、EAS project ID、JSONファイルが不足・不一致なら停止する。EAS `playInternal` の設定がそろった後のビルドコマンドは `eas build --platform android --profile playInternal`。AABはdevelopment buildと違いMetro接続を必要としない。[Expoの配布形式](https://docs.expo.dev/build-reference/apk/)
+HTTPS URL、Firebase project ID・プロジェクト番号・アプリID・API設定、Android package、Web OAuth client、EAS project ID、JSONファイルが不足・不一致なら停止する。AABはdevelopment buildと違いMetro接続を必要としない。[Expoの配布形式](https://docs.expo.dev/build-reference/apk/)
+
+
+## versionCode の自動照合とビルド
+
+`eas.json` の `appVersionSource: remote` と `playInternal.autoIncrement: true` は EAS remote versionCode を進めますが、Play Console 側の値は読み取りません。[Expo の version 管理](https://docs.expo.dev/tutorial/eas/manage-app-versions/)。そこで `scripts/android-play-internal.mjs` が Google Play Developer API の [track](https://developers.google.com/android-publisher/api-ref/rest/v3/edits.tracks/list) と [App Bundle](https://developers.google.com/android-publisher/api-ref/rest/v3/edits.bundles/list) から versionCode を取得し、次の EAS 番号が Play の最大値を超える場合だけビルドを開始します。照会では一時 edit を作成しますが、内容を変更・commit せず、取得後に削除します。EAS の値が古い・未初期化・API照会に失敗した場合は、重複の可能性があるビルドを止めます。自動照合を通す配布ビルドでは、以後 `eas build` を直接実行せず次の npm script を使います。
+
+1. [Google Play Developer API の手順](https://developers.google.com/android-publisher/getting_started)に従い API を有効にし、Play Console に登録したサービスアカウントへ Yoin のアプリ情報を読む権限を付ける。
+2. サービスアカウント JSON 鍵をリポジトリ外に安全に保存し、`.env.local` の `GOOGLE_PLAY_SERVICE_ACCOUNT_KEY_FILE` にその絶対パスを設定する。鍵ファイル自体をコミットしたり、EAS のアプリビルド環境へ登録したりしない。
+3. `npm run android:check-play-version` で照合のみを行う。成功したら `npm run android:build:play-internal` が同じ照合を再実行してからAABを作る。
+
+Play の最大値が EAS の次番号以上なら、エラーに表示された値を使い `npx eas-cli build:version:set --platform android --profile playInternal` で EAS remote の基準値を Play 最大値へ合わせ、その後もう一度照合する。照合とビルドの間に、別の手動アップロードや別のリリース環境から versionCode が登録される競合までは排除できないため、Play 用ビルドは同じ EAS プロジェクトから行う。
 
 ## 許可アカウントと削除権限
 

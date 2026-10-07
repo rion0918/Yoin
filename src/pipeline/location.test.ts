@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type {
   AudioClip,
+  ConversationPendingRecording,
   LocalLocationRoute,
   LocationSample,
   PendingRecording,
@@ -12,6 +13,7 @@ import {
   createLocationRouteRecorder,
   localityName,
   locationRouteRecorderForRecording,
+  mergeBackgroundLocationSample,
   nearestLocationForUtterance,
   pendingLocationUploads,
   resolveRepresentativePlaces,
@@ -35,7 +37,7 @@ test("place preparation runs while inactive but background retries wait", () => 
 });
 
 test("an active conversation can start location capture after recording begins", () => {
-  const pending: PendingRecording = {
+  const pending: ConversationPendingRecording = {
     purpose: "conversation",
     draftId: "draft-a",
     clipId: "clip-a",
@@ -246,6 +248,91 @@ test("location recorder rejects invalid, old, and out-of-order samples", () => {
   assert.equal(capture.add(point(origin + 60_000)), true);
   assert.equal(capture.add(point(origin + 30_000)), false);
   assert.equal(capture.finish(origin + 120_000)?.segments[0].samples.length, 1);
+});
+
+test("a background first fix merges as its own segment and stays idempotent", () => {
+  const pending: ConversationPendingRecording = {
+    purpose: "conversation",
+    draftId: "draft-a",
+    clipId: "clip-a",
+    recordedAt: new Date(origin).toISOString(),
+    timezone: "Asia/Tokyo",
+    localUri: "file:///clip-a.m4a",
+  };
+  const foreground = createLocationRouteRecorder(
+    "draft-a",
+    "clip-a",
+    new Date(origin).toISOString(),
+  );
+  foreground.resume(origin + 600_000);
+  foreground.add(point(origin + 600_000, 34.7));
+  const route = foreground.finish(origin + 660_000);
+  assert.ok(route);
+
+  const backgroundPoint = point(origin + 300_000, 34.6);
+  const merged = mergeBackgroundLocationSample(
+    route,
+    pending,
+    backgroundPoint,
+    origin + 660_000,
+  );
+  assert.ok(merged);
+  assert.deepEqual(
+    merged.segments.map(({ samples }) =>
+      samples.map(({ timestamp }) => timestamp),
+    ),
+    [[origin + 300_000], [origin + 600_000]],
+  );
+  assert.deepEqual(
+    mergeBackgroundLocationSample(
+      merged,
+      pending,
+      backgroundPoint,
+      origin + 660_000,
+    ),
+    merged,
+  );
+});
+
+test("a background first fix can create a route when foreground capture had none", () => {
+  const pending: PendingRecording = {
+    purpose: "conversation",
+    draftId: "draft-a",
+    clipId: "clip-a",
+    recordedAt: new Date(origin).toISOString(),
+    timezone: "Asia/Tokyo",
+    localUri: "file:///clip-a.m4a",
+  };
+  const route = mergeBackgroundLocationSample(
+    null,
+    pending,
+    point(origin + 60_000),
+    origin + 120_000,
+  );
+  assert.ok(route);
+  assert.equal(route.segments.length, 1);
+  assert.deepEqual(route.segments[0].samples, [point(origin + 60_000)]);
+  assert.equal(route.endedAt, new Date(origin + 120_000).toISOString());
+});
+
+test("a background cached location from before recording is ignored", () => {
+  const pending: ConversationPendingRecording = {
+    purpose: "conversation",
+    draftId: "draft-a",
+    clipId: "clip-a",
+    recordedAt: new Date(origin + 60_000).toISOString(),
+    timezone: "Asia/Tokyo",
+    localUri: "file:///clip-a.m4a",
+  };
+  assert.equal(
+    mergeBackgroundLocationSample(
+      null,
+      pending,
+      point(origin),
+      origin + 120_000,
+    ),
+    null,
+  );
 });
 
 test("long recordings remain bounded and preserve the first and last samples", () => {

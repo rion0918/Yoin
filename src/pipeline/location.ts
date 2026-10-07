@@ -1,5 +1,6 @@
 import type {
   AudioClip,
+  ConversationPendingRecording,
   LocalLocationPlaceCache,
   LocalLocationRoute,
   LocationSample,
@@ -25,7 +26,7 @@ export function shouldSkipLocationSync(
   return !resolvePlaces && (recorderState !== "off" || appState !== "active");
 }
 
-function validSample(sample: LocationSample) {
+export function validLocationSample(sample: LocationSample) {
   return (
     Number.isFinite(sample.latitude) &&
     sample.latitude >= -90 &&
@@ -38,6 +39,60 @@ function validSample(sample: LocationSample) {
     Number.isSafeInteger(sample.timestamp) &&
     sample.timestamp >= 0
   );
+}
+
+export function mergeBackgroundLocationSample(
+  route: RecordingLocationRoute | null,
+  recording: Pick<
+    ConversationPendingRecording,
+    "draftId" | "clipId" | "recordedAt"
+  >,
+  sample: LocationSample,
+  endedAt = Date.now(),
+): RecordingLocationRoute | null {
+  const recordingStartedAt = Date.parse(recording.recordedAt);
+  if (
+    !validLocationSample(sample) ||
+    !Number.isSafeInteger(recordingStartedAt) ||
+    sample.timestamp < recordingStartedAt ||
+    !Number.isSafeInteger(endedAt) ||
+    endedAt < 0 ||
+    (route &&
+      (route.draftId !== recording.draftId ||
+        route.clipId !== recording.clipId))
+  )
+    return route;
+
+  const existing = route ?? {
+    version: 1 as const,
+    draftId: recording.draftId,
+    clipId: recording.clipId,
+    recordedAt: recording.recordedAt,
+    endedAt: new Date(endedAt).toISOString(),
+    segments: [],
+  };
+  if (
+    existing.segments.some((segment) =>
+      segment.samples.some((value) => value.timestamp === sample.timestamp),
+    )
+  )
+    return existing;
+
+  const segments = [
+    ...existing.segments,
+    {
+      startedAt: sample.timestamp,
+      endedAt: sample.timestamp,
+      samples: [sample],
+    },
+  ].sort((left, right) => left.startedAt - right.startedAt);
+  return {
+    ...existing,
+    endedAt: new Date(
+      Math.max(Date.parse(existing.endedAt) || 0, endedAt, sample.timestamp),
+    ).toISOString(),
+    segments: compactSegments(segments),
+  };
 }
 
 function sampleCount(segments: LocationSegment[]) {
@@ -95,7 +150,7 @@ export function createLocationRouteRecorder(
     add(sample: LocationSample) {
       if (
         !current ||
-        !validSample(sample) ||
+        !validLocationSample(sample) ||
         sample.timestamp < current.startedAt ||
         sample.timestamp <= lastTimestamp ||
         sample.timestamp - lastTimestamp < LOCATION_SAMPLE_INTERVAL_MS

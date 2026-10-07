@@ -19,7 +19,12 @@ export type AudioEngineState = {
   positionMs: number;
   durationMs: number;
   error: string | null;
-  locationStatus: "off" | "acquiring" | "tracking" | "unavailable";
+  locationStatus:
+    | "off"
+    | "acquiring"
+    | "tracking"
+    | "foreground-only"
+    | "unavailable";
 };
 export type NativeStopListener = (clip: SavedRecording) => void | Promise<void>;
 export type PreparedListener = (pending: PendingRecording) => Promise<void>;

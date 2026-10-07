@@ -311,6 +311,7 @@ function SessionApp({
   const [sheetOpen, setSheetOpen] = useState(false);
   const [finishTitle, setFinishTitle] = useState("");
   const [place, setPlace] = useState("");
+  const [placeEditing, setPlaceEditing] = useState(false);
   const [editedBlocks, setEditedBlocks] = useState<LyricBlock[]>([]);
   const close = () => {
     Keyboard.dismiss();
@@ -331,7 +332,10 @@ function SessionApp({
           app.state.drafts.find((draft) => draft.id === next.draftId)?.lyrics
             ?.blocks ?? [],
         );
-      if (next.kind === "source") setPlace(next.clip?.place ?? "");
+      if (next.kind === "source") {
+        setPlace(next.clip?.place ?? "");
+        setPlaceEditing(false);
+      }
       setOverlay(next);
       setSheetOpen(true);
     },
@@ -777,36 +781,54 @@ function SessionApp({
                   </Text>
                 )}
               </ScrollView>
-              {overlay.clip &&
-                overlay.draftId &&
-                app.state.drafts.find((value) => value.id === overlay.draftId)
-                  ?.status === "local" && (
-                  <>
-                    <Text style={styles.fieldLabel}>
-                      この録音の場所（任意）
+              {overlay.clip && overlay.draftId && draft?.status === "local" && (
+                <>
+                  <ActionButton
+                    label={placeEditing ? "場所の編集を閉じる" : "場所を編集"}
+                    onPress={() => setPlaceEditing((value) => !value)}
+                    style={styles.clipRow}
+                    testID="edit-recording-place"
+                  >
+                    <Feather name="map-pin" size={17} color="#493020" />
+                    <Text style={styles.clipContext}>
+                      {placeEditing ? "編集を閉じる" : "場所を編集"}
                     </Text>
-                    <TextInput
-                      value={place}
-                      onChangeText={setPlace}
-                      placeholder="場所不明"
-                      accessibilityLabel="録音の場所"
-                      style={styles.input}
-                    />
-                    <ActionButton
-                      label="場所を保存"
-                      onPress={() => {
-                        if (overlay.clip && overlay.draftId)
+                  </ActionButton>
+                  {placeEditing && (
+                    <>
+                      <Text style={styles.fieldLabel}>場所（任意）</Text>
+                      <Text style={styles.summary}>
+                        空欄で保存すると自動表示に戻ります。
+                      </Text>
+                      <TextInput
+                        value={place}
+                        onChangeText={setPlace}
+                        placeholder={
+                          sourceContext({ ...overlay.clip, place: null }).place
+                        }
+                        accessibilityLabel="録音の場所"
+                        style={styles.input}
+                        testID="recording-place-input"
+                      />
+                      <ActionButton
+                        label="場所を保存"
+                        onPress={() => {
+                          const { draftId, clip } = overlay;
+                          if (!draftId || !clip) return;
                           void app
-                            .setPlace(overlay.draftId, overlay.clip.id, place)
+                            .setPlace(draftId, clip.id, place)
                             .then(() => close());
-                      }}
-                      disabled={app.busy}
-                      style={styles.clipRow}
-                    >
-                      <Text style={styles.clipContext}>場所を保存</Text>
-                    </ActionButton>
-                  </>
-                )}
+                        }}
+                        disabled={app.busy}
+                        style={styles.clipRow}
+                        testID="save-recording-place"
+                      >
+                        <Text style={styles.clipContext}>場所を保存</Text>
+                      </ActionButton>
+                    </>
+                  )}
+                </>
+              )}
               {sourceClips.map((clip) => {
                 const lines = sourceUtterances.filter(
                   (value) => value.clipId === clip.id,

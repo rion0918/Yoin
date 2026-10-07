@@ -6,8 +6,13 @@ import {
   emptyLibrary,
   type LibraryDocument,
   type LocalClip,
+  type LocationSample,
   type SavedRecording,
 } from "../../shared/contracts";
+import {
+  mergeBackgroundLocationSample,
+  validLocationSample,
+} from "../pipeline/location";
 import { accountStorageKey } from "./account";
 import { waitUntilLoaded } from "./audio.native";
 import {
@@ -41,7 +46,7 @@ function getDatabase(uid: string) {
     database = openDatabaseAsync(`${accountStorageKey(uid)}.db`)
       .then(async (db) => {
         await db.execAsync(
-          "PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS library (id INTEGER PRIMARY KEY CHECK (id = 1), document TEXT NOT NULL);",
+          "PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS library (id INTEGER PRIMARY KEY CHECK (id = 1), document TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pending_location_samples (clip_id TEXT PRIMARY KEY, draft_id TEXT NOT NULL, sample TEXT NOT NULL);",
         );
         return db;
       })
@@ -52,6 +57,73 @@ function getDatabase(uid: string) {
     databases.set(uid, database);
   }
   return database;
+}
+
+export async function savePendingBackgroundLocationSample(
+  uid: string,
+  draftId: string,
+  clipId: string,
+  sample: LocationSample,
+): Promise<void> {
+  if (!validLocationSample(sample)) return;
+  const db = await getDatabase(uid);
+  await db.withExclusiveTransactionAsync(async (transaction) => {
+    await transaction.runAsync(
+      "INSERT OR IGNORE INTO pending_location_samples (clip_id, draft_id, sample) VALUES (?, ?, ?)",
+      clipId,
+      draftId,
+      JSON.stringify(sample),
+    );
+  });
+}
+
+export async function takePendingBackgroundLocationSample(
+  uid: string,
+  draftId: string,
+  clipId: string,
+): Promise<LocationSample | null> {
+  const db = await getDatabase(uid);
+  let sample: LocationSample | null = null;
+  await db.withExclusiveTransactionAsync(async (transaction) => {
+    const row = await transaction.getFirstAsync<{ sample: string }>(
+      "SELECT sample FROM pending_location_samples WHERE clip_id = ? AND draft_id = ?",
+      clipId,
+      draftId,
+    );
+    if (!row) return;
+    await transaction.runAsync(
+      "DELETE FROM pending_location_samples WHERE clip_id = ? AND draft_id = ?",
+      clipId,
+      draftId,
+    );
+    try {
+      const decoded = JSON.parse(row.sample) as LocationSample;
+      if (validLocationSample(decoded)) sample = decoded;
+    } catch {
+      sample = null;
+    }
+  });
+  return sample;
+}
+
+export async function peekPendingBackgroundLocationSample(
+  uid: string,
+  draftId: string,
+  clipId: string,
+): Promise<LocationSample | null> {
+  const db = await getDatabase(uid);
+  const row = await db.getFirstAsync<{ sample: string }>(
+    "SELECT sample FROM pending_location_samples WHERE clip_id = ? AND draft_id = ?",
+    clipId,
+    draftId,
+  );
+  if (!row) return null;
+  try {
+    const sample = JSON.parse(row.sample) as LocationSample;
+    return validLocationSample(sample) ? sample : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function loadLibrary(uid: string): Promise<LibraryDocument> {
@@ -167,10 +239,29 @@ export async function recoverRecording(
       ? pending.localUri
       : new File(accountAudioDirectory(uid), `${pending.clipId}.m4a`).uri;
     const inspection = await inspectLocalAudio(candidate);
-    pending = { ...pending, localUri: candidate };
-    return pending.purpose === "speaker"
-      ? clipFromRecording(pending, inspection)
-      : clipFromRecording(pending, inspection);
+    const recording = { ...pending, localUri: candidate };
+    if (recording.purpose === "speaker")
+      return clipFromRecording(recording, inspection);
+    const recovered = clipFromRecording(recording, inspection);
+    let sample: LocationSample | null = null;
+    try {
+      sample = await takePendingBackgroundLocationSample(
+        uid,
+        recording.draftId,
+        recording.clipId,
+      );
+    } catch {
+      // Optional location data must not prevent audio recovery.
+    }
+    const locationRoute = sample
+      ? mergeBackgroundLocationSample(
+          null,
+          recording,
+          sample,
+          Date.parse(recording.recordedAt) + inspection.durationMs,
+        )
+      : null;
+    return locationRoute ? { ...recovered, locationRoute } : recovered;
   } catch {
     return null;
   }

@@ -22,9 +22,10 @@
         "expo-location",
         {
           "locationWhenInUsePermission": "位置情報を使うと選択した録音中の現在地を端末に保存します。",
-          "isAndroidBackgroundLocationEnabled": false,
-          "isAndroidForegroundServiceEnabled": false,
-          "isIosBackgroundLocationEnabled": false
+          "locationAlwaysAndWhenInUsePermission": "位置情報をONにした録音で、未取得の場合に限り最初の位置を得るまで画面ロック中も位置情報を使います。",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true,
+          "isIosBackgroundLocationEnabled": true
         }
       ],
       [

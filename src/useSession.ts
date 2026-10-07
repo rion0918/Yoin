@@ -148,13 +148,15 @@ export function useSession(identity: SessionIdentity) {
     },
     [commit, identity.uid, scope],
   );
-  const audio = useAudioEngine(nativeStopped);
+  const audio = useAudioEngine(nativeStopped, identity.uid);
   const audioRef = useRef(audio);
   audioRef.current = audio;
 
   useEffect(() => {
     let alive = true;
-    void loadLibrary(identity.uid)
+    void audioRef.current
+      .stopRecording()
+      .then(() => loadLibrary(identity.uid))
       .then(async (stored) => {
         let restored = stored;
         if (stored.pendingRecording) {

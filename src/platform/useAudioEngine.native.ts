@@ -10,8 +10,9 @@ import {
   useAudioRecorderState,
 } from "expo-audio";
 import * as Location from "expo-location";
+import * as TaskManager from "expo-task-manager";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, Platform } from "react-native";
+import { Alert, AppState, Platform } from "react-native";
 import type {
   LocationSample,
   RecordingLocationRoute,
@@ -20,8 +21,15 @@ import type {
 import {
   type createLocationRouteRecorder,
   locationRouteRecorderForRecording,
+  mergeBackgroundLocationSample,
 } from "../pipeline/location";
 import { waitUntilLoaded } from "./audio.native";
+import {
+  BACKGROUND_LOCATION_TASK,
+  clearActiveLocationCapture,
+  setActiveLocationCapture,
+  stopBackgroundLocationTask,
+} from "./locationTask.native";
 import {
   beginPreparedRecording,
   clipFromRecording,
@@ -29,7 +37,11 @@ import {
   createSingleFlight,
   shouldStopSpeakerRecording,
 } from "./operations";
-import { inspectLocalAudio } from "./storage.native";
+import {
+  inspectLocalAudio,
+  peekPendingBackgroundLocationSample,
+  takePendingBackgroundLocationSample,
+} from "./storage.native";
 import type {
   AudioEngine,
   NativeStopListener,
@@ -42,7 +54,28 @@ const options = {
   directory: "document" as const,
 };
 
-export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
+function confirmBackgroundLocationPermission() {
+  return new Promise<boolean>((resolve) => {
+    Alert.alert(
+      "画面ロック中の位置取得",
+      "位置情報をONにした録音で、画面ロックまでに位置を取得できていない場合、最初の位置を得るまでロック中も取得を試みます。位置情報は端末に保存し、録音中に送信しません。",
+      [
+        {
+          text: "画面表示中のみ",
+          style: "cancel",
+          onPress: () => resolve(false),
+        },
+        { text: "許可へ進む", onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) },
+    );
+  });
+}
+
+export function useAudioEngine(
+  onNativeStop?: NativeStopListener,
+  uid = "",
+): AudioEngine {
   const [recorderState, setRecorderState] = useState<RecorderPhase>("off");
   const [elapsedMs, setElapsedMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -75,12 +108,118 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
   const completedLocationRoute = useRef<RecordingLocationRoute | null>(null);
   const locationGeneration = useRef(0);
   const locationEnabled = useRef(false);
+  const locationSampleSeen = useRef(false);
+  const backgroundLocationAllowed = useRef(false);
+  const backgroundLocationGeneration = useRef(0);
 
   const stopLocationWatch = useCallback(() => {
     locationGeneration.current++;
     locationSubscription.current?.remove();
     locationSubscription.current = null;
   }, []);
+
+  const stopBackgroundCapture = useCallback(
+    async (clearContext = false) => {
+      backgroundLocationGeneration.current++;
+      try {
+        await stopBackgroundLocationTask();
+      } catch {
+        // A missing or already stopped task must not interrupt audio recording.
+      }
+      if (!clearContext) return;
+      const current = pending.current;
+      try {
+        if (current && current.purpose !== "speaker")
+          await clearActiveLocationCapture({ uid, clipId: current.clipId });
+        else await clearActiveLocationCapture();
+      } catch {
+        // Location cleanup must not block audio recording or saving.
+      }
+    },
+    [uid],
+  );
+
+  const startBackgroundCapture = useCallback(async () => {
+    const current = pending.current;
+    if (
+      !locationEnabled.current ||
+      !backgroundLocationAllowed.current ||
+      locationSampleSeen.current ||
+      !capturing.current ||
+      !current ||
+      current.purpose === "speaker" ||
+      AppState.currentState === "active"
+    )
+      return;
+    const generation = ++backgroundLocationGeneration.current;
+    const capture = {
+      uid,
+      draftId: current.draftId,
+      clipId: current.clipId,
+      recordedAt: current.recordedAt,
+    };
+    const canCapture = () =>
+      locationEnabled.current &&
+      backgroundLocationAllowed.current &&
+      !locationSampleSeen.current &&
+      capturing.current &&
+      pending.current?.clipId === current.clipId &&
+      AppState.currentState !== "active";
+    const isCurrentCapture = () =>
+      generation === backgroundLocationGeneration.current && canCapture();
+    try {
+      const savedSample = await peekPendingBackgroundLocationSample(
+        uid,
+        current.draftId,
+        current.clipId,
+      );
+      if (!isCurrentCapture()) return;
+      if (savedSample) {
+        locationSampleSeen.current = true;
+        setLocationStatus("foreground-only");
+        return;
+      }
+      const taskManagerAvailable = await TaskManager.isAvailableAsync();
+      if (!isCurrentCapture()) return;
+      if (!taskManagerAvailable) {
+        setLocationStatus("foreground-only");
+        return;
+      }
+      await setActiveLocationCapture(capture);
+      if (!isCurrentCapture()) return;
+      const alreadyStarted = await Location.hasStartedLocationUpdatesAsync(
+        BACKGROUND_LOCATION_TASK,
+      );
+      if (!isCurrentCapture()) return;
+      if (alreadyStarted) {
+        setLocationStatus("acquiring");
+        return;
+      }
+      await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
+        accuracy: Location.Accuracy.Balanced,
+        timeInterval: 60_000,
+        distanceInterval: 0,
+        showsBackgroundLocationIndicator: true,
+        foregroundService: {
+          notificationTitle: "Yoin",
+          notificationBody: "録音場所を取得しています",
+        },
+      });
+      if (!isCurrentCapture()) {
+        if (!canCapture()) await stopBackgroundLocationTask();
+        return;
+      }
+      setLocationStatus("acquiring");
+    } catch {
+      if (generation !== backgroundLocationGeneration.current) return;
+      try {
+        await clearActiveLocationCapture(capture);
+      } catch {
+        // Location cleanup is best effort.
+      }
+      if (canCapture()) setLocationStatus("foreground-only");
+    }
+  }, [uid]);
 
   const pauseLocationCapture = useCallback(() => {
     stopLocationWatch();
@@ -137,7 +276,7 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
             accuracy: location.coords.accuracy,
             timestamp: Math.trunc(location.timestamp),
           };
-          recorderForClip.add(sample);
+          if (recorderForClip.add(sample)) locationSampleSeen.current = true;
         },
       );
       if (
@@ -151,7 +290,9 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
         return;
       }
       locationSubscription.current = subscription;
-      setLocationStatus("tracking");
+      setLocationStatus(
+        backgroundLocationAllowed.current ? "tracking" : "foreground-only",
+      );
     } catch {
       if (generation === locationGeneration.current) {
         recorderForClip.pause(Date.now());
@@ -160,21 +301,42 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
     }
   }, [stopLocationWatch]);
 
-  const finishLocationCapture = useCallback(() => {
+  const finishLocationCapture = useCallback(async () => {
     stopLocationWatch();
-    if (!completedLocationRoute.current)
-      completedLocationRoute.current =
-        locationRecorder.current?.finish(Date.now()) ?? null;
+    const current = pending.current;
+    await stopBackgroundCapture(true);
+    let route = locationRecorder.current?.finish(Date.now()) ?? null;
+    if (current && current.purpose !== "speaker") {
+      try {
+        const sample = await takePendingBackgroundLocationSample(
+          uid,
+          current.draftId,
+          current.clipId,
+        );
+        if (sample)
+          route = mergeBackgroundLocationSample(
+            route,
+            current,
+            sample,
+            Date.now(),
+          );
+      } catch {
+        // Missing location data must not interrupt audio saving.
+      }
+    }
+    if (!completedLocationRoute.current) completedLocationRoute.current = route;
     locationRecorder.current = null;
     setLocationStatus(locationEnabled.current ? "acquiring" : "off");
     return completedLocationRoute.current;
-  }, [stopLocationWatch]);
+  }, [stopBackgroundCapture, stopLocationWatch, uid]);
 
   const setLocationEnabled: AudioEngine["setLocationEnabled"] = useCallback(
     async (enabled) => {
       if (!enabled) {
         locationEnabled.current = false;
         pauseLocationCapture();
+        await stopBackgroundCapture(true);
+        backgroundLocationAllowed.current = false;
         setLocationStatus("off");
         return true;
       }
@@ -183,8 +345,23 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
         const permission = await Location.requestForegroundPermissionsAsync();
         if (permission.status !== "granted") {
           locationEnabled.current = false;
+          backgroundLocationAllowed.current = false;
           setLocationStatus("unavailable");
           return false;
+        }
+        try {
+          let backgroundPermission =
+            await Location.getBackgroundPermissionsAsync();
+          if (
+            backgroundPermission.status !== "granted" &&
+            (await confirmBackgroundLocationPermission())
+          )
+            backgroundPermission =
+              await Location.requestBackgroundPermissionsAsync();
+          backgroundLocationAllowed.current =
+            backgroundPermission.status === "granted";
+        } catch {
+          backgroundLocationAllowed.current = false;
         }
         locationEnabled.current = true;
         if (capturing.current) {
@@ -192,17 +369,22 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
             locationRecorder.current,
             pending.current,
           );
+          if (!locationRecorder.current) locationSampleSeen.current = false;
           if (locationRecorder.current) await startLocationWatch();
           else setLocationStatus("unavailable");
-        } else setLocationStatus("acquiring");
+        } else
+          setLocationStatus(
+            backgroundLocationAllowed.current ? "acquiring" : "foreground-only",
+          );
         return true;
       } catch {
         locationEnabled.current = false;
+        backgroundLocationAllowed.current = false;
         setLocationStatus("unavailable");
         return false;
       }
     },
-    [pauseLocationCapture, startLocationWatch],
+    [pauseLocationCapture, startLocationWatch, stopBackgroundCapture],
   );
 
   const completeRecording = useCallback(
@@ -218,8 +400,7 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
         queue.run(async () => {
           setRecorderState("saving");
           capturing.current = false;
-          const locationRoute =
-            current.purpose === "speaker" ? null : finishLocationCapture();
+          const locationRoute = await finishLocationCapture();
           try {
             if (!alreadyStopped) await recorder.stop();
             const uri = finishedUri ?? recorder.uri ?? current.localUri;
@@ -238,6 +419,7 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
             pending.current = null;
             completedLocationRoute.current = null;
             locationRecorder.current = null;
+            locationSampleSeen.current = false;
             setElapsedMs(0);
             setRecorderState("off");
             if (!locationEnabled.current) setLocationStatus("off");
@@ -301,13 +483,40 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
     reconcileRecorder,
   ]);
 
+  const resumeLocationCapture = useCallback(async () => {
+    const current = pending.current;
+    await stopBackgroundCapture();
+    if (current && current.purpose !== "speaker") {
+      try {
+        const sample = await peekPendingBackgroundLocationSample(
+          uid,
+          current.draftId,
+          current.clipId,
+        );
+        if (sample) locationSampleSeen.current = true;
+      } catch {
+        // Foreground location capture can continue if the temporary read fails.
+      }
+    }
+    await startLocationWatch();
+  }, [startLocationWatch, stopBackgroundCapture, uid]);
+
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
       if (next === "active") {
         reconcileRecorder();
-        if (capturing.current) void startLocationWatch();
+        if (capturing.current) void resumeLocationCapture();
       } else {
-        if (capturing.current) pauseLocationCapture();
+        if (capturing.current) {
+          pauseLocationCapture();
+          if (next === "background" && locationEnabled.current) {
+            if (locationSampleSeen.current)
+              setLocationStatus("foreground-only");
+            else if (backgroundLocationAllowed.current)
+              void startBackgroundCapture();
+            else setLocationStatus("foreground-only");
+          }
+        }
         if (playbackEnd.current !== undefined) player.pause();
       }
     });
@@ -320,7 +529,8 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
     pauseLocationCapture,
     player,
     reconcileRecorder,
-    startLocationWatch,
+    resumeLocationCapture,
+    startBackgroundCapture,
     stopLocationWatch,
   ]);
 
@@ -349,6 +559,18 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
         setRecorderState("preparing");
         setElapsedMs(0);
         try {
+          await stopBackgroundCapture(true);
+          locationSampleSeen.current = false;
+          backgroundLocationAllowed.current = false;
+          if (locationEnabledForClip) {
+            try {
+              backgroundLocationAllowed.current =
+                (await Location.getBackgroundPermissionsAsync()).status ===
+                "granted";
+            } catch {
+              backgroundLocationAllowed.current = false;
+            }
+          }
           player.pause();
           player.clearLockScreenControls();
           const permission = await requestRecordingPermissionsAsync();
@@ -390,6 +612,7 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
           capturing.current = true;
           setRecorderState("recording");
           locationEnabled.current = !speakerProfileId && locationEnabledForClip;
+          locationSampleSeen.current = false;
           locationRecorder.current = locationEnabled.current
             ? locationRouteRecorderForRecording(null, pending.current)
             : null;
@@ -400,7 +623,7 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
         } catch (cause) {
           pending.current = null;
           capturing.current = false;
-          finishLocationCapture();
+          await finishLocationCapture();
           try {
             await recorder.stop();
           } catch {}
@@ -413,7 +636,14 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
           throw cause;
         }
       }),
-    [finishLocationCapture, player, queue, recorder, startLocationWatch],
+    [
+      finishLocationCapture,
+      player,
+      queue,
+      recorder,
+      startLocationWatch,
+      stopBackgroundCapture,
+    ],
   );
 
   const play: AudioEngine["play"] = useCallback(
@@ -484,10 +714,10 @@ export function useAudioEngine(onNativeStop?: NativeStopListener): AudioEngine {
       }),
     [player, queue],
   );
-  const stopRecording = useCallback(
-    () => completeRecording(false),
-    [completeRecording],
-  );
+  const stopRecording = useCallback(() => {
+    if (pending.current) return completeRecording(false);
+    return stopBackgroundCapture(true).then(() => null);
+  }, [completeRecording, stopBackgroundCapture]);
 
   return {
     state: {

@@ -17,6 +17,7 @@ const initial: AudioEngineState = {
 
 export function useAudioEngine(
   _onNativeStop?: NativeStopListener,
+  _uid?: string,
 ): AudioEngine {
   const [state, setState] = useState(initial);
   const audio = useRef<HTMLAudioElement | null>(null);

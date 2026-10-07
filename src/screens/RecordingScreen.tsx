@@ -22,7 +22,12 @@ type RecordingScreenProps = {
   recording: boolean;
   busy: boolean;
   locationEnabled: boolean;
-  locationStatus: "off" | "acquiring" | "tracking" | "unavailable";
+  locationStatus:
+    | "off"
+    | "acquiring"
+    | "tracking"
+    | "foreground-only"
+    | "unavailable";
   onLocationEnabledChange: (enabled: boolean) => void;
   stateLabel?: string;
   onImport: () => void;
@@ -64,12 +69,16 @@ export function RecordingScreen({
       ? "位置情報を使用中"
       : locationEnabled && locationStatus === "acquiring"
         ? "位置情報を取得中"
-        : "位置情報なしで録音"
+        : locationEnabled && locationStatus === "foreground-only"
+          ? "画面表示中のみ位置情報を取得します"
+          : "位置情報なしで録音"
     : locationStatus === "unavailable"
       ? "許可されていないため、位置情報なしで録音します"
-      : locationEnabled
-        ? "録音中、アプリ表示中だけ位置情報を取得します"
-        : "録音時に位置情報を付けます（初期設定はオフ）";
+      : locationStatus === "foreground-only"
+        ? "画面表示中のみ位置情報を取得します"
+        : locationEnabled
+          ? "録音中の位置を取得します"
+          : "録音時に位置情報を付けます（初期設定はオフ）";
 
   return (
     <SafeAreaView style={styles.screen} testID="record-screen">
@@ -130,7 +139,11 @@ export function RecordingScreen({
               {locationLabel}
             </Text>
             <Text style={styles.locationNote}>
-              場所は市・区まで記録します。画面を離れると取得を一時停止します。
+              {locationStatus === "foreground-only"
+                ? "バックグラウンド位置情報を利用できないため、画面表示中のみ取得します。"
+                : locationEnabled
+                  ? "場所は市・区まで記録します。画面ロック時は、位置が未取得なら最初の1点を得た時点で停止します。"
+                  : "位置取得は録音ごとに選べます。初期設定はオフです。"}
             </Text>
           </View>
           <Switch

@@ -147,45 +147,54 @@ export function useAudioEngine(
       locationSampleSeen.current ||
       !capturing.current ||
       !current ||
-      current.purpose === "speaker"
+      current.purpose === "speaker" ||
+      AppState.currentState === "active"
     )
       return;
+    const generation = ++backgroundLocationGeneration.current;
+    const capture = {
+      uid,
+      draftId: current.draftId,
+      clipId: current.clipId,
+      recordedAt: current.recordedAt,
+    };
+    const canCapture = () =>
+      locationEnabled.current &&
+      backgroundLocationAllowed.current &&
+      !locationSampleSeen.current &&
+      capturing.current &&
+      pending.current?.clipId === current.clipId &&
+      AppState.currentState !== "active";
+    const isCurrentCapture = () =>
+      generation === backgroundLocationGeneration.current && canCapture();
     try {
       const savedSample = await peekPendingBackgroundLocationSample(
         uid,
         current.draftId,
         current.clipId,
       );
+      if (!isCurrentCapture()) return;
       if (savedSample) {
         locationSampleSeen.current = true;
         setLocationStatus("foreground-only");
         return;
       }
-      if (!(await TaskManager.isAvailableAsync())) {
+      const taskManagerAvailable = await TaskManager.isAvailableAsync();
+      if (!isCurrentCapture()) return;
+      if (!taskManagerAvailable) {
         setLocationStatus("foreground-only");
         return;
       }
-      const generation = ++backgroundLocationGeneration.current;
-      const capture = {
-        uid,
-        draftId: current.draftId,
-        clipId: current.clipId,
-        recordedAt: current.recordedAt,
-      };
       await setActiveLocationCapture(capture);
-      if (
-        generation !== backgroundLocationGeneration.current ||
-        !capturing.current ||
-        locationSampleSeen.current ||
-        pending.current?.clipId !== current.clipId
-      ) {
-        await clearActiveLocationCapture(capture);
+      if (!isCurrentCapture()) return;
+      const alreadyStarted = await Location.hasStartedLocationUpdatesAsync(
+        BACKGROUND_LOCATION_TASK,
+      );
+      if (!isCurrentCapture()) return;
+      if (alreadyStarted) {
+        setLocationStatus("acquiring");
         return;
       }
-      if (
-        await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK)
-      )
-        return;
       await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
         accuracy: Location.Accuracy.Balanced,
         timeInterval: 60_000,
@@ -196,21 +205,19 @@ export function useAudioEngine(
           notificationBody: "録音場所を取得しています",
         },
       });
-      if (
-        generation !== backgroundLocationGeneration.current ||
-        !capturing.current
-      ) {
-        await stopBackgroundLocationTask();
+      if (!isCurrentCapture()) {
+        if (!canCapture()) await stopBackgroundLocationTask();
         return;
       }
       setLocationStatus("acquiring");
     } catch {
+      if (generation !== backgroundLocationGeneration.current) return;
       try {
-        await clearActiveLocationCapture({ uid, clipId: current.clipId });
+        await clearActiveLocationCapture(capture);
       } catch {
         // Location cleanup is best effort.
       }
-      setLocationStatus("foreground-only");
+      if (canCapture()) setLocationStatus("foreground-only");
     }
   }, [uid]);
 

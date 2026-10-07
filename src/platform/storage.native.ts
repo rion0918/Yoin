@@ -243,11 +243,16 @@ export async function recoverRecording(
     if (recording.purpose === "speaker")
       return clipFromRecording(recording, inspection);
     const recovered = clipFromRecording(recording, inspection);
-    const sample = await takePendingBackgroundLocationSample(
-      uid,
-      recording.draftId,
-      recording.clipId,
-    );
+    let sample: LocationSample | null = null;
+    try {
+      sample = await takePendingBackgroundLocationSample(
+        uid,
+        recording.draftId,
+        recording.clipId,
+      );
+    } catch {
+      // Optional location data must not prevent audio recovery.
+    }
     const locationRoute = sample
       ? mergeBackgroundLocationSample(
           null,

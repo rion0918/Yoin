@@ -28,6 +28,7 @@
 | [Google Play配布準備](play-internal-release.md) | Firebase・署名・許可アカウント・削除権限・移行順・AAB配布 |
 | [内部テスト](internal-testing.md) | 開始条件、Android接続、操作と期待結果、録音・復旧・品質評価、不具合記録 |
 | [検証記録](audio-pipeline-verification.md) | 日付付きの実績、配置情報、既知の問題、未確認事項 |
+| [費用概算](audio-pipeline-costs.md) | 1・10・100・1000回の通し生成、録音時間別のAI費用、基盤・再生成・予算の条件 |
 | [ADR一覧](adr/README.md) | 採用済み判断とその理由・履歴 |
 
 ## 文書を更新するとき

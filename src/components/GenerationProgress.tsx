@@ -24,7 +24,11 @@ export function GenerationProgress({
     draft.status === "generating" ? (draft.lyrics?.blocks ?? []) : [];
   const heading =
     draft.status === "needs_reconciliation"
-      ? "受付の確認を、待っています。"
+      ? draft.lyrics
+        ? "曲の処理結果を、確認しています。"
+        : draft.transcriptRecoveryAvailable
+          ? "文字起こしを、復旧できます。"
+          : "文字起こしの確認が必要です。"
       : draft.status === "failed"
         ? "ここまでの記録は、残っています。"
         : draft.status === "generating"
@@ -36,7 +40,9 @@ export function GenerationProgress({
     draft.status === "needs_reconciliation"
       ? draft.lyrics
         ? "曲の受付を確認できませんでした。音声と歌詞は保存されています。この状態では作り直せません。時間をおいて状況を確認してください。"
-        : "文字起こしの結果を確認できませんでした。元音声は保存されています。保存済みの応答を確認できます。"
+        : draft.transcriptRecoveryAvailable
+          ? "元音声と文字起こしの応答は保存されています。保存済みの応答から文字起こしを復旧し、内容を確認した後に歌詞を作ります。Googleへの再送はしません。"
+          : "元音声は保存されています。文字起こしの処理結果を確認できません。時間をおいて記録を開き直してください。"
       : draft.status === "failed"
         ? "保存済みの内容は残っています。ホームからこの記録を開き、もう一度仕上げられます。"
         : draft.status === "generating"

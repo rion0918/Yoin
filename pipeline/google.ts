@@ -667,9 +667,8 @@ export async function generateMusic(
     audio &&
       (audio.mime_type === "audio/mp3" || audio.mime_type === "audio/mpeg") &&
       typeof audio.data === "string" &&
-      /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-        audio.data,
-      ),
+      audio.data.length % 4 === 0 &&
+      /^[A-Za-z0-9+/]*={0,2}$/.test(audio.data),
     stage,
     "invalid_response",
     raw,

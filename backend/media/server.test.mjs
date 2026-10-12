@@ -271,3 +271,30 @@ test("FFmpeg counts background noise above the configured activity threshold", {
   assert.ok(ranges[0].startMs >= 29_000 && ranges[0].startMs <= 31_000);
   assert.ok(ranges[0].endMs >= 59_000);
 });
+
+test("unexpected failures log their type without the original private message", async (t) => {
+  const log = t.mock.method(console, "error", () => {});
+  const server = createMediaServer({ token, origin: "https://yoin.test" });
+  const base = await listen(server);
+  const privateText = "private-key private-voice";
+  try {
+    const response = await fetch(`${base}/music`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: privateText,
+    });
+    assert.equal(response.status, 422);
+    const entry = JSON.parse(log.mock.calls[0]?.arguments[0] ?? "null");
+    assert.deepEqual(entry, {
+      event: "media_processing_failed",
+      code: "media_processing_failed",
+      errorType: "SyntaxError",
+    });
+    assert.equal(JSON.stringify(log.mock.calls).includes(privateText), false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

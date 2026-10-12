@@ -5,7 +5,8 @@ import { GoogleProviderError } from "../../pipeline/google.ts";
 import { runProvider } from "./providers.mjs";
 import { createMediaServer } from "./server.mjs";
 
-test("failed diagnostic storage preserves the original provider error", async () => {
+test("failed diagnostic storage preserves the original provider error", async (t) => {
+  const log = t.mock.method(console, "error", () => {});
   const storage = createServer(async (request, response) => {
     for await (const _ of request) {
       /* Drain the request body. */
@@ -45,6 +46,10 @@ test("failed diagnostic storage preserves the original provider error", async ()
         return true;
       },
     );
+    assert.deepEqual(JSON.parse(log.mock.calls[0]?.arguments[0] ?? "null"), {
+      event: "provider_response_storage_failed",
+      status: 503,
+    });
   } finally {
     await new Promise((resolve) => storage.close(resolve));
   }
@@ -152,7 +157,8 @@ test("remote music is claimed once, streamed to storage, and cached before respo
 });
 
 for (const stage of ["lyrics", "music"]) {
-  test(`${stage} preserves the rejected provider response without resubmitting`, async () => {
+  test(`${stage} preserves the rejected provider response without resubmitting`, async (t) => {
+    const log = t.mock.method(console, "error", () => {});
     const events = [];
     let claims = 0;
     let submissions = 0;
@@ -223,6 +229,11 @@ for (const stage of ["lyrics", "music"]) {
       assert.equal(response.headers.get("X-Provider-Not-Submitted"), null);
       assert.deepEqual(savedRaw, raw);
       assert.deepEqual(events, ["claim", "provider", "raw"]);
+      assert.deepEqual(JSON.parse(log.mock.calls[0]?.arguments[0] ?? "null"), {
+        event: "media_processing_failed",
+        code: "media_processing_failed",
+        provider: { stage, kind: "rejected", status: 429, hasResponse: true },
+      });
       assert.equal((await call()).status, 422);
       assert.equal(submissions, 1);
     } finally {

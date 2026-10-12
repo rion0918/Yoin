@@ -338,6 +338,22 @@ export function createMediaServer({
               /^[a-z_]+$/.test(error.message)
             ? error.message
             : "media_processing_failed";
+      console.error(
+        JSON.stringify({
+          event: "media_processing_failed",
+          code,
+          ...(error instanceof GoogleProviderError
+            ? {
+                provider: {
+                  stage: error.stage,
+                  kind: error.kind,
+                  status: error.status,
+                  hasResponse: error.response !== null,
+                },
+              }
+            : {}),
+        }),
+      );
       response.end(JSON.stringify({ error: code }));
     } finally {
       busy = false;

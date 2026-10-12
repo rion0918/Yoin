@@ -80,7 +80,10 @@ async function upload(url, bytes, contentType) {
     body: bytes,
     signal: AbortSignal.timeout(180_000),
   });
-  if (!response.ok) throw new Error("runtime_result_upload_failed");
+  if (!response.ok)
+    throw new Error("runtime_result_upload_failed", {
+      cause: { status: response.status },
+    });
   return response.json();
 }
 
@@ -140,7 +143,16 @@ export async function runProvider(
         const raw = Buffer.from(JSON.stringify(error.response));
         if (raw.byteLength <= 100 * 1024 * 1024)
           await upload(rawUrl, raw, "application/json");
-      } catch {
+      } catch (storageError) {
+        console.error(
+          JSON.stringify({
+            event: "provider_response_storage_failed",
+            status:
+              typeof storageError?.cause?.status === "number"
+                ? storageError.cause.status
+                : null,
+          }),
+        );
         // Preserve the provider outcome when diagnostic storage is unavailable.
       }
     }

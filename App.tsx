@@ -866,19 +866,20 @@ function SessionApp({
               ) : (
                 <>
                   <GenerationProgress draft={draft} onClose={close} />
-                  {draft.status === "needs_reconciliation" && !draft.lyrics && (
-                    <ActionButton
-                      label="保存済みの文字起こしを確認"
-                      onPress={() => void app.recoverTranscript(draft.id)}
-                      disabled={app.busy || !draft.jobId}
-                      style={styles.primary}
-                      testID="recover-transcript"
-                    >
-                      <Text style={styles.primaryText}>
-                        保存済みの文字起こしを確認
-                      </Text>
-                    </ActionButton>
-                  )}
+                  {draft.status === "needs_reconciliation" &&
+                    draft.transcriptRecoveryAvailable && (
+                      <ActionButton
+                        label="保存済みの文字起こしを確認"
+                        onPress={() => void app.recoverTranscript(draft.id)}
+                        disabled={app.busy || !draft.jobId}
+                        style={styles.primary}
+                        testID="recover-transcript"
+                      >
+                        <Text style={styles.primaryText}>
+                          保存済みの文字起こしを確認
+                        </Text>
+                      </ActionButton>
+                    )}
                 </>
               )}
               {draft.status === "needs_audio_review" && (

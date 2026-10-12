@@ -2,6 +2,18 @@
 
 [ドキュメントの目次](README.md)へ
 
+## 2026-10-12 v5公開と実音声のETag照合修正（回復の再確認前）
+
+[PR #14](https://github.com/rion0918/Yoin/pull/14)をmainへ取り込み、[本番CI](https://github.com/rion0918/Yoin/actions/runs/38207785064)が成功した。コミット `278b7a90b0ad5196cd0fa3f3e6ac23fc04111467`、Cloud Run `yoin-audio-00008-xvc`、Worker `7c77b386-459e-4af1-9de1-76a81cc4d640` を確認した。0009追加列を本番D1で確認し、費用台帳は成功8件 / `1.330082` USD、照合待ち5件 / `1.96` USDを維持した。
+
+同じコミットのEAS build `2953e818-20a5-41ad-88c7-e29f5660f4fb` / versionCode 5が完了した。Play ConsoleへAABをアップロードし、2026-10-12 14:46 JSTに内部テスターへ公開した。versionCode照合はPlay最大3 / EAS現在4 / 次回5で成功。v4は公開していない。Googleログイン・元音声・文字起こし・歌詞・曲の最新版での通し検証は継続中。
+
+開発エミュレータでは再起動後に90秒の記録を保持し、回復ボタンから本番APIへ到達した。ただし、R2の裸の `etag` と、検査結果が保存している引用符付きの `httpEtag` を比べていたため、同じ元音声を照合できず保守的に拒否した。元音声のサイズは一致しており、追加の文字起こし・claim・予約変更は0件だった。
+
+既存の `inspectClip` と同じ `httpEtag` に照合を揃え、テストの検査結果も実サービスと同じHTTP形式に修正した。REDでは回復・再開失敗の再利用・アカウント削除中の停止の3件が誤った照合で停止した。修正後はbackend86件・型検査・Biomeが成功し、元音声変更の拒否も維持した。実操作での回復成功、確認後の生成・再生は再配置後に確認する。
+
+関連ADRは0023・0010・0011・0013。採用済みの音声照合契約の実装不足を修正するため、新しいADRは不要。Discussionは使用していない。
+
 ## 2026-10-12 文字起こしの時刻不整合と保存済み応答の回復（反映前）
 
 [PR #13](https://github.com/rion0918/Yoin/pull/13)をmainへ取り込み、[本番CI](https://github.com/rion0918/Yoin/actions/runs/38202500029)が成功した。コミット `c643a679be3e54fb8b9e7ba9cb44d2d587f38e94`、Cloud Run `yoin-audio-00007-txs` を確認した。

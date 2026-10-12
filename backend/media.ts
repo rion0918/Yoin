@@ -20,12 +20,17 @@ import { chunkKey } from "./media-api.ts";
 import { signedUrl } from "./security.ts";
 import { type Env, HttpError } from "./types.ts";
 
-const paidProviderPaths = ["/transcribe", "/lyrics", "/music"] as const;
+const paidProviderPaths = [
+  "/transcribe",
+  "/lyrics",
+  "/music",
+  "/readings",
+] as const;
 
 function mediaConfigurationError(path: string) {
   if ((paidProviderPaths as readonly string[]).includes(path))
     return new GoogleProviderError(
-      path.slice(1) as "transcribe" | "lyrics" | "music",
+      path.slice(1) as "transcribe" | "lyrics" | "music" | "readings",
       "not_submitted",
       503,
       "media_service_not_configured",
@@ -86,7 +91,7 @@ export async function callMedia<T>(
       paidProviderPaths.includes(path as (typeof paidProviderPaths)[number])
     )
       throw new GoogleProviderError(
-        path.slice(1) as "transcribe" | "lyrics" | "music",
+        path.slice(1) as "transcribe" | "lyrics" | "music" | "readings",
         "input",
       );
     if (
@@ -101,7 +106,7 @@ export async function callMedia<T>(
           ? result.error
           : "provider_not_submitted";
       throw new GoogleProviderError(
-        path.slice(1) as "transcribe" | "lyrics" | "music",
+        path.slice(1) as "transcribe" | "lyrics" | "music" | "readings",
         "not_submitted",
         response.status,
         code,

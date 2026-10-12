@@ -1,6 +1,15 @@
 import { Feather } from "@expo/vector-icons";
-import { StyleSheet, Text, View } from "react-native";
-import type { LocalClip, LocalDraft } from "../../shared/contracts";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import type {
+  LocalClip,
+  LocalDraft,
+  MusicPreferences,
+} from "../../shared/contracts";
+import {
+  DEFAULT_MUSIC_PREFERENCES,
+  MUSIC_PRESETS,
+  VOCAL_LABELS,
+} from "../../shared/music";
 import { colors, radii } from "../design/tokens";
 import { formatTime } from "../domain/session";
 import { sourceContext } from "../pipeline/library";
@@ -11,13 +20,17 @@ export function FinishMemory({
   draft,
   onClip,
   onPrepare,
+  onMusicPreferences,
   busy,
 }: {
   draft: LocalDraft;
   onClip: (clip: LocalClip) => void;
   onPrepare: () => void;
+  onMusicPreferences: (preferences: MusicPreferences) => void;
   busy: boolean;
 }) {
+  const preferences = draft.musicPreferences ?? DEFAULT_MUSIC_PREFERENCES;
+  const locked = busy || !["local", "failed"].includes(draft.status);
   return (
     <View testID="finish-sheet">
       <Text style={styles.summary}>
@@ -49,6 +62,73 @@ export function FinishMemory({
           );
         })}
       </View>
+      <View style={styles.settings}>
+        <Text style={styles.settingLabel}>どんな曲にする？</Text>
+        <View
+          accessibilityRole="radiogroup"
+          accessibilityLabel="曲のジャンル"
+          style={styles.choices}
+        >
+          {(Object.keys(MUSIC_PRESETS) as MusicPreferences["genre"][]).map(
+            (genre) => (
+              <Pressable
+                key={genre}
+                accessibilityRole="radio"
+                aria-checked={preferences.genre === genre}
+                aria-disabled={locked}
+                accessibilityState={{
+                  checked: preferences.genre === genre,
+                  disabled: locked,
+                }}
+                disabled={locked}
+                onPress={() => onMusicPreferences({ ...preferences, genre })}
+                testID={`genre-${genre}`}
+                style={[
+                  styles.choice,
+                  preferences.genre === genre && styles.selected,
+                ]}
+              >
+                <Text style={styles.choiceText}>
+                  {MUSIC_PRESETS[genre].label}
+                </Text>
+              </Pressable>
+            ),
+          )}
+        </View>
+        <Text style={styles.settingLabel}>歌声</Text>
+        <View
+          accessibilityRole="radiogroup"
+          accessibilityLabel="歌声"
+          style={styles.choices}
+        >
+          {(Object.keys(VOCAL_LABELS) as MusicPreferences["vocal"][]).map(
+            (vocal) => (
+              <Pressable
+                key={vocal}
+                accessibilityRole="radio"
+                aria-checked={preferences.vocal === vocal}
+                aria-disabled={locked}
+                accessibilityState={{
+                  checked: preferences.vocal === vocal,
+                  disabled: locked,
+                }}
+                disabled={locked}
+                onPress={() => onMusicPreferences({ ...preferences, vocal })}
+                testID={`vocal-${vocal}`}
+                style={[
+                  styles.choice,
+                  preferences.vocal === vocal && styles.selected,
+                ]}
+              >
+                <Text style={styles.choiceText}>{VOCAL_LABELS[vocal]}</Text>
+              </Pressable>
+            ),
+          )}
+        </View>
+        <Text style={styles.summary}>
+          選んだ曲調に合わせて、歌詞を作ります。
+        </Text>
+      </View>
       <ActionButton
         label="この一日を歌詞にする"
         onPress={onPrepare}
@@ -66,6 +146,24 @@ export function FinishMemory({
 }
 
 const styles = StyleSheet.create({
+  settings: { marginBottom: 24, gap: 10 },
+  settingLabel: {
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: "600",
+    marginTop: 6,
+  },
+  choices: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  choice: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    borderRadius: radii.control,
+    borderWidth: 1,
+    borderColor: colors.line,
+  },
+  selected: { borderColor: colors.ink, backgroundColor: colors.paper },
+  choiceText: { color: colors.ink, fontSize: 14 },
   summary: { color: colors.muted, fontSize: 12, lineHeight: 21 },
   clips: { marginVertical: 22 },
   clipRow: {

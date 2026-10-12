@@ -2,9 +2,11 @@ import {
   type AudioLocationSummary,
   type LocationSample,
   MAX_AUDIO_MS,
+  type MusicPreferences,
   UPLOAD_PART_BYTES,
   type UploadCreated,
 } from "../shared/contracts.ts";
+import { hasReadyReadings, isLyricSection } from "../shared/music.ts";
 import {
   assertAccountActive,
   finishOwnedUpload,
@@ -18,6 +20,7 @@ import {
   draftDocument,
   type JobRow,
   jobDocument,
+  lyrics,
   ownedAudio,
   ownedClip,
   ownedDraft,
@@ -49,10 +52,11 @@ import {
   locationPayload,
   text,
   validateBlocks,
+  validateMusicPreferences,
 } from "./validation.ts";
 
 async function launch(env: Env, job: JobRow) {
-  const workflow = job.kind === "prepare" ? env.PREPARE : env.GENERATE;
+  const workflow = job.kind === "generate" ? env.GENERATE : env.PREPARE;
   try {
     await assertAccountActive(env, job.owner_id);
     const instance = await workflow.create({
@@ -418,6 +422,13 @@ async function prepare(
   draftId: string,
 ) {
   const body = await json(request);
+  const settings =
+    body.musicPreferences === undefined
+      ? undefined
+      : {
+          generationVersion: 2,
+          musicPreferences: validateMusicPreferences(body.musicPreferences),
+        };
   const sourceClips = await clips(env, draftId, owner);
   const draft = await ownedDraft(env, draftId, owner);
   const speakerProfileIds = JSON.parse(
@@ -441,8 +452,17 @@ async function prepare(
         draftId,
         clips: sourceClips.map((clip) => clip.id),
         speakerProfileIds,
+        ...(settings
+          ? {
+              musicPreferences: settings.musicPreferences,
+              generationVersion: 2,
+            }
+          : {}),
       }),
     ),
+    undefined,
+    undefined,
+    settings,
   );
 }
 
@@ -464,15 +484,25 @@ async function reviseLyrics(
     body.blocks,
     await utterances(env, draftId, owner),
   );
+  const previous = await lyrics(env, draftId, expected);
+  if (
+    previous?.generationVersion === 2 &&
+    blocks.some((block) => !isLyricSection(block.section))
+  )
+    throw new HttpError(422, "invalid_lyric_section");
   const revision = expected + 1;
   const result = await env.DB.batch([
     env.DB.prepare(
-      "INSERT INTO lyric_revisions (draft_id, revision, blocks_json, created_at) SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND owner_id = ? AND lyric_revision = ? AND status IN ('waiting_review', 'failed'))",
+      "INSERT INTO lyric_revisions (draft_id, revision, blocks_json, created_at, generation_version, music_preferences_json) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND owner_id = ? AND lyric_revision = ? AND status IN ('waiting_review', 'failed'))",
     ).bind(
       draftId,
       revision,
       JSON.stringify(blocks),
       new Date().toISOString(),
+      previous?.generationVersion ?? 1,
+      previous?.musicPreferences
+        ? JSON.stringify(previous.musicPreferences)
+        : null,
       draftId,
       owner,
       expected,
@@ -483,7 +513,7 @@ async function reviseLyrics(
   ]);
   if (result[0].meta.changes !== 1)
     throw new HttpError(409, "lyric_revision_conflict");
-  return Response.json({ revision, blocks });
+  return Response.json({ ...previous, revision, blocks });
 }
 
 async function generate(
@@ -498,15 +528,30 @@ async function generate(
   if (draft.lyric_revision !== revision)
     throw new HttpError(409, "lyric_revision_conflict");
   const row = await env.DB.prepare(
-    "SELECT blocks_json FROM lyric_revisions WHERE draft_id = ? AND revision = ?",
+    "SELECT blocks_json, generation_version, music_preferences_json FROM lyric_revisions WHERE draft_id = ? AND revision = ?",
   )
     .bind(draftId, revision)
-    .first<{ blocks_json: string }>();
+    .first<{
+      blocks_json: string;
+      generation_version: number;
+      music_preferences_json: string | null;
+    }>();
   if (!row) throw new HttpError(409, "lyrics_not_ready");
-  validateBlocks(
+  const blocks = validateBlocks(
     JSON.parse(row.blocks_json),
     await utterances(env, draftId, owner),
   );
+  const settings =
+    row.generation_version === 2
+      ? {
+          generationVersion: 2,
+          musicPreferences: validateMusicPreferences(
+            JSON.parse(String(row.music_preferences_json)),
+          ),
+        }
+      : undefined;
+  if (settings && !hasReadyReadings(blocks))
+    throw new HttpError(422, "readings_not_ready");
   const songTitle =
     body.songTitle === undefined ? draft.title : text(body.songTitle, 80);
   const fingerprint = await sha256(
@@ -515,6 +560,9 @@ async function generate(
       revision,
       blocks: row.blocks_json,
       songTitle,
+      ...(settings
+        ? { generationVersion: 2, musicPreferences: settings.musicPreferences }
+        : {}),
     }),
   );
   const legacyFingerprint = await sha256(
@@ -530,7 +578,63 @@ async function generate(
     row.blocks_json,
     fingerprint,
     songTitle,
-    legacyFingerprint,
+    settings ? undefined : legacyFingerprint,
+    settings,
+  );
+}
+
+async function updateReadings(
+  request: Request,
+  env: Env,
+  owner: string,
+  draftId: string,
+) {
+  const body = await json(request);
+  const revision = integer(body.revision, 1, 1_000_000);
+  const key = text(body.idempotencyKey, 128);
+  const draft = await ownedDraft(env, draftId, owner);
+  const previous = await env.DB.prepare(
+    "SELECT draft_id, lyric_revision FROM jobs WHERE owner_id = ? AND kind = 'readings' AND idempotency_key = ?",
+  )
+    .bind(owner, key)
+    .first<{ draft_id: string; lyric_revision: number }>();
+  if (
+    previous &&
+    (previous.draft_id !== draftId || previous.lyric_revision !== revision)
+  )
+    throw new HttpError(409, "idempotency_key_conflict");
+  if (!previous && draft.lyric_revision !== revision)
+    throw new HttpError(409, "lyric_revision_conflict");
+  const current = await lyrics(env, draftId, revision);
+  if (current?.generationVersion !== 2 || !current.musicPreferences)
+    throw new HttpError(409, "readings_not_available");
+  const blocks = validateBlocks(
+    current.blocks,
+    await utterances(env, draftId, owner),
+  );
+  if (blocks.some((block) => !isLyricSection(block.section)))
+    throw new HttpError(422, "invalid_lyric_section");
+  if (!blocks.some((block) => block.singingText === undefined))
+    throw new HttpError(409, "readings_already_ready");
+  const settings = {
+    generationVersion: 2,
+    musicPreferences: current.musicPreferences,
+  };
+  const frozen = JSON.stringify(blocks);
+  return submitJob(
+    env,
+    owner,
+    draftId,
+    "readings",
+    key,
+    revision,
+    frozen,
+    await sha256(
+      JSON.stringify({ draftId, revision, blocks: frozen, ...settings }),
+    ),
+    undefined,
+    undefined,
+    settings,
   );
 }
 
@@ -581,13 +685,14 @@ async function submitJob(
   env: Env,
   owner: string,
   draftId: string,
-  kind: "prepare" | "generate",
+  kind: "prepare" | "generate" | "readings",
   key: string,
   revision: number | null,
   blocks: string | null,
   fingerprint: string,
   songTitle?: string,
   legacyFingerprint?: string,
+  settings?: { generationVersion: number; musicPreferences: MusicPreferences },
 ) {
   const previous = await env.DB.prepare(
     "SELECT * FROM jobs WHERE owner_id = ? AND kind = ? AND idempotency_key = ?",
@@ -613,7 +718,12 @@ async function submitJob(
   if (!allowed.includes(draft.status))
     throw new HttpError(409, "draft_not_ready");
   const jobId = crypto.randomUUID();
-  const state = kind === "prepare" ? "preparing" : "generating";
+  const state =
+    kind === "prepare"
+      ? "preparing"
+      : kind === "readings"
+        ? "updating_readings"
+        : "generating";
   const created = new Date().toISOString();
   let speakerSnapshot: string | null = null;
   if (kind === "prepare") {
@@ -628,7 +738,7 @@ async function submitJob(
   }
   const result = await env.DB.batch([
     env.DB.prepare(
-      "INSERT OR IGNORE INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, song_title, created_at, speaker_snapshot_json) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND owner_id = ? AND status = ? AND job_id IS ? AND lyric_revision = ?) AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
+      "INSERT OR IGNORE INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, song_title, created_at, speaker_snapshot_json, generation_version, music_preferences_json) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND owner_id = ? AND status = ? AND job_id IS ? AND lyric_revision = ?) AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
     ).bind(
       jobId,
       owner,
@@ -641,6 +751,8 @@ async function submitJob(
       songTitle ?? null,
       created,
       speakerSnapshot,
+      settings?.generationVersion ?? 1,
+      settings ? JSON.stringify(settings.musicPreferences) : null,
       draftId,
       owner,
       draft.status,
@@ -749,7 +861,7 @@ export async function handleRequest(request: Request, env: Env) {
     if (path === "/drafts" && request.method === "POST")
       return await createDraft(request, env, owner);
     const draft =
-      /^\/drafts\/([a-zA-Z0-9_-]+)(?:\/(clips|prepare|lyrics|generate|transcript-review|recover-transcription))?$/.exec(
+      /^\/drafts\/([a-zA-Z0-9_-]+)(?:\/(clips|prepare|lyrics|generate|readings|transcript-review|recover-transcription))?$/.exec(
         path,
       );
     if (draft) {
@@ -763,6 +875,8 @@ export async function handleRequest(request: Request, env: Env) {
         return await prepare(request, env, owner, draftId);
       if (draft[2] === "lyrics" && request.method === "PATCH")
         return await reviseLyrics(request, env, owner, draftId);
+      if (draft[2] === "readings" && request.method === "POST")
+        return await updateReadings(request, env, owner, draftId);
       if (draft[2] === "generate" && request.method === "POST")
         return await generate(request, env, owner, draftId);
       if (draft[2] === "recover-transcription" && request.method === "POST")

@@ -973,3 +973,219 @@ describe("saved transcription recovery", () => {
     expect(restart).not.toHaveBeenCalled();
   });
 });
+
+it("freezes readings and musical settings and deduplicates reading jobs", async () => {
+  const block = {
+    id: "verse",
+    text: "三宮",
+    section: "verse",
+    sourceUtteranceIds: ["clip:u:0:1"],
+  };
+  await seedReview(block);
+  await bindings.DB.prepare(
+    "UPDATE lyric_revisions SET generation_version = 2, music_preferences_json = ?",
+  )
+    .bind(JSON.stringify({ genre: "jpop", vocal: "female" }))
+    .run();
+  const dispatch = vi.fn(async (_input: { id: string }) => ({
+    delete: async () => {},
+  }));
+  bindings.PREPARE = { create: dispatch } as unknown as Env["PREPARE"];
+  const first = await request(`/drafts/${draftId}/readings`, "POST", {
+    revision: 1,
+    idempotencyKey: "read-key",
+  });
+  expect(first.status).toBe(202);
+  const retry = await request(`/drafts/${draftId}/readings`, "POST", {
+    revision: 1,
+    idempotencyKey: "read-key",
+  });
+  expect(await retry.json()).toEqual(await first.json());
+  const job = await bindings.DB.prepare(
+    "SELECT kind, blocks_json, generation_version, music_preferences_json FROM jobs WHERE idempotency_key = 'read-key'",
+  ).first();
+  expect(job).toMatchObject({
+    kind: "readings",
+    generation_version: 2,
+    music_preferences_json: JSON.stringify({ genre: "jpop", vocal: "female" }),
+  });
+  expect(JSON.parse(String(job?.blocks_json))).toEqual([block]);
+  expect(
+    new Set(dispatch.mock.calls.map((call) => (call[0] as { id: string }).id))
+      .size,
+  ).toBe(1);
+  expect(
+    (
+      await request(`/drafts/${draftId}/lyrics`, "PATCH", {
+        revision: 1,
+        blocks: [block],
+      })
+    ).status,
+  ).toBe(409);
+});
+it("rejects new generation with missing readings before dispatch or spending", async () => {
+  await seedReview({
+    id: "verse",
+    text: "三宮",
+    sourceUtteranceIds: ["clip:u:0:1"],
+  });
+  await bindings.DB.prepare(
+    "UPDATE lyric_revisions SET generation_version = 2, music_preferences_json = ?",
+  )
+    .bind(JSON.stringify({ genre: "acoustic", vocal: "auto" }))
+    .run();
+  expect(
+    (
+      await request(`/drafts/${draftId}/generate`, "POST", {
+        revision: 1,
+        idempotencyKey: "generate-new",
+      })
+    ).status,
+  ).toBe(422);
+  expect(
+    (await bindings.DB.prepare("SELECT COUNT(*) AS n FROM jobs").first())?.n,
+  ).toBe(0);
+  expect(
+    (
+      await bindings.DB.prepare(
+        "SELECT COUNT(*) AS n FROM budget_ledger",
+      ).first()
+    )?.n,
+  ).toBe(0);
+});
+it("retains music settings while accepting a manual reading correction", async () => {
+  const block = {
+    id: "verse",
+    text: "三宮",
+    section: "verse",
+    singingText: "さんのみや",
+    sourceUtteranceIds: ["clip:u:0:1"],
+  };
+  await seedReview(block);
+  await bindings.DB.prepare(
+    "UPDATE lyric_revisions SET generation_version = 2, music_preferences_json = ?",
+  )
+    .bind(JSON.stringify({ genre: "bossa", vocal: "male" }))
+    .run();
+  const saved = await request(`/drafts/${draftId}/lyrics`, "PATCH", {
+    revision: 1,
+    blocks: [{ ...block, singingText: "サンノミヤ" }],
+  });
+  expect(saved.status).toBe(200);
+  expect(await saved.json()).toMatchObject({
+    revision: 2,
+    generationVersion: 2,
+    musicPreferences: { genre: "bossa", vocal: "male" },
+    blocks: [{ ...block, singingText: "サンノミヤ" }],
+  });
+  bindings.GENERATE = { create: vi.fn() } as unknown as Env["GENERATE"];
+  expect(
+    (
+      await request(`/drafts/${draftId}/generate`, "POST", {
+        revision: 2,
+        idempotencyKey: "manual-ready",
+      })
+    ).status,
+  ).toBe(202);
+  expect(
+    await bindings.DB.prepare(
+      "SELECT generation_version, music_preferences_json FROM jobs WHERE idempotency_key = 'manual-ready'",
+    ).first(),
+  ).toEqual({
+    generation_version: 2,
+    music_preferences_json: JSON.stringify({ genre: "bossa", vocal: "male" }),
+  });
+});
+it("freezes preparation settings and rejects a changed retry without a second job", async () => {
+  await seedReview({
+    id: "v",
+    text: "三宮",
+    sourceUtteranceIds: ["clip:u:0:1"],
+  });
+  await bindings.DB.prepare(
+    "UPDATE drafts SET status = 'uploading', lyric_revision = 0 WHERE id = ?",
+  )
+    .bind(draftId)
+    .run();
+  bindings.PREPARE = { create: vi.fn() } as unknown as Env["PREPARE"];
+  const body = {
+    idempotencyKey: "prepare-modern",
+    musicPreferences: { genre: "rock", vocal: "male" },
+  };
+  expect(
+    (await request(`/drafts/${draftId}/prepare`, "POST", body)).status,
+  ).toBe(202);
+  expect(
+    (
+      await request(`/drafts/${draftId}/prepare`, "POST", {
+        ...body,
+        musicPreferences: { genre: "piano", vocal: "female" },
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    await bindings.DB.prepare(
+      "SELECT generation_version, music_preferences_json FROM jobs WHERE idempotency_key = 'prepare-modern'",
+    ).first(),
+  ).toEqual({
+    generation_version: 2,
+    music_preferences_json: JSON.stringify(body.musicPreferences),
+  });
+});
+
+it("recovers a lost completed reading acknowledgement using the original revision and key", async () => {
+  const block = {
+    id: "verse",
+    text: "三宮",
+    section: "verse",
+    sourceUtteranceIds: ["clip:u:0:1"],
+  };
+  await seedReview(block);
+  const preferences = JSON.stringify({ genre: "acoustic", vocal: "auto" });
+  await bindings.DB.prepare(
+    "UPDATE lyric_revisions SET generation_version = 2, music_preferences_json = ?",
+  )
+    .bind(preferences)
+    .run();
+  bindings.PREPARE = { create: vi.fn() } as unknown as Env["PREPARE"];
+  const body = { revision: 1, idempotencyKey: "lost-reading-ack" };
+  const first = await request(`/drafts/${draftId}/readings`, "POST", body);
+  const result = await first.json<{ jobId: string }>();
+  await bindings.DB.prepare(
+    "INSERT INTO lyric_revisions (draft_id, revision, blocks_json, created_at, generation_version, music_preferences_json) VALUES (?, 2, ?, '2026-10-12', 2, ?)",
+  )
+    .bind(
+      draftId,
+      JSON.stringify([{ ...block, singingText: "さんのみや" }]),
+      preferences,
+    )
+    .run();
+  await bindings.DB.prepare(
+    "UPDATE drafts SET lyric_revision = 2, status = 'waiting_review' WHERE id = ?",
+  )
+    .bind(draftId)
+    .run();
+  await bindings.DB.prepare(
+    "UPDATE jobs SET status = 'waiting_review' WHERE id = ?",
+  )
+    .bind(result.jobId)
+    .run();
+  const recovered = await request(`/drafts/${draftId}/readings`, "POST", body);
+  expect(recovered.status).toBe(202);
+  expect(await recovered.json()).toEqual(result);
+  expect(
+    (
+      await request(`/drafts/${draftId}/readings`, "POST", {
+        ...body,
+        idempotencyKey: "different-key",
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await bindings.DB.prepare(
+        "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'readings'",
+      ).first()
+    )?.n,
+  ).toBe(1);
+});

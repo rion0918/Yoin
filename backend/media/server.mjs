@@ -243,6 +243,7 @@ export function createMediaServer({
         "/transcribe",
         "/recover-transcription",
         "/lyrics",
+        "/readings",
         "/music",
         "/enroll-speaker",
         "/identify-speakers",
@@ -252,9 +253,12 @@ export function createMediaServer({
       response.end();
       return;
     }
-    const paidRequest = ["/transcribe", "/lyrics", "/music"].includes(
-      request.url,
-    );
+    const paidRequest = [
+      "/transcribe",
+      "/lyrics",
+      "/music",
+      "/readings",
+    ].includes(request.url);
     const suppliedAttemptId = request.headers["x-provider-attempt"];
     const requestAttemptId =
       typeof suppliedAttemptId === "string" &&
@@ -262,9 +266,12 @@ export function createMediaServer({
         ? suppliedAttemptId
         : null;
     if (busy) {
-      const activeIsPaidRequest = ["/transcribe", "/lyrics", "/music"].includes(
-        activePath,
-      );
+      const activeIsPaidRequest = [
+        "/transcribe",
+        "/lyrics",
+        "/music",
+        "/readings",
+      ].includes(activePath);
       const sameOrUnknownAttempt =
         activeIsPaidRequest &&
         (!activeAttemptId ||

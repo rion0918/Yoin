@@ -314,3 +314,107 @@ test("saved transcription recovery retains the full response without a claim or 
     await new Promise((resolve) => storage.close(resolve));
   }
 });
+
+test("reading results are claimed once and stored without rewriting lyrics or uploading a song", async () => {
+  const events = [];
+  let claims = 0;
+  let submissions = 0;
+  const storage = createServer(async (request, response) => {
+    const action = request.url.split("?")[0].split("/").at(-1);
+    if (action === "claim" && claims++ > 0) {
+      response.writeHead(409);
+      response.end();
+      return;
+    }
+    events.push(action);
+    const buffers = [];
+    for await (const part of request) buffers.push(part);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    if (action === "claim") response.end(JSON.stringify({ stage: "readings" }));
+    else if (action === "raw")
+      response.end(JSON.stringify({ key: "results/test/read-job.raw.json" }));
+    else {
+      const saved = JSON.parse(Buffer.concat(buffers));
+      assert.equal(saved.version, 1);
+      assert.equal(saved.value[0].text, "三宮");
+      assert.equal(saved.value[0].singingText, "さんのみや");
+      response.end("{}");
+    }
+  });
+  await new Promise((resolve) => storage.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${storage.address().port}`;
+  const token = "t".repeat(64);
+  const media = createMediaServer({
+    token,
+    origin,
+    apiKey: "test",
+    providerFetch: async (_url, init) => {
+      submissions++;
+      events.push("provider");
+      const input = JSON.parse(JSON.parse(init.body).input);
+      assert.deepEqual(input.blocks, [{ id: "v", text: "三宮" }]);
+      return Response.json({
+        status: "completed",
+        usage: { total_input_tokens: 100, total_output_tokens: 100 },
+        steps: [
+          {
+            type: "model_output",
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  readings: [{ id: "v", singingText: "さんのみや" }],
+                }),
+              },
+            ],
+          },
+        ],
+      });
+    },
+  });
+  await new Promise((resolve) => media.listen(0, "127.0.0.1", resolve));
+  const call = () =>
+    fetch(`http://127.0.0.1:${media.address().port}/readings`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        claimUrl: `${origin}/internal/attempts/read-job/claim?signature=test`,
+        resultUrl: `${origin}/internal/attempts/read-job/result?signature=test`,
+        rawUrl: `${origin}/internal/attempts/read-job/raw?signature=test`,
+        blocks: [
+          {
+            id: "v",
+            text: "三宮",
+            section: "verse",
+            sourceUtteranceIds: ["u1"],
+          },
+        ],
+        utterances: [
+          {
+            id: "u1",
+            clipId: "clip",
+            startMs: 0,
+            endMs: 100,
+            speaker: "spk_1",
+            text: "三宮",
+          },
+        ],
+      }),
+    });
+  try {
+    const first = await call();
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).value[0].singingText, "さんのみや");
+    assert.deepEqual(events, ["claim", "provider", "raw", "result"]);
+    assert.equal((await call()).status, 422);
+    assert.equal(submissions, 1);
+  } finally {
+    await Promise.all([
+      new Promise((resolve) => media.close(resolve)),
+      new Promise((resolve) => storage.close(resolve)),
+    ]);
+  }
+});

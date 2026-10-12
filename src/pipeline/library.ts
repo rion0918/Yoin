@@ -9,6 +9,7 @@ import type {
   SongDocument,
   Utterance,
 } from "../../shared/contracts.ts";
+import { DEFAULT_MUSIC_PREFERENCES } from "../../shared/music.ts";
 import { createLocalLocationSummary } from "./location.ts";
 
 export function createLocalDraft(
@@ -23,6 +24,7 @@ export function createLocalDraft(
     createdAt,
     speakerProfileIds,
     locationEnabled: false,
+    musicPreferences: { ...DEFAULT_MUSIC_PREFERENCES },
     clips: [],
     utterances: [],
     lyrics: null,
@@ -180,6 +182,12 @@ export function restoreRecording(
   };
 }
 
+export function editLyricText(block: LyricBlock, text: string): LyricBlock {
+  if (block.text === text) return block;
+  const { singingText: _reading, ...display } = block;
+  return { ...display, text };
+}
+
 export function editLyricBlock(
   draft: LocalDraft,
   id: string,
@@ -191,7 +199,29 @@ export function editLyricBlock(
     lyrics: {
       ...draft.lyrics,
       blocks: draft.lyrics.blocks.map((block) =>
-        block.id === id ? { ...block, text } : block,
+        block.id === id ? editLyricText(block, text) : block,
+      ),
+    },
+  };
+}
+
+export function editSingingText(
+  draft: LocalDraft,
+  id: string,
+  singingText: string,
+): LocalDraft {
+  if (!draft.lyrics) return draft;
+  return {
+    ...draft,
+    lyrics: {
+      ...draft.lyrics,
+      blocks: draft.lyrics.blocks.map((block) =>
+        block.id === id
+          ? {
+              ...block,
+              singingText: singingText.trim() ? singingText : undefined,
+            }
+          : block,
       ),
     },
   };

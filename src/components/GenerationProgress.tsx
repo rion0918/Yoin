@@ -14,9 +14,12 @@ export function GenerationProgress({
   draft: LocalDraft;
   onClose: () => void;
 }) {
-  const waiting = ["uploading", "preparing", "generating"].includes(
-    draft.status,
-  );
+  const waiting = [
+    "uploading",
+    "preparing",
+    "generating",
+    "updating_readings",
+  ].includes(draft.status);
   const lyrics =
     draft.status === "generating" ? (draft.lyrics?.blocks ?? []) : [];
   const heading =
@@ -26,7 +29,9 @@ export function GenerationProgress({
         ? "ここまでの記録は、残っています。"
         : draft.status === "generating"
           ? "この一日が、\n一曲になる。"
-          : "あの日の会話を、\n言葉にしていく。";
+          : draft.status === "updating_readings"
+            ? "歌詞の読みを、\n整えています。"
+            : "あの日の会話を、\n言葉にしていく。";
   const description =
     draft.status === "needs_reconciliation"
       ? draft.lyrics
@@ -38,7 +43,9 @@ export function GenerationProgress({
           ? "確かめた歌詞から、この日の曲を作っています。"
           : draft.status === "uploading"
             ? "残した会話を届けています。音声は端末にも残っています。"
-            : "残した会話から、歌詞を準備しています。";
+            : draft.status === "updating_readings"
+              ? "編集した歌詞の読みを更新しています。終わったら確認・修正できます。"
+              : "残した会話から、歌詞を準備しています。";
   return (
     <View testID="generation-content">
       <Text style={styles.day}>{draft.title}</Text>

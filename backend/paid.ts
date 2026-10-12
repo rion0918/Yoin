@@ -11,7 +11,12 @@ type AttemptRow = {
 type PaidOutput<T> = { value: T; costUsd: number; usage: unknown };
 type CachedOutput<T> = PaidOutput<T> & { version: 1 };
 
-export const RESERVATION_USD = { transcribe: 0.6, lyrics: 0.5, music: 0.08 };
+export const RESERVATION_USD = {
+  transcribe: 0.6,
+  lyrics: 0.5,
+  music: 0.08,
+  readings: 0.5,
+};
 
 async function retainCost<T>(
   env: Env,

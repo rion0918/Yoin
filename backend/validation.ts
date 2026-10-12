@@ -6,6 +6,11 @@ import {
   MAX_AUDIO_MS,
   type Utterance,
 } from "../shared/contracts.ts";
+import {
+  isLyricSection,
+  isMusicPreferences,
+  isSingingText,
+} from "../shared/music.ts";
 import { HttpError } from "./types.ts";
 
 export function id(value: unknown) {
@@ -262,14 +267,30 @@ export function validateBlocks(
     )
       throw new HttpError(422, "invalid_lyric_source");
     const blockText = text(item.text, 6000);
+    if (item.section !== undefined && !isLyricSection(item.section))
+      throw new HttpError(422, "invalid_lyric_section");
+    if (
+      item.singingText !== undefined &&
+      !isSingingText(blockText, item.singingText)
+    )
+      throw new HttpError(422, "invalid_singing_text");
     totalLength += blockText.length;
     if (totalLength > 6000) throw new HttpError(422, "invalid_lyrics");
     return {
       id: blockId,
       text: blockText,
       sourceUtteranceIds: [...new Set<string>(item.sourceUtteranceIds)],
+      ...(item.section === undefined ? {} : { section: item.section }),
+      ...(item.singingText === undefined
+        ? {}
+        : { singingText: item.singingText }),
     };
   });
+}
+export function validateMusicPreferences(value: unknown) {
+  if (!isMusicPreferences(value))
+    throw new HttpError(422, "invalid_music_preferences");
+  return { genre: value.genre, vocal: value.vocal };
 }
 export function validateUtterances(
   value: Utterance[],

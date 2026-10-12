@@ -37,7 +37,9 @@ export async function runtimeCallback(
       attempt.status !== "submitted" ||
       (attempt.stage === "music"
         ? job.kind !== "generate"
-        : job.kind !== "prepare")
+        : attempt.stage === "readings"
+          ? job.kind !== "readings"
+          : job.kind !== "prepare")
     )
       throw new HttpError(409, "invalid_runtime_job");
     const claimed = await env.DB.prepare(

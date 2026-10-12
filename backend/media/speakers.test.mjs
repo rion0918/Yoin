@@ -67,6 +67,50 @@ test("short utterances are excluded from speaker matching", () => {
   assert.deepEqual(intervals.get("spk_1"), []);
 });
 
+test("unlabelled speech cannot be matched as a diarized speaker by default", () => {
+  const intervals = speakerIntervals(
+    [{ speaker: "unknown", startMs: 0, endMs: 6000 }],
+    0,
+    10000,
+  );
+
+  assert.equal(intervals.has("unknown"), false);
+});
+
+test("unlabelled speech does not remove labelled speech from matching", () => {
+  const intervals = speakerIntervals(
+    [
+      { speaker: "spk_1", startMs: 0, endMs: 6000 },
+      { speaker: "unknown", startMs: 2000, endMs: 4000 },
+    ],
+    0,
+    10000,
+  );
+
+  assert.deepEqual(intervals.get("spk_1"), [[0, 6000]]);
+});
+
+test("unlabelled speech can be checked against one selected profile", () => {
+  const intervals = speakerIntervals(
+    [{ speaker: "unknown", startMs: 0, endMs: 6000 }],
+    0,
+    10000,
+    { includeUnknown: true },
+  );
+
+  assert.deepEqual(intervals.get("unknown"), [[0, 6000]]);
+});
+
+test("unlabelled speech is excluded when multiple profiles are selected", () => {
+  const intervals = speakerIntervals(
+    [{ speaker: "unknown", startMs: 0, endMs: 6000 }],
+    0,
+    10000,
+  );
+
+  assert.equal(intervals.has("unknown"), false);
+});
+
 test("the same temporary label in another chunk is compared independently", () => {
   const first = speakerIntervals(
     [{ speaker: "spk_1", startMs: 0, endMs: 6000 }],

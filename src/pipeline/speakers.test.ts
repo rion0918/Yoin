@@ -144,6 +144,10 @@ test("conversation names use the saved identification and legacy labels still re
   };
   assert.equal(speakerLabel(utterance), "spk_1");
   assert.equal(
+    speakerLabel({ ...utterance, speaker: "unknown" }),
+    "話者未特定",
+  );
+  assert.equal(
     speakerLabel({
       ...utterance,
       speakerProfileId: profile.id,

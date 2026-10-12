@@ -165,6 +165,7 @@ export async function prepareDraft(
   if (job.kind !== "prepare") throw new HttpError(409, "wrong_workflow_kind");
   if (["waiting_review", "ready", "needs_reconciliation"].includes(job.status))
     return;
+  const recoveringTranscript = job.stage === "recovering_transcription";
   try {
     await step.do("start", () => setJob(env, job, "running", "inspect_audio"));
     const sourceClips = await clips(env, job.draft_id, job.owner_id);
@@ -286,7 +287,10 @@ export async function prepareDraft(
               item.startMs >= chunk.offsetMs &&
               item.endMs <= chunk.offsetMs + chunk.durationMs,
           );
-          if (!candidates.length) continue;
+          const matchable = candidates.filter(
+            (item) => item.speaker !== "unknown" || snapshot.length === 1,
+          );
+          if (!matchable.length) continue;
           const matches = await step.do(
             `identify-${clip.id}-${chunk.offsetMs}`,
             mediaStep,
@@ -295,7 +299,7 @@ export async function prepareDraft(
                 index,
                 offsetMs: chunk.offsetMs,
                 durationMs: chunk.durationMs,
-                utterances: candidates.map(({ speaker, startMs, endMs }) => ({
+                utterances: matchable.map(({ speaker, startMs, endMs }) => ({
                   speaker,
                   startMs,
                   endMs,
@@ -327,7 +331,8 @@ export async function prepareDraft(
       source = await utterances(env, job.draft_id, job.owner_id);
     }
     if (!source.length) throw new HttpError(422, "no_speech_detected");
-    let needsAudioReview = false;
+    let needsAudioReview =
+      recoveringTranscript || source.some((item) => item.speaker === "unknown");
     for (const { clip, inspection } of inspected) {
       const activityRanges = inspection.chunks.flatMap(
         (chunk) => chunk.activityRanges ?? [],

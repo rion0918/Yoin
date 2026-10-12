@@ -101,5 +101,8 @@ export function mergeSpeakerProfiles(
 }
 
 export function speakerLabel(utterance: Utterance) {
-  return utterance.speakerName || utterance.speaker;
+  return (
+    utterance.speakerName ||
+    (utterance.speaker === "unknown" ? "話者未特定" : utterance.speaker)
+  );
 }

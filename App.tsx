@@ -106,7 +106,7 @@ const statusLabel: Record<string, string> = {
   generating: "この一日が、一曲になる",
   ready: "曲ができました",
   failed: "処理を続けられませんでした",
-  needs_reconciliation: "曲の受付を確認できませんでした",
+  needs_reconciliation: "処理結果の確認が必要です",
 };
 
 function LibraryRoute({
@@ -232,7 +232,11 @@ function RecordingRoute({
             ? "音声を保存中"
             : draft.status === "local"
               ? undefined
-              : statusLabel[draft.status]
+              : draft.status === "needs_reconciliation" &&
+                  !draft.lyrics &&
+                  draft.transcriptRecoveryAvailable
+                ? "文字起こしを復旧できます"
+                : statusLabel[draft.status]
       }
       onToggle={(title) => {
         void app.toggleRecording(draftId, title);
@@ -634,7 +638,9 @@ function SessionApp({
           {!!draft?.error && (
             <Text accessibilityLiveRegion="polite" style={extra.errorCopy}>
               {draft.error === "provider_outcome_unconfirmed" && !draft.lyrics
-                ? "文字起こしの結果を確認できませんでした。元音声は保存されています。保存済みの応答を確認してください。"
+                ? draft.transcriptRecoveryAvailable
+                  ? "文字起こしを復旧できます。元音声と保存済みの応答から復旧し、内容を確認してから歌詞を作ります。"
+                  : "文字起こしの結果を確認できませんでした。元音声は保存されています。時間をおいて記録を開き直してください。"
                 : explainError(draft.error)}
             </Text>
           )}
@@ -775,7 +781,11 @@ function SessionApp({
               {draft.status === "needs_audio_review" ? (
                 <>
                   <Text style={styles.story}>
-                    認識できていない発話が残っている可能性があります。原音と全文を確認してください。内容を使って続けると、保存済みの文字起こしから歌詞を作ります。
+                    {draft.utterances.some(
+                      (utterance) => utterance.speaker === "unknown",
+                    )
+                      ? "話者ラベルのない発話があります。登録した声と照合できた発話は名前で表示します。原音と全文を確認してください。確認した内容から歌詞を作ります。"
+                      : "認識できていない発話が残っている可能性があります。原音と全文を確認してください。確認した内容から歌詞を作ります。"}
                   </Text>
                   <ScrollView style={{ maxHeight: 310 }}>
                     {draft.clips.map((clip) => (
@@ -882,13 +892,13 @@ function SessionApp({
                     ))}
                   </ScrollView>
                   <ActionButton
-                    label="認識済み内容で続ける"
+                    label="この内容で歌詞を作る"
                     onPress={() => void app.approveTranscript(draft.id)}
                     disabled={app.busy || !draft.jobId}
                     style={styles.primary}
                     testID="approve-transcript"
                   >
-                    <Text style={styles.primaryText}>認識済み内容で続ける</Text>
+                    <Text style={styles.primaryText}>この内容で歌詞を作る</Text>
                     <Feather
                       name="chevron-right"
                       size={20}
@@ -902,14 +912,14 @@ function SessionApp({
                   {draft.status === "needs_reconciliation" &&
                     draft.transcriptRecoveryAvailable && (
                       <ActionButton
-                        label="保存済みの文字起こしを確認"
+                        label="保存済みの文字起こしを復旧"
                         onPress={() => void app.recoverTranscript(draft.id)}
                         disabled={app.busy || !draft.jobId}
                         style={styles.primary}
                         testID="recover-transcript"
                       >
                         <Text style={styles.primaryText}>
-                          保存済みの文字起こしを確認
+                          保存済みの文字起こしを復旧
                         </Text>
                       </ActionButton>
                     )}

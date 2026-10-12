@@ -315,6 +315,77 @@ test("saved transcription recovery retains the full response without a claim or 
   }
 });
 
+test("saved transcription recovery keeps text when the response has no speaker labels", async () => {
+  const events = [];
+  const raw = {
+    status: "completed",
+    usage: { total_input_tokens: 1000, total_output_tokens: 100 },
+    steps: [
+      {
+        type: "model_output",
+        content: [
+          {
+            type: "text",
+            text: "駅へ向かおう。",
+            annotations: [
+              {
+                type: "word_info",
+                text: "駅へ向かおう。",
+                start_offset: "1.000s",
+                end_offset: "2.000s",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  let cached;
+  const storage = createServer(async (request, response) => {
+    events.push(request.method);
+    const buffers = [];
+    for await (const part of request) buffers.push(part);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    if (request.method === "GET") response.end(JSON.stringify(raw));
+    else {
+      cached = JSON.parse(Buffer.concat(buffers));
+      response.end("{}");
+    }
+  });
+  await new Promise((resolve) => storage.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${storage.address().port}`;
+  const base = `${origin}/internal/attempts/stt-job`;
+  try {
+    const result = await recoverTranscription(
+      {
+        rawSourceUrl: `${base}/raw?signature=get`,
+        resultUrl: `${base}/result?signature=put`,
+        clipId: "clip",
+        offsetMs: 0,
+        durationMs: 90000,
+      },
+      { origin },
+    );
+
+    assert.deepEqual(events, ["GET", "PUT"]);
+    assert.deepEqual(result.value, [
+      {
+        id: "clip:u:1000:1",
+        clipId: "clip",
+        startMs: 1000,
+        endMs: 2000,
+        speaker: "unknown",
+        text: "駅へ向かおう。",
+      },
+    ]);
+    assert.equal(cached.value[0].speaker, "unknown");
+    assert.equal(cached.version, 1);
+    assert.ok(result.costUsd > 0);
+  } finally {
+    await new Promise((resolve) => storage.close(resolve));
+  }
+});
+
 test("reading results are claimed once and stored without rewriting lyrics or uploading a song", async () => {
   const events = [];
   let claims = 0;

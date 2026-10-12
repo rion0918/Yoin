@@ -412,13 +412,15 @@ export function parseTranscription(
       const start = durationMs(word.start_offset);
       const end = durationMs(word.end_offset);
       const speaker =
-        typeof word.speaker === "string" && /^spk:[0-7]$/.test(word.speaker)
-          ? `spk_${Number(word.speaker.slice(4)) + 1}`
-          : word.speaker;
+        word.speaker === undefined
+          ? "unknown"
+          : typeof word.speaker === "string" && /^spk:[0-7]$/.test(word.speaker)
+            ? `spk_${Number(word.speaker.slice(4)) + 1}`
+            : word.speaker;
       valid(
         nonempty(word.text) &&
           typeof speaker === "string" &&
-          /^spk_[1-8]$/.test(speaker),
+          (speaker === "unknown" || /^spk_[1-8]$/.test(speaker)),
         stage,
         "invalid_response",
         raw,

@@ -112,10 +112,20 @@ function subtractIntervals(start, end, excluded) {
   return pieces;
 }
 
-export function speakerIntervals(utterances, offsetMs, durationMs) {
+export function speakerIntervals(
+  utterances,
+  offsetMs,
+  durationMs,
+  { includeUnknown = false } = {},
+) {
   const bySpeaker = new Map();
   for (const utterance of utterances) {
     if (!utterance || typeof utterance.speaker !== "string") continue;
+    if (
+      !/^spk_[1-8]$/.test(utterance.speaker) &&
+      !(includeUnknown && utterance.speaker === "unknown")
+    )
+      continue;
     if (!bySpeaker.has(utterance.speaker)) bySpeaker.set(utterance.speaker, []);
     if (
       !Number.isSafeInteger(utterance.startMs) ||
@@ -128,12 +138,17 @@ export function speakerIntervals(utterances, offsetMs, durationMs) {
     [...bySpeaker.keys()].map((speaker) => [speaker, []]),
   );
   for (const utterance of utterances) {
+    if (!intervals.has(utterance.speaker)) continue;
     const start = Math.max(0, utterance.startMs - offsetMs);
     const end = Math.min(durationMs, utterance.endMs - offsetMs);
     if (end <= start) continue;
     const competing = [];
     for (const other of utterances) {
-      if (other.speaker === utterance.speaker || other.endMs <= other.startMs)
+      if (
+        other.speaker === utterance.speaker ||
+        !intervals.has(other.speaker) ||
+        other.endMs <= other.startMs
+      )
         continue;
       const otherStart = Math.max(0, other.startMs - offsetMs);
       const otherEnd = Math.min(durationMs, other.endMs - offsetMs);
@@ -377,6 +392,7 @@ export async function identifySpeakers(body, options) {
     body.utterances,
     body.offsetMs,
     body.durationMs,
+    { includeUnknown: body.profiles.length === 1 },
   );
   const directory = await mkdtemp(join(tmpdir(), "yoin-speaker-identify-"));
   try {

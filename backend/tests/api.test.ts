@@ -1,10 +1,12 @@
 import { env, reset } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GOOGLE_MODELS } from "../../pipeline/google.ts";
 import { handleRequest } from "../api.ts";
 import initialSchema from "../migrations/0001_initial.sql?raw";
 import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
 import speakerSchema from "../migrations/0003_speaker_profiles.sql?raw";
 import draftSpeakersSchema from "../migrations/0005_draft_speaker_profiles.sql?raw";
+import * as providerAdapters from "../providers.ts";
 import { sha256 } from "../security.ts";
 import { applyAccountSchema } from "./schema.ts";
 
@@ -725,3 +727,249 @@ async function seedReview(block: {
     .bind(draftId)
     .run();
 }
+
+describe("saved transcription recovery", () => {
+  async function seedSavedResponse(withRaw = true) {
+    const key = "processed/private-tester/recover-job/recover-clip/0.m4a";
+    await bindings.AUDIO.put(
+      "originals/private-tester/recover-clip",
+      new Uint8Array([1, 2, 3]),
+    );
+    await bindings.AUDIO.put(key, new Uint8Array([4, 5, 6]));
+    const source = await bindings.AUDIO.head(
+      "originals/private-tester/recover-clip",
+    );
+    const chunk = await bindings.AUDIO.head(key);
+    const inspection = {
+      durationMs: 90000,
+      sizeBytes: 3,
+      sourceEtag: source?.etag,
+      transformVersion: 1,
+      chunks: [{ key, offsetMs: 0, durationMs: 90000, mimeType: "audio/mp4" }],
+    };
+    const fingerprint = await sha256(
+      JSON.stringify({
+        sourceEtag: inspection.sourceEtag,
+        sourceSizeBytes: 3,
+        transformVersion: 1,
+        chunkEtag: chunk?.etag,
+        chunkSizeBytes: chunk?.size,
+        offsetMs: 0,
+        durationMs: 90000,
+        model: GOOGLE_MODELS.transcribe,
+        language: "ja-JP",
+        timestampGranularities: ["WORD"],
+      }),
+    );
+    const attemptId = `stt-recover-clip-0-${fingerprint.slice(0, 24)}`;
+    await bindings.DB.prepare(
+      "INSERT INTO drafts (id, owner_id, title, created_at, status, job_id) VALUES (?, 'private-tester', '公開音声', '2026-10-12', 'needs_reconciliation', 'recover-job')",
+    )
+      .bind(draftId)
+      .run();
+    await bindings.DB.prepare(
+      "INSERT INTO clips (id, draft_id, owner_id, mime_type, size_bytes, duration_ms, timezone, object_key, status, inspection_json) VALUES ('recover-clip', ?, 'private-tester', 'audio/mp4', 3, 90000, 'Asia/Tokyo', 'originals/private-tester/recover-clip', 'uploaded', ?)",
+    )
+      .bind(draftId, JSON.stringify(inspection))
+      .run();
+    await bindings.DB.prepare(
+      "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, status, stage, created_at) VALUES ('recover-job', 'private-tester', ?, 'prepare', 'recover-key', 'input', 'needs_reconciliation', 'stopped', '2026-10-12')",
+    )
+      .bind(draftId)
+      .run();
+    await bindings.DB.prepare(
+      "INSERT INTO provider_attempts (id, job_id, owner_id, stage, status, amount_micros, runtime_claimed_at, created_at) VALUES (?, 'recover-job', 'private-tester', 'transcribe', 'needs_reconciliation', 600000, '2026-10-12', '2026-10-12')",
+    )
+      .bind(attemptId)
+      .run();
+    if (withRaw)
+      await bindings.AUDIO.put(
+        `results/private-tester/${attemptId}.raw.json`,
+        JSON.stringify({ status: "completed" }),
+      );
+    const restart = vi.fn(async () => {});
+    bindings.PREPARE = {
+      get: async () => ({ restart }),
+    } as unknown as Env["PREPARE"];
+    const recover = vi
+      .spyOn(providerAdapters, "recoverTranscription")
+      .mockImplementation(async (runtime, attempt, input) => {
+        const output = {
+          value: [
+            {
+              id: "recover-clip:unverified:0",
+              clipId: input.clipId,
+              startMs: 0,
+              endMs: input.durationMs,
+              speaker: "話者未確認",
+              text: "全文",
+              timingIssues: [
+                {
+                  text: "へ",
+                  startOffset: "3.900s",
+                  endOffset: "1.100s",
+                  chunkOffsetMs: 0,
+                },
+              ],
+            },
+          ],
+          costUsd: 0.008036,
+          usage: {},
+        };
+        await runtime.AUDIO.put(
+          `results/private-tester/${attempt}.json`,
+          JSON.stringify({ version: 1, ...output }),
+        );
+        return output;
+      });
+    return { attemptId, recover, restart };
+  }
+  it("reuses the original claimed attempt and reservation before restarting preparation", async () => {
+    const { attemptId, recover, restart } = await seedSavedResponse();
+    const result = await request(
+      `/drafts/${draftId}/recover-transcription`,
+      "POST",
+    );
+    expect(result.status).toBe(202);
+    expect(recover).toHaveBeenCalledWith(bindings, attemptId, {
+      clipId: "recover-clip",
+      offsetMs: 0,
+      durationMs: 90000,
+    });
+    expect(restart).toHaveBeenCalledOnce();
+    expect(
+      await bindings.DB.prepare(
+        "SELECT status, amount_micros FROM provider_attempts WHERE id = ?",
+      )
+        .bind(attemptId)
+        .first(),
+    ).toMatchObject({ status: "needs_reconciliation", amount_micros: 600000 });
+    expect(
+      await bindings.DB.prepare(
+        "SELECT COUNT(*) AS count FROM provider_attempts",
+      ).first(),
+    ).toMatchObject({ count: 1 });
+    expect(
+      await bindings.DB.prepare(
+        "SELECT status FROM jobs WHERE id = 'recover-job'",
+      ).first(),
+    ).toMatchObject({ status: "queued" });
+  });
+
+  it("offers recovery only for a claimed transcription with a saved response", async () => {
+    const { attemptId } = await seedSavedResponse();
+    expect(await (await request(`/drafts/${draftId}`)).json()).toMatchObject({
+      transcriptRecoveryAvailable: true,
+    });
+    await bindings.DB.prepare(
+      "UPDATE provider_attempts SET stage = 'lyrics' WHERE id = ?",
+    )
+      .bind(attemptId)
+      .run();
+    expect(await (await request(`/drafts/${draftId}`)).json()).toMatchObject({
+      transcriptRecoveryAvailable: false,
+    });
+    await bindings.DB.prepare(
+      "UPDATE provider_attempts SET stage = 'transcribe' WHERE id = ?",
+    )
+      .bind(attemptId)
+      .run();
+    await bindings.AUDIO.delete(`results/private-tester/${attemptId}.raw.json`);
+    expect(await (await request(`/drafts/${draftId}`)).json()).toMatchObject({
+      transcriptRecoveryAvailable: false,
+    });
+  });
+  it("rejects another account's draft without reading or recovering its response", async () => {
+    const { recover, restart } = await seedSavedResponse();
+    const alice = await firebaseToken("alice");
+    expect(
+      (
+        await request(
+          `/drafts/${draftId}/recover-transcription`,
+          "POST",
+          undefined,
+          alice,
+        )
+      ).status,
+    ).toBe(404);
+    expect(recover).not.toHaveBeenCalled();
+    expect(restart).not.toHaveBeenCalled();
+  });
+  it("reuses a recovered result after a failed workflow restart", async () => {
+    const { recover, restart } = await seedSavedResponse();
+    restart.mockRejectedValueOnce(new Error("temporary dispatch failure"));
+    expect(
+      (await request(`/drafts/${draftId}/recover-transcription`, "POST"))
+        .status,
+    ).toBe(500);
+    expect(
+      await bindings.DB.prepare(
+        "SELECT status FROM jobs WHERE id = 'recover-job'",
+      ).first(),
+    ).toMatchObject({ status: "needs_reconciliation" });
+    expect(
+      (await request(`/drafts/${draftId}/recover-transcription`, "POST"))
+        .status,
+    ).toBe(202);
+    expect(recover).toHaveBeenCalledOnce();
+    expect(restart).toHaveBeenCalledTimes(2);
+  });
+  it("does not restart if account deletion begins during recovery", async () => {
+    const { recover, restart } = await seedSavedResponse();
+    recover.mockImplementationOnce(async () => {
+      await bindings.DB.prepare(
+        "INSERT INTO accounts (uid, status) VALUES ('private-tester', 'deleting')",
+      ).run();
+      return { value: [], costUsd: 0.008036, usage: {} };
+    });
+    expect(
+      (await request(`/drafts/${draftId}/recover-transcription`, "POST"))
+        .status,
+    ).toBe(403);
+    expect(restart).not.toHaveBeenCalled();
+    expect(
+      await bindings.DB.prepare(
+        "SELECT amount_micros FROM budget_ledger",
+      ).first(),
+    ).toMatchObject({ amount_micros: 600000 });
+  });
+  it("keeps the reservation when the saved response is missing", async () => {
+    const { recover, restart } = await seedSavedResponse(false);
+    expect(
+      (await request(`/drafts/${draftId}/recover-transcription`, "POST"))
+        .status,
+    ).toBe(409);
+    expect(recover).not.toHaveBeenCalled();
+    expect(restart).not.toHaveBeenCalled();
+    expect(
+      await bindings.DB.prepare(
+        "SELECT status, amount_micros FROM budget_ledger",
+      ).first(),
+    ).toMatchObject({ status: "needs_reconciliation", amount_micros: 600000 });
+  });
+  it("rejects recovery after the original source has changed", async () => {
+    const { recover, restart } = await seedSavedResponse();
+    await bindings.AUDIO.put(
+      "originals/private-tester/recover-clip",
+      new Uint8Array([9, 9, 9]),
+    );
+    expect(
+      (await request(`/drafts/${draftId}/recover-transcription`, "POST"))
+        .status,
+    ).toBe(409);
+    expect(recover).not.toHaveBeenCalled();
+    expect(restart).not.toHaveBeenCalled();
+  });
+  it("does not restart a preparation that another request is already recovering", async () => {
+    const { recover, restart } = await seedSavedResponse();
+    await bindings.DB.prepare(
+      "UPDATE jobs SET status = 'running', stage = 'recovering_transcription' WHERE id = 'recover-job'",
+    ).run();
+    expect(
+      (await request(`/drafts/${draftId}/recover-transcription`, "POST"))
+        .status,
+    ).toBe(409);
+    expect(recover).not.toHaveBeenCalled();
+    expect(restart).not.toHaveBeenCalled();
+  });
+});

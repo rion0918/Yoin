@@ -26,7 +26,12 @@ export async function transcribeAudio(
   env: Env,
   job: JobRow,
   attemptId: string,
-  input: { clipId: string; index: number; offsetMs: number },
+  input: {
+    clipId: string;
+    index: number;
+    offsetMs: number;
+    durationMs: number;
+  },
 ) {
   const source = await signedUrl(
     env,
@@ -43,6 +48,7 @@ export async function transcribeAudio(
       sourceUrl: source.url,
       clipId: input.clipId,
       offsetMs: input.offsetMs,
+      durationMs: input.durationMs,
     },
     attemptId,
   );
@@ -86,6 +92,23 @@ export async function generateMusic(
       songUploadUrl: song.url,
       ...input,
     },
+    attemptId,
+  );
+}
+
+export async function recoverTranscription(
+  env: Env,
+  attemptId: string,
+  input: { clipId: string; offsetMs: number; durationMs: number },
+) {
+  const origin = env.MEDIA_API_URL ?? env.PUBLIC_API_URL;
+  const base = `/internal/attempts/${attemptId}`;
+  const raw = await signedUrl(env, `${base}/raw`, "GET", 3600, origin);
+  const result = await signedUrl(env, `${base}/result`, "PUT", 3600, origin);
+  return callMedia<Output<Utterance[]>>(
+    env,
+    "/recover-transcription",
+    { rawSourceUrl: raw.url, resultUrl: result.url, ...input },
     attemptId,
   );
 }

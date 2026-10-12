@@ -49,6 +49,7 @@ import { LyricReview } from "./src/components/LyricReview";
 import { NativeSheet } from "./src/components/NativeSheet";
 import { SongSourceContent } from "./src/components/SongSourceContent";
 import { SpeakerEnrollmentSheet } from "./src/components/SpeakerEnrollmentSheet";
+import { TranscriptTimingNotice } from "./src/components/TranscriptTimingNotice";
 import { figmaColors } from "./src/design/figma";
 import { colors, radii } from "./src/design/tokens";
 import { formatTime } from "./src/domain/session";
@@ -623,7 +624,9 @@ function SessionApp({
           )}
           {!!draft?.error && (
             <Text accessibilityLiveRegion="polite" style={extra.errorCopy}>
-              {explainError(draft.error)}
+              {draft.error === "provider_outcome_unconfirmed" && !draft.lyrics
+                ? "文字起こしの結果を確認できませんでした。元音声は保存されています。保存済みの応答を確認してください。"
+                : explainError(draft.error)}
             </Text>
           )}
           {overlayKind === "settings" && (
@@ -744,6 +747,9 @@ function SessionApp({
                   <ScrollView style={{ maxHeight: 310 }}>
                     {draft.clips.map((clip) => (
                       <View key={clip.id} style={{ marginBottom: 18 }}>
+                        <TranscriptTimingNotice
+                          issues={clip.processing?.timingIssues}
+                        />
                         <Text style={styles.summary}>
                           処理した音声{" "}
                           {formatTime(
@@ -754,14 +760,19 @@ function SessionApp({
                           {formatTime(
                             (clip.processing?.speechActivityMs ?? 0) / 1000,
                           )}
-                          {" · "}認識した時間{" "}
+                          {" · "}
+                          {clip.processing?.timingIssues?.length
+                            ? "時刻を確認できた範囲"
+                            : "認識した時間"}{" "}
                           {formatTime(
                             (clip.processing?.transcribedMs ?? 0) / 1000,
                           )}
                         </Text>
                         {clip.processing?.unrecognizedActivityMs ? (
                           <Text style={styles.summary}>
-                            未認識の有音区間{" "}
+                            {clip.processing?.timingIssues?.length
+                              ? "認識時刻が未確認の有音区間"
+                              : "未認識の有音区間"}{" "}
                             {formatTime(
                               clip.processing.unrecognizedActivityMs / 1000,
                             )}
@@ -825,7 +836,9 @@ function SessionApp({
                             fontSize: 12,
                           }}
                         >
-                          {formatTime(utterance.startMs / 1000)}
+                          {utterance.timingIssues?.length
+                            ? "区間全体"
+                            : formatTime(utterance.startMs / 1000)}
                         </Text>
                         <Text
                           style={[styles.story, { flex: 1, marginBottom: 0 }]}
@@ -851,7 +864,23 @@ function SessionApp({
                   </ActionButton>
                 </>
               ) : (
-                <GenerationProgress draft={draft} onClose={close} />
+                <>
+                  <GenerationProgress draft={draft} onClose={close} />
+                  {draft.status === "needs_reconciliation" &&
+                    draft.transcriptRecoveryAvailable && (
+                      <ActionButton
+                        label="保存済みの文字起こしを確認"
+                        onPress={() => void app.recoverTranscript(draft.id)}
+                        disabled={app.busy || !draft.jobId}
+                        style={styles.primary}
+                        testID="recover-transcript"
+                      >
+                        <Text style={styles.primaryText}>
+                          保存済みの文字起こしを確認
+                        </Text>
+                      </ActionButton>
+                    )}
+                </>
               )}
               {draft.status === "needs_audio_review" && (
                 <ActionButton
@@ -916,6 +945,11 @@ function SessionApp({
                     </View>
                   );
                 })}
+                <TranscriptTimingNotice
+                  issues={sourceUtterances.flatMap(
+                    (utterance) => utterance.timingIssues ?? [],
+                  )}
+                />
                 {sourceUtterances.length ? (
                   sourceUtterances.map((utterance) => (
                     <View

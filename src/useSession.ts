@@ -1157,6 +1157,23 @@ export function useSession(identity: SessionIdentity) {
       await audioRef.current.play(uri, startMs, endMs);
     });
   }
+  async function recoverTranscript(draftId: string) {
+    return run(async () => {
+      const draft = getDraft(draftId);
+      if (!draft.jobId) throw new Error("確認する文字起こしが見つかりません。");
+      const api = createApi(connectionRef.current);
+      const job = await api.job(draft.jobId);
+      if (job.kind !== "prepare" || job.status !== "needs_reconciliation")
+        throw new Error("確認する文字起こしが見つかりません。");
+      await api.recoverTranscript(draftId);
+      await updateDraft(draftId, (value) => ({
+        ...value,
+        status: "preparing",
+        error: null,
+      }));
+      return true;
+    });
+  }
   async function approveTranscript(draftId: string) {
     return run(async () => {
       const draft = getDraft(draftId);
@@ -1236,6 +1253,7 @@ export function useSession(identity: SessionIdentity) {
     setPlace,
     prepare,
     approveTranscript,
+    recoverTranscript,
     generate,
     refresh,
     openSong,

@@ -2,6 +2,7 @@ import {
   createLyrics,
   GoogleProviderError,
   generateMusic,
+  parseTranscription,
   transcribeAudio,
 } from "../../pipeline/google.ts";
 
@@ -129,6 +130,7 @@ export async function runProvider(
         mimeType: "audio/mp4",
         clipId: body.clipId,
         offsetMs: body.offsetMs,
+        durationMs: body.durationMs,
       });
       value = result.utterances;
     } else if (stage === "lyrics") {
@@ -180,5 +182,55 @@ export async function runProvider(
   if (cached.byteLength > 4 * 1024 * 1024)
     throw new Error("runtime_result_too_large");
   await upload(resultUrl, cached, "application/json");
+  return output;
+}
+
+export async function recoverTranscription(body, { origin }) {
+  const rawSource = signedTarget(
+    body.rawSourceUrl,
+    origin,
+    /^\/internal\/attempts\/[a-zA-Z0-9_-]{1,200}\/raw$/,
+  );
+  const resultTarget = signedTarget(
+    body.resultUrl,
+    origin,
+    /^\/internal\/attempts\/[a-zA-Z0-9_-]{1,200}\/result$/,
+  );
+  if (rawSource.pathname.slice(0, -4) !== resultTarget.pathname.slice(0, -7))
+    throw new Error("runtime_attempt_mismatch");
+  const response = await fetch(rawSource, {
+    redirect: "error",
+    signal: AbortSignal.timeout(180_000),
+  });
+  if (!response.ok || !response.body)
+    throw new Error("saved_transcription_missing");
+  const parts = [];
+  let size = 0;
+  for await (const part of response.body) {
+    size += part.byteLength;
+    if (size > 100 * 1024 * 1024)
+      throw new Error("runtime_raw_result_too_large");
+    parts.push(part);
+  }
+  const raw = JSON.parse(Buffer.concat(parts).toString("utf8"));
+  const result = parseTranscription(raw, {
+    clipId: body.clipId,
+    offsetMs: body.offsetMs,
+    durationMs: body.durationMs,
+  });
+  const attemptId = rawSource.pathname.split("/").at(-2);
+  const output = {
+    value: result.utterances,
+    costUsd: result.costUsd,
+    usage: {
+      model: result.usage?.model,
+      costSource: result.usage?.costSource,
+      rawAttemptId: attemptId,
+    },
+  };
+  const cached = Buffer.from(JSON.stringify({ version: 1, ...output }));
+  if (cached.byteLength > 4 * 1024 * 1024)
+    throw new Error("runtime_result_too_large");
+  await upload(resultTarget, cached, "application/json");
   return output;
 }

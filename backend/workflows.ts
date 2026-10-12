@@ -3,7 +3,6 @@ import {
   type WorkflowEvent,
   type WorkflowStep,
 } from "cloudflare:workers";
-import { GOOGLE_MODELS } from "../pipeline/google.ts";
 import {
   type LyricBlock,
   MAX_AUDIO_MS,
@@ -25,6 +24,7 @@ import { paidCall, RESERVATION_USD } from "./paid.ts";
 import type { SavedMusic } from "./providers.ts";
 import { createLyrics, generateMusic, transcribeAudio } from "./providers.ts";
 import { sha256 } from "./security.ts";
+import { transcriptionAttemptId } from "./transcription.ts";
 import {
   type Env,
   HttpError,
@@ -172,23 +172,12 @@ export async function prepareDraft(
     let completedChunks = 0;
     for (const { clip, inspection } of inspected) {
       for (const [index, chunk] of inspection.chunks.entries()) {
-        const chunkObject = await env.AUDIO.head(chunk.key);
-        if (!chunkObject) throw new HttpError(422, "media_chunk_missing");
-        const inputFingerprint = await sha256(
-          JSON.stringify({
-            sourceEtag: inspection.sourceEtag,
-            sourceSizeBytes: clip.size_bytes,
-            transformVersion: inspection.transformVersion,
-            chunkEtag: chunkObject.etag,
-            chunkSizeBytes: chunkObject.size,
-            offsetMs: chunk.offsetMs,
-            durationMs: chunk.durationMs,
-            model: GOOGLE_MODELS.transcribe,
-            language: "ja-JP",
-            timestampGranularities: ["WORD"],
-          }),
+        const attemptId = await transcriptionAttemptId(
+          env,
+          clip,
+          inspection,
+          chunk,
         );
-        const attemptId = `stt-${clip.id}-${chunk.offsetMs}-${inputFingerprint.slice(0, 24)}`;
         await step.do(
           `transcribe-${clip.id}-${chunk.offsetMs}`,
           paidStep,
@@ -204,6 +193,10 @@ export async function prepareDraft(
                   clipId: clip.id,
                   index,
                   offsetMs: chunk.offsetMs,
+                  durationMs: Math.min(
+                    chunk.durationMs,
+                    inspection.durationMs - chunk.offsetMs,
+                  ),
                 });
                 const values = validateUtterances(
                   result.value,
@@ -236,7 +229,7 @@ export async function prepareDraft(
               throw new ReconciliationError();
             if (transcript.length)
               await env.DB.prepare(
-                "INSERT OR IGNORE INTO utterances (id, clip_id, start_ms, end_ms, speaker, text) SELECT json_extract(value, '$.id'), json_extract(value, '$.clipId'), json_extract(value, '$.startMs'), json_extract(value, '$.endMs'), json_extract(value, '$.speaker'), json_extract(value, '$.text') FROM json_each(?)",
+                "INSERT OR IGNORE INTO utterances (id, clip_id, start_ms, end_ms, speaker, text, timing_issues_json) SELECT json_extract(value, '$.id'), json_extract(value, '$.clipId'), json_extract(value, '$.startMs'), json_extract(value, '$.endMs'), json_extract(value, '$.speaker'), json_extract(value, '$.text'), json_extract(value, '$.timingIssues') FROM json_each(?)",
               )
                 .bind(JSON.stringify(transcript))
                 .run();
@@ -265,6 +258,7 @@ export async function prepareDraft(
         for (const [index, chunk] of inspection.chunks.entries()) {
           const candidates = source.filter(
             (item) =>
+              !item.timingIssues?.length &&
               item.clipId === clip.id &&
               item.startMs >= chunk.offsetMs &&
               item.endMs <= chunk.offsetMs + chunk.durationMs,
@@ -318,10 +312,15 @@ export async function prepareDraft(
       const hasActivityInspection = inspection.chunks.every((chunk) =>
         Array.isArray(chunk.activityRanges),
       );
+      const timingIssues = source
+        .filter((item) => item.clipId === clip.id)
+        .flatMap((item) => item.timingIssues ?? []);
       const coverage = analyzeTranscriptCoverage({
         durationMs: inspection.durationMs,
         activityRanges,
-        utterances: source.filter((item) => item.clipId === clip.id),
+        utterances: source.filter(
+          (item) => item.clipId === clip.id && !item.timingIssues?.length,
+        ),
       });
       const durations = [
         clip.capture_duration_ms,
@@ -337,7 +336,8 @@ export async function prepareDraft(
               Math.max(1000, Math.max(duration, other) * 0.01),
           ),
       );
-      const requiresReview = coverage.needsReview || durationMismatch;
+      const requiresReview =
+        coverage.needsReview || durationMismatch || timingIssues.length > 0;
       needsAudioReview ||= requiresReview;
       const summary = {
         status: requiresReview
@@ -355,6 +355,7 @@ export async function prepareDraft(
         expectedChunks: inspection.chunks.length,
         completedChunks: inspection.chunks.length,
         unrecognizedRanges: coverage.unrecognizedRanges,
+        ...(timingIssues.length ? { timingIssues } : {}),
       } as const;
       await env.DB.prepare(
         "UPDATE clips SET processing_json = ? WHERE id = ? AND owner_id = ?",

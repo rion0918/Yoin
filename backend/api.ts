@@ -39,6 +39,7 @@ import {
   registeredSpeakers,
   serveSpeakerSample,
 } from "./speakers.ts";
+import { recoverDraftTranscript } from "./transcription.ts";
 import { type Env, HttpError } from "./types.ts";
 import {
   clipMetadata,
@@ -707,7 +708,11 @@ export async function handleRequest(request: Request, env: Env) {
       /^\/internal\/attempts\/([a-zA-Z0-9_-]{1,200})\/(claim|result|raw|song)$/.exec(
         path,
       );
-    if (runtime && request.method === (runtime[2] === "claim" ? "POST" : "PUT"))
+    if (
+      runtime &&
+      (request.method === (runtime[2] === "claim" ? "POST" : "PUT") ||
+        (runtime[2] === "raw" && request.method === "GET"))
+    )
       return await runtimeCallback(request, env, runtime[1], runtime[2]);
     const media = /^\/media\/([a-zA-Z0-9_-]+)$/.exec(path);
     if (media && ["GET", "HEAD"].includes(request.method))
@@ -744,7 +749,7 @@ export async function handleRequest(request: Request, env: Env) {
     if (path === "/drafts" && request.method === "POST")
       return await createDraft(request, env, owner);
     const draft =
-      /^\/drafts\/([a-zA-Z0-9_-]+)(?:\/(clips|prepare|lyrics|generate|transcript-review))?$/.exec(
+      /^\/drafts\/([a-zA-Z0-9_-]+)(?:\/(clips|prepare|lyrics|generate|transcript-review|recover-transcription))?$/.exec(
         path,
       );
     if (draft) {
@@ -760,6 +765,8 @@ export async function handleRequest(request: Request, env: Env) {
         return await reviseLyrics(request, env, owner, draftId);
       if (draft[2] === "generate" && request.method === "POST")
         return await generate(request, env, owner, draftId);
+      if (draft[2] === "recover-transcription" && request.method === "POST")
+        return await recoverDraftTranscript(env, owner, draftId);
       if (draft[2] === "transcript-review" && request.method === "POST")
         return await reviewTranscript(request, env, owner, draftId);
     }

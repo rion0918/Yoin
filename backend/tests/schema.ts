@@ -3,6 +3,8 @@ import recordingLocationSchema from "../migrations/0006_recording_locations.sql?
 import audioProcessingSchema from "../migrations/0007_audio_processing_review.sql?raw";
 import songTitleSchema from "../migrations/0008_song_title.sql?raw";
 
+import timingReviewSchema from "../migrations/0009_transcript_timing_review.sql?raw";
+
 export async function applyAccountSchema(db: D1Database) {
   const [tables, ...triggers] = accountSchema.split("CREATE TRIGGER ");
   const statements = [
@@ -22,6 +24,13 @@ export async function applyAccountSchema(db: D1Database) {
   );
   await db.batch(
     audioProcessingSchema
+      .split(";")
+      .map((sql) => sql.trim())
+      .filter(Boolean)
+      .map((sql) => db.prepare(sql)),
+  );
+  await db.batch(
+    timingReviewSchema
       .split(";")
       .map((sql) => sql.trim())
       .filter(Boolean)

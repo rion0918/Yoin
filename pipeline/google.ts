@@ -2,6 +2,7 @@ import {
   CHUNK_MS,
   type LyricBlock,
   MAX_AUDIO_BYTES,
+  type TranscriptTimingIssue,
   type Utterance,
 } from "../shared/contracts.ts";
 
@@ -38,9 +39,11 @@ export class GoogleProviderError extends Error {
     kind: ProviderErrorKind,
     status: number | null = null,
     response: unknown = null,
+    cause?: { networkCode: string },
   ) {
     super(
       `Google ${stage}: ${kind}${status === null ? "" : ` (HTTP ${status})`}. 自動再送は行いません。`,
+      cause ? { cause } : undefined,
     );
     this.name = "GoogleProviderError";
     this.stage = stage;
@@ -84,8 +87,30 @@ async function request(
       signal: AbortSignal.timeout(timeoutMs),
       redirect: "error",
     });
-  } catch {
-    throw new GoogleProviderError(stage, "unknown");
+  } catch (error) {
+    const code = object(object(error)?.cause)?.code;
+    const allowed = [
+      "UND_ERR_CONNECT_TIMEOUT",
+      "UND_ERR_HEADERS_TIMEOUT",
+      "UND_ERR_BODY_TIMEOUT",
+      "UND_ERR_SOCKET",
+      "ECONNRESET",
+      "ECONNREFUSED",
+      "ETIMEDOUT",
+      "ENOTFOUND",
+      "EAI_AGAIN",
+    ];
+    const networkCode =
+      typeof code === "string" && allowed.includes(code)
+        ? code
+        : error instanceof Error && error.name === "TimeoutError"
+          ? "TIMEOUT"
+          : error instanceof Error && error.name === "AbortError"
+            ? "ABORTED"
+            : "UNKNOWN_NETWORK_ERROR";
+    throw new GoogleProviderError(stage, "unknown", null, null, {
+      networkCode,
+    });
   }
   if (!response.ok) {
     let body: unknown = null;
@@ -286,6 +311,7 @@ export async function transcribeAudio(
     mimeType: string;
     clipId: string;
     offsetMs: number;
+    durationMs?: number;
   },
 ): Promise<{ utterances: Utterance[]; costUsd: number; usage: unknown }> {
   const stage = "transcribe";
@@ -338,7 +364,7 @@ export async function transcribeAudio(
 
 export function parseTranscription(
   value: unknown,
-  options: { clipId: string; offsetMs: number },
+  options: { clipId: string; offsetMs: number; durationMs?: number },
 ): { utterances: Utterance[]; costUsd: number; usage: unknown } {
   const stage = "transcribe";
   valid(
@@ -351,9 +377,19 @@ export function parseTranscription(
   const raw = object(value);
   valid(raw, stage, "invalid_response", value);
   valid(raw.status === "completed", stage, "unknown", raw);
+  const inspectedDurationMs = options.durationMs;
+  if (inspectedDurationMs !== undefined)
+    valid(
+      Number.isSafeInteger(inspectedDurationMs) &&
+        inspectedDurationMs > 0 &&
+        inspectedDurationMs <= MAX_TRANSCRIBE_CHUNK_MS,
+      stage,
+    );
+  const content = outputs(raw, stage);
+  const timingIssues: TranscriptTimingIssue[] = [];
   const words: { start: number; end: number; speaker: string; text: string }[] =
     [];
-  for (const block of outputs(raw, stage)) {
+  for (const block of content) {
     if (block.type !== "text") continue;
     if (!Array.isArray(block.annotations)) continue;
     for (const item of block.annotations) {
@@ -366,19 +402,65 @@ export function parseTranscription(
           ? `spk_${Number(word.speaker.slice(4)) + 1}`
           : word.speaker;
       valid(
-        start !== null &&
-          end !== null &&
-          end >= start &&
-          end <= MAX_TRANSCRIBE_CHUNK_MS &&
-          nonempty(word.text) &&
+        nonempty(word.text) &&
           typeof speaker === "string" &&
           /^spk_[1-8]$/.test(speaker),
         stage,
         "invalid_response",
         raw,
       );
+      const validTiming =
+        start !== null &&
+        end !== null &&
+        end >= start &&
+        end <= (inspectedDurationMs ?? MAX_TRANSCRIBE_CHUNK_MS);
+      if (!validTiming) {
+        valid(
+          inspectedDurationMs !== undefined,
+          stage,
+          "invalid_response",
+          raw,
+        );
+        timingIssues.push({
+          text: word.text,
+          startOffset:
+            typeof word.start_offset === "string" ? word.start_offset : null,
+          endOffset:
+            typeof word.end_offset === "string" ? word.end_offset : null,
+          chunkOffsetMs: options.offsetMs,
+        });
+        continue;
+      }
       words.push({ start, end, speaker, text: word.text });
     }
+  }
+  if (timingIssues.length) {
+    const text = content
+      .filter((block) => block.type === "text" && nonempty(block.text))
+      .map((block) => block.text)
+      .join("\n");
+    valid(
+      nonempty(text) && inspectedDurationMs !== undefined,
+      stage,
+      "invalid_response",
+      raw,
+    );
+    const { costUsd, costSource } = tokenCost(raw, stage);
+    return {
+      utterances: [
+        {
+          id: `${options.clipId}:unverified:${options.offsetMs}`,
+          clipId: options.clipId,
+          startMs: options.offsetMs,
+          endMs: options.offsetMs + inspectedDurationMs,
+          speaker: "話者未確認",
+          text,
+          timingIssues,
+        },
+      ],
+      costUsd,
+      usage: { model: GOOGLE_MODELS.transcribe, costSource, raw },
+    };
   }
   valid(words.length > 0, stage, "invalid_response", raw);
   words.sort((a, b) => a.start - b.start);
@@ -485,7 +567,11 @@ export async function createLyrics(
         80000,
     stage,
   );
-  const input = JSON.stringify({ utterances: options.utterances });
+  const input = JSON.stringify({
+    utterances: options.utterances.map(
+      ({ timingIssues: _timingIssues, ...utterance }) => utterance,
+    ),
+  });
   valid(input.length <= 300000, stage);
   const schema = {
     type: "object",

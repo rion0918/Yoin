@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 import { GoogleProviderError } from "../../pipeline/google.ts";
-import { runProvider } from "./providers.mjs";
+import { recoverTranscription, runProvider } from "./providers.mjs";
 import { createMediaServer } from "./server.mjs";
 
 test("failed diagnostic storage preserves the original provider error", async (t) => {
@@ -244,3 +244,73 @@ for (const stage of ["lyrics", "music"]) {
     }
   });
 }
+
+test("saved transcription recovery retains the full response without a claim or Google submission", async () => {
+  const events = [];
+  const raw = {
+    status: "completed",
+    usage: {
+      total_input_tokens: 1000,
+      total_output_tokens: 100,
+      total_thought_tokens: 10,
+    },
+    steps: [
+      {
+        type: "model_output",
+        content: [
+          {
+            type: "text",
+            text: "駅へ向かおう。全文を残そう。",
+            annotations: [
+              {
+                type: "word_info",
+                text: "へ",
+                speaker: "spk:0",
+                start_offset: "3.900s",
+                end_offset: "1.100s",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  let cached;
+  const storage = createServer(async (request, response) => {
+    events.push(
+      `${request.method} ${request.url.split("?")[0].split("/").at(-1)}`,
+    );
+    const buffers = [];
+    for await (const part of request) buffers.push(part);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    if (request.method === "GET") response.end(JSON.stringify(raw));
+    else {
+      cached = JSON.parse(Buffer.concat(buffers));
+      response.end("{}");
+    }
+  });
+  await new Promise((resolve) => storage.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${storage.address().port}`;
+  const base = `${origin}/internal/attempts/stt-job`;
+  try {
+    const result = await recoverTranscription(
+      {
+        rawSourceUrl: `${base}/raw?signature=get`,
+        resultUrl: `${base}/result?signature=put`,
+        clipId: "clip",
+        offsetMs: 0,
+        durationMs: 90000,
+      },
+      { origin },
+    );
+    assert.deepEqual(events, ["GET raw", "PUT result"]);
+    assert.equal(result.value[0].text, "駅へ向かおう。全文を残そう。");
+    assert.equal(result.value[0].speaker, "話者未確認");
+    assert.equal(result.value[0].timingIssues.length, 1);
+    assert.equal(cached.version, 1);
+    assert.equal(cached.usage.raw, undefined);
+    assert.equal(cached.costUsd, 0.00332);
+  } finally {
+    await new Promise((resolve) => storage.close(resolve));
+  }
+});

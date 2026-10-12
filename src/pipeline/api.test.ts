@@ -317,3 +317,26 @@ test("a paid POST rejected by authentication is not retried", async () => {
   );
   assert.equal(submissions, 1);
 });
+
+test("transcription recovery uses its authenticated endpoint without sending audio again", async () => {
+  const requests: { url: string; method: string; body: unknown }[] = [];
+  const api = createApi(
+    { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
+    async (url, options) => {
+      requests.push({
+        url: String(url),
+        method: options?.method ?? "GET",
+        body: options?.body,
+      });
+      return Response.json({ accepted: true }, { status: 202 });
+    },
+  );
+  await api.recoverTranscript("draft-a");
+  assert.deepEqual(requests, [
+    {
+      url: "https://test.invalid/drafts/draft-a/recover-transcription",
+      method: "POST",
+      body: undefined,
+    },
+  ]);
+});

@@ -30,10 +30,11 @@ ADR（Architecture Decision Record）は、1つの重要な判断について、
 | [0020: 一日の時間と出典の言葉をUIの共通表現にする](0020-memory-led-ui.md) | Proposed | 2026-10-07 |
 | [0021: 思い出の光の表紙と白い時間の帯を共通素材にする](0021-memory-gallery.md) | Proposed | 2026-10-08 |
 | [0022: 制作名と完成曲名を分ける](0022-separate-creation-and-song-titles.md) | Proposed | 2026-10-10 |
+| [0023: 不正な認識時刻は全文と元音声を保持して確認を待つ](0023-transcript-timing-review.md) | Accepted | 2026-10-12 |
 
 Accepted の記録が現在の採用済み判断です。Proposed は提案段階であり、採用済みとして扱いません。記録の追加・状態変更時には、この一覧も更新します。
 
-番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0023-<short-title>.md` です。
+番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0024-<short-title>.md` です。
 
 ## 作業前に読む
 

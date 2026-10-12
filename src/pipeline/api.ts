@@ -255,6 +255,13 @@ export function createApi(
         "POST",
         { idempotencyKey },
       ),
+    recoverTranscript: (draftId: string) =>
+      request<{ accepted: true }>(
+        `/drafts/${encodeURIComponent(draftId)}/recover-transcription`,
+        "POST",
+        undefined,
+        180000,
+      ),
     reviewTranscript: (
       draftId: string,
       jobId: string,

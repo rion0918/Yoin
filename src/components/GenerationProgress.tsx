@@ -29,7 +29,9 @@ export function GenerationProgress({
           : "あの日の会話を、\n言葉にしていく。";
   const description =
     draft.status === "needs_reconciliation"
-      ? "曲の受付を確認できませんでした。音声と歌詞は保存されています。この状態では作り直せません。時間をおいて状況を確認してください。"
+      ? draft.lyrics
+        ? "曲の受付を確認できませんでした。音声と歌詞は保存されています。この状態では作り直せません。時間をおいて状況を確認してください。"
+        : "文字起こしの結果を確認できませんでした。元音声は保存されています。保存済みの応答を確認できます。"
       : draft.status === "failed"
         ? "保存済みの内容は残っています。ホームからこの記録を開き、もう一度仕上げられます。"
         : draft.status === "generating"

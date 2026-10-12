@@ -13,7 +13,11 @@ import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { GoogleProviderError } from "../../pipeline/google.ts";
 import { activityRangesFromSilenceLog } from "./activity.mjs";
-import { ProviderNotSubmittedError, runProvider } from "./providers.mjs";
+import {
+  ProviderNotSubmittedError,
+  recoverTranscription,
+  runProvider,
+} from "./providers.mjs";
 
 const execFile = promisify(execFileCallback);
 const MAX_BYTES = 100 * 1024 * 1024;
@@ -237,6 +241,7 @@ export function createMediaServer({
         "/inspect",
         "/probe",
         "/transcribe",
+        "/recover-transcription",
         "/lyrics",
         "/music",
         "/enroll-speaker",
@@ -304,21 +309,23 @@ export function createMediaServer({
       const result =
         request.url === "/accounts/delete"
           ? await removeAccount()
-          : request.url === "/enroll-speaker"
-            ? await enrollSpeaker(body, { origin, ffmpeg, ffprobe })
-            : request.url === "/identify-speakers"
-              ? await identifySpeakers(body, { origin, ffmpeg, ffprobe })
-              : ["/inspect", "/probe"].includes(request.url)
-                ? await inspect(
-                    body,
-                    { origin, ffmpeg, ffprobe },
-                    request.url === "/inspect",
-                  )
-                : await runProvider(request.url.slice(1), body, {
-                    origin,
-                    apiKey,
-                    providerFetch,
-                  });
+          : request.url === "/recover-transcription"
+            ? await recoverTranscription(body, { origin })
+            : request.url === "/enroll-speaker"
+              ? await enrollSpeaker(body, { origin, ffmpeg, ffprobe })
+              : request.url === "/identify-speakers"
+                ? await identifySpeakers(body, { origin, ffmpeg, ffprobe })
+                : ["/inspect", "/probe"].includes(request.url)
+                  ? await inspect(
+                      body,
+                      { origin, ffmpeg, ffprobe },
+                      request.url === "/inspect",
+                    )
+                  : await runProvider(request.url.slice(1), body, {
+                      origin,
+                      apiKey,
+                      providerFetch,
+                    });
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify(result));
     } catch (error) {
@@ -349,6 +356,9 @@ export function createMediaServer({
                   kind: error.kind,
                   status: error.status,
                   hasResponse: error.response !== null,
+                  ...(error.cause?.networkCode
+                    ? { networkCode: error.cause.networkCode }
+                    : {}),
                 },
               }
             : {}),

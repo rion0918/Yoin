@@ -4,6 +4,7 @@ import { figmaColors as c, formatFigmaTime } from "../design/figma";
 import { sourcePlaybackRange } from "../pipeline/library";
 import { speakerLabel } from "../pipeline/speakers";
 import { ActionButton } from "./ActionButton";
+import { TranscriptTimingNotice } from "./TranscriptTimingNotice";
 
 type Props = {
   clips: AudioClip[];
@@ -38,10 +39,16 @@ export function SongSourceContent({
         return (
           <View key={clip.id} style={styles.clip}>
             <View style={styles.quote}>
+              <TranscriptTimingNotice
+                issues={lines.flatMap((line) => line.timingIssues ?? [])}
+              />
               {lines.map((line) => (
                 <View key={line.id} style={styles.line}>
                   <Text style={styles.speaker}>
-                    {speakerLabel(line)} / 出典付き発話
+                    {speakerLabel(line)} /{" "}
+                    {line.timingIssues?.length
+                      ? "音声区間全体が出典"
+                      : "出典付き発話"}
                   </Text>
                   <Text style={styles.utterance}>「{line.text}」</Text>
                 </View>

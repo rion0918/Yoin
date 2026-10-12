@@ -119,6 +119,12 @@ export type PendingRecording =
   | ConversationPendingRecording
   | SpeakerPendingRecording;
 export type AudioActivityRange = { startMs: number; endMs: number };
+export type TranscriptTimingIssue = {
+  text: string;
+  startOffset: string | null;
+  endOffset: string | null;
+  chunkOffsetMs: number;
+};
 export type AudioProcessingSummary = {
   status: "verified" | "needs_review" | "unverified";
   recordedDurationMs: number | null;
@@ -131,6 +137,7 @@ export type AudioProcessingSummary = {
   expectedChunks: number;
   completedChunks: number;
   unrecognizedRanges: AudioActivityRange[];
+  timingIssues?: TranscriptTimingIssue[];
 };
 
 export type AudioClip = {
@@ -171,6 +178,7 @@ export type Utterance = {
   speakerProfileId?: string;
   speakerName?: string;
   text: string;
+  timingIssues?: TranscriptTimingIssue[];
 };
 
 export type LyricBlock = {
@@ -201,6 +209,7 @@ export type DraftDocument = {
   lyrics: LyricRevision | null;
   status: DraftStatus;
   jobId: string | null;
+  transcriptRecoveryAvailable?: boolean;
   error: string | null;
 };
 

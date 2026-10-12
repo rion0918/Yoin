@@ -648,3 +648,81 @@ it("saves long transcripts without one D1 query per utterance on Workers Free", 
   expect(draft.status).toBe("waiting_review");
   expect(draft.utterances).toHaveLength(200);
 });
+
+it("preserves the full unverified transcript and waits for review without naming a speaker", async () => {
+  await bindings.DB.prepare(
+    "UPDATE clips SET duration_ms = 90000, client_duration_ms = 90000 WHERE id = 'clip'",
+  ).run();
+  await freezeSpeakerSnapshot();
+  vi.mocked(inspectClip).mockResolvedValue({
+    durationMs: 90000,
+    sizeBytes: 10,
+    chunks: [
+      {
+        key: "processed/clip/0.m4a",
+        offsetMs: 0,
+        durationMs: 90000,
+        mimeType: "audio/mp4",
+        activityRanges: [{ startMs: 0, endMs: 90000 }],
+      },
+    ],
+  });
+  const timingIssues = [
+    {
+      text: "へ",
+      startOffset: "3.900s",
+      endOffset: "1.100s",
+      chunkOffsetMs: 0,
+    },
+  ];
+  const transcript = [
+    {
+      id: "clip:unverified:0",
+      clipId: "clip",
+      startMs: 0,
+      endMs: 90000,
+      speaker: "話者未確認",
+      text: "駅へ向かおう。全文を残そう。",
+      timingIssues,
+    },
+  ];
+  vi.mocked(transcribeAudio).mockResolvedValue({
+    value: transcript,
+    costUsd: 0.008036,
+    usage: { model: "gemini-test" },
+  });
+  vi.mocked(createLyrics).mockResolvedValue({
+    value: [
+      {
+        id: "verse",
+        text: "駅へ向かおう",
+        sourceUtteranceIds: [transcript[0].id],
+      },
+    ],
+    costUsd: 0.02,
+    usage: {},
+  });
+  const waitForEvent = vi.fn(async () => {
+    expect(createLyrics).not.toHaveBeenCalled();
+    const pending = await ownedJob(bindings, "prepare-job", "private-tester");
+    expect(pending.status).toBe("needs_audio_review");
+    const draft = await draftDocument(bindings, "draft", "private-tester");
+    expect(draft.utterances).toEqual(transcript);
+    expect(draft.clips[0].processing).toMatchObject({
+      timingIssues,
+      transcribedMs: 0,
+      unrecognizedActivityMs: 90000,
+    });
+    return {
+      payload: { transcriptFingerprint: pending.transcript_fingerprint },
+    };
+  });
+  await prepareDraft(bindings, "prepare-job", {
+    ...step,
+    waitForEvent,
+  } as unknown as WorkflowStep);
+  expect(waitForEvent).toHaveBeenCalledOnce();
+  expect(identifySpeakersInChunk).not.toHaveBeenCalled();
+  expect(createLyrics).toHaveBeenCalledOnce();
+  expect(transcribeAudio).toHaveBeenCalledOnce();
+});

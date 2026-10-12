@@ -18,6 +18,25 @@
 
 同日のユーザー確認後、Play照合専用サービスアカウント・Yoinだけの読み取り専用権限・Android Publisher APIを設定した。鍵はGit管理外に権限600で保管し、既存スクリプトで `Play 最大 2 / EAS 現在 2 / 次回予定 3` の照合成功を確認した。EAS productionのFirebase設定file変数も登録済み。API実行前にGoogle公式の[文字起こし](https://ai.google.dev/gemini-api/docs/transcribe)、[音楽生成](https://ai.google.dev/gemini-api/docs/music-generation)、[Interactions](https://ai.google.dev/gemini-api/docs/interactions-overview)、[料金](https://ai.google.dev/gemini-api/docs/pricing)を確認した。
 
+## 2026-10-12 本番反映・内部テストv3・実API接続
+
+[PR #11](https://github.com/rion0918/Yoin/pull/11)をmainへ反映し、[CI実行](https://github.com/rion0918/Yoin/actions/runs/38196400135)で検証と本番配置が成功した。対象コミットは `d5ad3b43e4f7dc2ba05a0f78fec88cbcc6a74f8e`。D1の `0005`〜`0008`、Cloud Run revision `yoin-audio-00005-lpw`、Worker version `9abafea8-c648-4b50-8415-661b7a0041df` を確認し、公開 `/privacy` は200を返した。既存データと費用予約は保持した。
+
+同じコミットからEAS `playInternal` build `8cd124d1-1613-490c-8ea8-b69fd0a1e839` が完了し、versionCode `3` のAABをPlay Console内部テストへ公開した。Playの配布証明書はFirebaseに登録済み。既存の招待対象アカウントで、ユーザー確認後に内部テストへの参加を承諾した。複製したAVDでは最初のインストールがエラーになったが、ストアを開き直した後にインストールが成功した。端末で `versionCode=3`・`installerPackageName=com.android.vending` を確認し、Googleログイン後にライブラリを表示した。
+
+| 環境・処理 | 実操作の結果 | 確認できた範囲・制約 |
+| :--- | :--- | :--- |
+| 開発エミュレータの認証・音声取り込み | 成功 | 既存Googleログインを保持。許可済み公開Koniwa音声4分をDocumentsへ取り込み |
+| アップロード・検査・文字起こし・話者識別・歌詞作成 | 成功 | 実Cloud Runの各APIは200。アプリに歌詞確認画面を表示。公開音声の話者と登録した声は異なり、本人識別精度の合格とは扱わない |
+| 歌詞承認後の曲生成 | 照合待ち | `/music` は422。ジョブは `needs_reconciliation` / `provider_outcome_unconfirmed`。完成音源の保存・再生は未確認 |
+| Play内部テストv3の配布・ログイン | 成功 | Google Playからインストールし、Metroを使わず起動・Googleログイン・ライブラリ表示を確認。生成・再生の通し確認は未完了 |
+
+曲生成は1回だけ送信した。文字起こし・歌詞の確定費用を含めたクラウド台帳は成功6件 / `1.312824` USD、照合待ち3件 / `1.28` USD。今回の曲生成予約 `0.08` USD と以前からの予約 `1.20` USD を保持し、上限 `8.733897` USD を初期化していない。照合待ちの曲を再送していない。
+
+失敗した歌詞・音楽APIの応答が保存されないことと、成功時に生応答より先に曲をアップロードする順序をテストでREDとして確認した。音声サービスで両APIの失敗応答を既存の非公開保存先へ残し、曲の保存より先に生応答を保存する修正後、backend 76件・実FFmpeg/FFprobe音声処理20件（スキップ0）と型・書式検査がGREENになった。429応答を模したテストで保存と送信1回を確認しており、実際の422の原因や曲生成の復旧が判明したとは扱わない。関連判断はADR 0010・0011・0013で、既存の保存・予算・配置方針を維持するため新しいADRは不要。
+
+PRレビューで、診断用ストレージが503を返すと元のAPIエラーが置き換わることもREDとして再現した。保存失敗時にも元の `GoogleProviderError` と応答を保持する修正後、音声処理21件（スキップ0）とbackend・型・書式検査が成功した。
+
 ## 2026-10-07 Play内部テスト版のGoogleログイン復旧
 
 Play Console の内部テストに公開された versionCode `2`（`0.1.0`）で、Google の画面から戻っても未ログインのままになるとの報告がありました。Firebase の Android アプリ `com.rion0918.yoin` に開発署名は登録済みでしたが、Play App Signing の SHA-1・SHA-256 は未登録でした。現在のログイン処理では Credential Manager のキャンセル応答から Firebase 認証へ進まず、この状態でログイン画面に残ります。

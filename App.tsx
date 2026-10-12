@@ -624,7 +624,9 @@ function SessionApp({
           )}
           {!!draft?.error && (
             <Text accessibilityLiveRegion="polite" style={extra.errorCopy}>
-              {explainError(draft.error)}
+              {draft.error === "provider_outcome_unconfirmed" && !draft.lyrics
+                ? "文字起こしの結果を確認できませんでした。元音声は保存されています。保存済みの応答を確認してください。"
+                : explainError(draft.error)}
             </Text>
           )}
           {overlayKind === "settings" && (

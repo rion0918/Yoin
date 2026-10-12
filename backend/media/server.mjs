@@ -361,7 +361,16 @@ export function createMediaServer({
                     : {}),
                 },
               }
-            : {}),
+            : {
+                errorType: [
+                  "Error",
+                  "TypeError",
+                  "RangeError",
+                  "SyntaxError",
+                ].includes(error?.name)
+                  ? error.name
+                  : "Error",
+              }),
         }),
       );
       response.end(JSON.stringify({ error: code }));

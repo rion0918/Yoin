@@ -827,3 +827,58 @@ test("network failures expose only a safe transport code and never retry", async
   );
   assert.equal(calls, 1);
 });
+
+test("music validates an eight-megabyte response without overflowing the regex stack", async () => {
+  const bytes = Buffer.alloc(8_000_001);
+  bytes.write("ID3", 0, "ascii");
+  let submissions = 0;
+  const result = await generateMusic({
+    blocks: [{ id: "verse", text: "また歩こう", sourceUtteranceIds: ["u1"] }],
+    apiKey,
+    fetch: async () => {
+      submissions++;
+      return Response.json(
+        response([
+          {
+            type: "audio",
+            mime_type: "audio/mpeg",
+            data: bytes.toString("base64"),
+          },
+          { type: "text", text: "また歩こう" },
+        ]),
+      );
+    },
+  });
+  assert.equal(submissions, 1);
+  assert.equal(result.bytes.byteLength, bytes.byteLength);
+  assert.deepEqual(result.bytes, new Uint8Array(bytes));
+  assert.equal(result.returnedLyrics, "また歩こう");
+});
+
+test("music still rejects malformed base64 characters and padding", async () => {
+  for (const data of [
+    "SUQz?A==",
+    "SUQz=AAA",
+    "SUQzA===",
+    "SUQzAA=",
+    "SUQz\nYQ==",
+  ]) {
+    const raw = response([
+      { type: "audio", mime_type: "audio/mpeg", data },
+      { type: "text", text: "また歩こう" },
+    ]);
+    await assert.rejects(
+      generateMusic({
+        blocks: [
+          { id: "verse", text: "また歩こう", sourceUtteranceIds: ["u1"] },
+        ],
+        apiKey,
+        fetch: async () => Response.json(raw),
+      }),
+      (error) =>
+        error instanceof GoogleProviderError &&
+        error.kind === "invalid_response" &&
+        error.response !== null,
+    );
+  }
+});

@@ -140,14 +140,7 @@ export async function prepareDraft(
     await resourceOwner(env, "jobs", jobId),
   );
   if (job.kind !== "prepare") throw new HttpError(409, "wrong_workflow_kind");
-  if (
-    [
-      "waiting_review",
-      "ready",
-      "needs_audio_review",
-      "needs_reconciliation",
-    ].includes(job.status)
-  )
+  if (["waiting_review", "ready", "needs_reconciliation"].includes(job.status))
     return;
   try {
     await step.do("start", () => setJob(env, job, "running", "inspect_audio"));

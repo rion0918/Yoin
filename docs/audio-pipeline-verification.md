@@ -14,6 +14,10 @@
 
 反映前に停止していたログインUIテストは、新しいデザイントークンをテストの読込先へ追加して6件成功した。書式検査も成功。Workerの型検査と76件のテスト、実FFmpeg/FFprobeを指定した音声サービス17件は成功し、音声テストのスキップは0。これらを実端末での通し生成・試聴の成功とは扱わない。
 
+[PR #11](https://github.com/rion0918/Yoin/pull/11)の初回CIは成功した。レビューで、`needs_audio_review` のWorkflow再実行が待機ステップへ到達せず終了する不具合と、FFmpegの負の `silence_start` を取りこぼす不具合を再現した。修正後にbackend 76件と実音声処理18件が成功した。再開テストでは保存済みステップを再利用し、有料の文字起こしが1回のまま歌詞確認へ進むことを確認した。Android起動テストの指摘は実際のExpo `UrlCreator` がホスト環境変数を扱うため再現せず、単独実行も成功した。
+
+同日のユーザー確認後、Play照合専用サービスアカウント・Yoinだけの読み取り専用権限・Android Publisher APIを設定した。鍵はGit管理外に権限600で保管し、既存スクリプトで `Play 最大 2 / EAS 現在 2 / 次回予定 3` の照合成功を確認した。EAS productionのFirebase設定file変数も登録済み。API実行前にGoogle公式の[文字起こし](https://ai.google.dev/gemini-api/docs/transcribe)、[音楽生成](https://ai.google.dev/gemini-api/docs/music-generation)、[Interactions](https://ai.google.dev/gemini-api/docs/interactions-overview)、[料金](https://ai.google.dev/gemini-api/docs/pricing)を確認した。
+
 ## 2026-10-07 Play内部テスト版のGoogleログイン復旧
 
 Play Console の内部テストに公開された versionCode `2`（`0.1.0`）で、Google の画面から戻っても未ログインのままになるとの報告がありました。Firebase の Android アプリ `com.rion0918.yoin` に開発署名は登録済みでしたが、Play App Signing の SHA-1・SHA-256 は未登録でした。現在のログイン処理では Credential Manager のキャンセル応答から Firebase 認証へ進まず、この状態でログイン画面に残ります。

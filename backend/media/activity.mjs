@@ -2,7 +2,7 @@ export function activityRangesFromSilenceLog(log, durationMs) {
   if (!Number.isSafeInteger(durationMs) || durationMs < 1)
     throw new Error("invalid_audio_duration");
   const events = [
-    ...log.matchAll(/silence_(start|end):\s*([0-9]+(?:\.[0-9]+)?)/g),
+    ...log.matchAll(/silence_(start|end):\s*(-?[0-9]+(?:\.[0-9]+)?)/g),
   ]
     .map((match) => ({
       kind: match[1],

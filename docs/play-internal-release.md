@@ -11,6 +11,7 @@
 - リモートWorkerの最新配置は2026-10-05の `b20b0915-94ec-4b71-9df4-00109bde048e`。D1の `0005`〜`0008` は未適用であり、現行アプリ・APIの配置前に番号順で適用する。
 - Workerの累積AI枠は `8.733897` USD。D1の確定費用 `1.285975` USD、照合待ち予約 `1.20` USD は試行集計と一致する。音楽生成の成功試行1件、`ready` の生成ジョブ1件、完成曲1件を確認した。端末操作と品質の受け入れ結果は別に記録する。
 - 2026-10-12のユーザー指示により、必要な変更をPRへまとめ、mainのCIから反映する。反映後の接続確認と新しいPlayビルド・内部テストの結果は[検証記録](audio-pipeline-verification.md)へ追加する。
+- Play照合専用の `yoin-play-version-reader` を既存Google Cloudプロジェクトに作成し、Yoinアプリだけの読み取り専用権限を付与した。Android Publisher APIを有効化し、JSON鍵はGit管理外の `.local/google-play/` に権限600で保存した。照合スクリプトで `Play 最大 2 / EAS 現在 2 / 次回予定 3` の成功を確認した。EAS productionの `GOOGLE_SERVICES_JSON` 登録も確認済み。
 
 ### 2026-10-07 の反映前の記録（現況は上記を参照）
 

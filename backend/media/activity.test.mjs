@@ -22,3 +22,13 @@ test("an all-silence input produces no active span", () => {
     [],
   );
 });
+
+test("a negative silence start is clamped to the beginning of the recording", () => {
+  assert.deepEqual(
+    activityRangesFromSilenceLog(
+      "silence_start: -0.0013\nsilence_end: 30.0 | silence_duration: 30.0013",
+      60_000,
+    ),
+    [{ startMs: 30_000, endMs: 60_000 }],
+  );
+});

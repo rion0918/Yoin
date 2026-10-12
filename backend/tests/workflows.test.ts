@@ -226,7 +226,7 @@ it("preserves original chunk offsets and source IDs through lyric review", async
   expect(generateMusic).not.toHaveBeenCalled();
 });
 
-it("pauses before lyrics when a three-minute recording has a long active transcription gap", async () => {
+it("resumes an approved audio review on replay without repeating transcription", async () => {
   await bindings.DB.prepare(
     "UPDATE clips SET duration_ms = 180000, client_duration_ms = 180000 WHERE id = 'clip'",
   ).run();
@@ -273,23 +273,32 @@ it("pauses before lyrics when a three-minute recording has a long active transcr
     usage: { model: "gemini-test" },
   });
   let signalWait!: () => void;
-  let resumeWorkflow!: (event: {
-    payload: { transcriptFingerprint: string };
-  }) => void;
   const waiting = new Promise<void>((resolve) => {
     signalWait = resolve;
   });
+  const savedSteps = new Map<string, unknown>();
+  let approval: { payload: { transcriptFingerprint: string } } | null = null;
+  const waitForEvent = vi.fn(() => {
+    if (approval) return Promise.resolve(approval);
+    signalWait();
+    return new Promise(() => {});
+  });
   const workflowStep = {
-    do: step.do,
-    waitForEvent: () => {
-      signalWait();
-      return new Promise((resolve) => {
-        resumeWorkflow = resolve;
-      });
+    do: async (
+      name: string,
+      options: unknown,
+      callback?: () => Promise<unknown>,
+    ) => {
+      if (savedSteps.has(name)) return savedSteps.get(name);
+      const result =
+        typeof options === "function" ? await options() : await callback?.();
+      savedSteps.set(name, result);
+      return result;
     },
+    waitForEvent,
   } as unknown as WorkflowStep;
 
-  const running = prepareDraft(bindings, "prepare-job", workflowStep);
+  void prepareDraft(bindings, "prepare-job", workflowStep);
   await waiting;
   const pending = await ownedJob(bindings, "prepare-job", "private-tester");
   expect(pending).toMatchObject({
@@ -311,10 +320,11 @@ it("pauses before lyrics when a three-minute recording has a long active transcr
     unrecognizedActivityMs: 25000,
   });
 
-  resumeWorkflow({
+  approval = {
     payload: { transcriptFingerprint: pending.transcript_fingerprint ?? "" },
-  });
-  await running;
+  };
+  await prepareDraft(bindings, "prepare-job", workflowStep);
+  expect(waitForEvent).toHaveBeenCalledTimes(2);
   expect(createLyrics).toHaveBeenCalledOnce();
   expect(
     (await ownedJob(bindings, "prepare-job", "private-tester")).status,

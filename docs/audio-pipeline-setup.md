@@ -337,3 +337,19 @@ Workers Freeを維持しますが、R2の超過利用やGoogle Cloud、Google AP
 元音声・分割音声・生成曲・試行結果が蓄積します。アカウント削除は実装していますが、保存総量の料金上限や期限による自動削除はないため、R2の保存量と操作回数、Artifact Registryの保管量、Cloud Runの実行・通信、Google Usageを確認します。無料枠はアカウント・請求先の他の利用と共有されます。
 
 通し生成1・10・100・1000回の目安と計算条件は[費用概算](audio-pipeline-costs.md)を参照してください。過去の概算は[2026-10-04の記録](audio-pipeline-verification.md#2026-10-04の基盤費用の概算)、利用時の単価・制限は[Workers](https://developers.cloudflare.com/workers/platform/limits/)、[D1](https://developers.cloudflare.com/d1/platform/pricing/)、[R2](https://developers.cloudflare.com/r2/pricing/)、[Cloud Run](https://cloud.google.com/run/pricing)、[Artifact Registry](https://cloud.google.com/artifact-registry/pricing)、[Google API](https://ai.google.dev/gemini-api/docs/pricing)の公式情報で確認してください。
+
+## Lyriaの曲設定と歌唱用の読み（生成方式2）
+
+[ADR 0024](adr/0024-lyria-singing-readings.md)の実装では、録音の仕上げ時に曲調と歌声を選びます。`POST /drafts/:id/prepare` の `musicPreferences` は `genre`（`acoustic` / `jpop` / `piano` / `rock` / `rnb` / `bossa`）と `vocal`（`male` / `female` / `auto`）です。設定付きの新しい歌詞作成を方式2として保存し、設定を省略した既存クライアントと既存ジョブは方式1を維持します。
+
+方式2の歌詞ブロックは、表示用の `text`、出典の `sourceUtteranceIds`、構成の `section`、歌唱用のかな表記 `singingText` を持ちます。初回は同じ歌詞作成APIでまとめて生成します。方式2の歌詞作成と読み更新は、同じGemini 3.5 Flash-Liteのhigh推論を使い、思考を含む出力上限を16384トークンとします。地域・日付と日数・読みの誤字を照合するためで、旧方式の設定は維持します。読みは本文と同じ行数・空行を持つかな表記とし、漢字・数字・英字・括弧の説明・構造タグは含めません。利用者による本文編集はそのブロックの読みを無効にし、手修正または「読みを更新」で補います。
+
+読み更新は編集した歌詞を既存の `PATCH /drafts/:id/lyrics` で保存し、そのリビジョンと冪等キーを `POST /drafts/:id/readings` に送ります。`readings` ジョブは既存PREPARE Workflowで実行し、Cloud Runの `/readings` で未作成の読みだけを変換します。更新中は編集を止め、完了後は確認待ちに戻します。同じキーの再要求では、完了によってリビジョンが進んだ後も同じジョブを返します。受付不明は予約を保持して照合待ちにし、有料POSTを自動再送しません。読み更新の予約は1回0.50ドル、実績は現在の歌詞モデルのトークン量で精算します。
+
+音楽生成には、日本語の音楽指示と `Lyrics:` 以下のかな歌詞・構造タグを渡します。完成曲は漢字の表示歌詞を保持し、返却歌詞は承認したかな歌詞と照合します。テキスト一致だけでは歌唱品質の受け入れを確認できません。
+
+本番への反映には追加移行 `0010_music_generation_input.sql`、更新した音声サービス、Worker、アプリが必要です。処理中の旧ジョブは切り替えません。本番移行・デプロイ・配布は、変更内容と検証結果を確認して個別に実行指示を受けてから行います。
+
+### 実音源による比較
+
+既存サーバー台帳の支出と未確定予約を確認し、今回最大2ドル、既存の累積10ドルの範囲内で比較します。移管済みPoC台帳を再開したり、別環境に予算を複製したりしません。旧・新方式で同じ表示歌詞、ジャンル、歌声を使い各3回生成します。人名、地名、数字、文脈で変わる読みの正解を先に固定し、誤読・追加・脱落を試聴で記録します。残予算内で他5ジャンルと男性歌声も確認します。接続や予算を確認できなければ実生成を止め、モック成功を歌唱品質の合格として扱いません。

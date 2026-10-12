@@ -7,6 +7,7 @@ import type {
   LocalDraft,
   LyricBlock,
   LyricRevision,
+  MusicPreferences,
   RecordingLocationRoute,
   SongDocument,
   SpeakerProfile,
@@ -249,11 +250,15 @@ export function createApi(
         "POST",
         { uploadId, parts },
       ),
-    prepare: (id: string, idempotencyKey: string) =>
+    prepare: (
+      id: string,
+      idempotencyKey: string,
+      musicPreferences?: MusicPreferences,
+    ) =>
       request<{ jobId: string }>(
         `/drafts/${encodeURIComponent(id)}/prepare`,
         "POST",
-        { idempotencyKey },
+        { idempotencyKey, ...(musicPreferences ? { musicPreferences } : {}) },
       ),
     recoverTranscript: (draftId: string) =>
       request<{ accepted: true }>(
@@ -281,6 +286,12 @@ export function createApi(
         `/drafts/${encodeURIComponent(id)}/lyrics`,
         "PATCH",
         { revision, blocks },
+      ),
+    readings: (id: string, revision: number, idempotencyKey: string) =>
+      request<{ jobId: string }>(
+        `/drafts/${encodeURIComponent(id)}/readings`,
+        "POST",
+        { revision, idempotencyKey },
       ),
     generate: (
       id: string,

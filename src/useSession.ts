@@ -11,11 +11,18 @@ import {
   MAX_SPEAKER_SAMPLE_BYTES,
   MAX_SPEAKER_SAMPLE_MS,
   MIN_SPEAKER_SAMPLE_MS,
+  type MusicPreferences,
   type SavedRecording,
   type SongDocument,
   type SpeakerProfile,
   type SpeakerSampleDocument,
 } from "../shared/contracts";
+import {
+  DEFAULT_MUSIC_PREFERENCES,
+  hasReadyReadings,
+  isMusicPreferences,
+  isSingingText,
+} from "../shared/music";
 import type { SessionIdentity } from "./auth/types";
 import { ApiError, type Connection, createApi } from "./pipeline/api";
 import {
@@ -23,6 +30,7 @@ import {
   completeSong,
   createLocalDraft,
   editLyricBlock,
+  editSingingText,
   markLocationUploaded,
   mergeRemoteDraft,
   restoreRecording,
@@ -756,6 +764,7 @@ export function useSession(identity: SessionIdentity) {
 
   async function prepare(draftId: string) {
     return run(async () => {
+      await queue.current;
       let draft = getDraft(draftId);
       if (!draft.clips.length)
         throw new Error("音声を残してから仕上げてください。");
@@ -777,6 +786,10 @@ export function useSession(identity: SessionIdentity) {
         ...value,
         status: "uploading",
         prepareKey,
+        musicPreferences:
+          draft.prepareKey && draft.status !== "failed"
+            ? draft.musicPreferences
+            : (draft.musicPreferences ?? { ...DEFAULT_MUSIC_PREFERENCES }),
         error: null,
       }));
       await api.createDraft(getDraft(draftId));
@@ -860,6 +873,7 @@ export function useSession(identity: SessionIdentity) {
       const response = await api.prepare(
         draftId,
         draft.prepareKey ?? prepareKey,
+        draft.musicPreferences,
       );
       await updateDraft(draftId, (value) => ({
         ...value,
@@ -913,6 +927,8 @@ export function useSession(identity: SessionIdentity) {
         throw new Error("曲名を80文字以内で入力してください。");
       if (!draft.lyrics || blocks.some((block) => !block.text.trim()))
         throw new Error("歌詞を確認してください。");
+      if (draft.lyrics.generationVersion === 2 && !hasReadyReadings(blocks))
+        throw new Error("歌詞の読みを確認・更新してください。");
       const api = createApi(connectionRef.current);
       await updateDraft(draftId, (value) => ({
         ...value,
@@ -947,6 +963,40 @@ export function useSession(identity: SessionIdentity) {
       return true;
     });
   }
+  async function updateReadings(draftId: string, blocks: LyricBlock[]) {
+    return run(async () => {
+      const draft = getDraft(draftId);
+      if (draft.lyrics?.generationVersion !== 2)
+        throw new Error("読みを更新できる歌詞がありません。");
+      const pending = blocks.map((block) =>
+        isSingingText(block.text, block.singingText)
+          ? block
+          : { ...block, singingText: undefined },
+      );
+      const api = createApi(connectionRef.current);
+      const lyrics = await confirmLyrics(
+        api,
+        draftId,
+        draft.lyrics.revision,
+        pending,
+      );
+      const readingsKey = id("readings");
+      await updateDraft(draftId, (value) => ({
+        ...value,
+        lyrics,
+        readingsKey,
+        status: "updating_readings",
+        jobId: null,
+        error: null,
+      }));
+      const result = await api.readings(draftId, lyrics.revision, readingsKey);
+      await updateDraft(draftId, (value) => ({
+        ...value,
+        jobId: result.jobId,
+      }));
+      return true;
+    });
+  }
   const polling = useRef(false);
   const refresh = useCallback(async () => {
     if (polling.current || busyRef.current || scope.signal.aborted) return;
@@ -955,6 +1005,7 @@ export function useSession(identity: SessionIdentity) {
       const api = createApi(connectionRef.current);
       for (const draft of stateRef.current.drafts.filter(
         (value) =>
+          value.status === "updating_readings" ||
           value.status === "preparing" ||
           value.status === "generating" ||
           value.status === "needs_audio_review" ||
@@ -964,17 +1015,29 @@ export function useSession(identity: SessionIdentity) {
         if (!jobId) {
           const result =
             draft.status === "preparing" && draft.prepareKey
-              ? await api.prepare(draft.id, draft.prepareKey)
-              : draft.status === "generating" &&
-                  draft.generateKey &&
+              ? await api.prepare(
+                  draft.id,
+                  draft.prepareKey,
+                  draft.musicPreferences,
+                )
+              : draft.status === "updating_readings" &&
+                  draft.readingsKey &&
                   draft.lyrics
-                ? await api.generate(
+                ? await api.readings(
                     draft.id,
                     draft.lyrics.revision,
-                    draft.generateKey,
-                    draft.songTitle || draft.title,
+                    draft.readingsKey,
                   )
-                : null;
+                : draft.status === "generating" &&
+                    draft.generateKey &&
+                    draft.lyrics
+                  ? await api.generate(
+                      draft.id,
+                      draft.lyrics.revision,
+                      draft.generateKey,
+                      draft.songTitle || draft.title,
+                    )
+                  : null;
           if (!result) continue;
           jobId = result.jobId;
           await commit((current) => ({
@@ -1219,6 +1282,35 @@ export function useSession(identity: SessionIdentity) {
       setError(`歌詞を端末に保存できませんでした。${message(failure)}`);
     }
   };
+  const editReading = async (
+    draftId: string,
+    blockId: string,
+    reading: string,
+  ) => {
+    try {
+      await updateDraft(draftId, (draft) =>
+        editSingingText(draft, blockId, reading),
+      );
+    } catch (failure) {
+      setError(`読みを端末に保存できませんでした。${message(failure)}`);
+    }
+  };
+  const editMusicPreferences = async (
+    draftId: string,
+    musicPreferences: MusicPreferences,
+  ) => {
+    try {
+      if (!isMusicPreferences(musicPreferences))
+        throw new Error("曲の設定を確認してください。");
+      await updateDraft(draftId, (draft) =>
+        draft.lyrics || !["local", "failed"].includes(draft.status)
+          ? draft
+          : { ...draft, musicPreferences },
+      );
+    } catch (failure) {
+      setError(`曲の設定を保存できませんでした。${message(failure)}`);
+    }
+  };
   const editSongTitle = async (draftId: string, songTitle: string) => {
     try {
       await updateDraft(draftId, (draft) => ({ ...draft, songTitle }));
@@ -1269,5 +1361,8 @@ export function useSession(identity: SessionIdentity) {
     position: playback.positionMs / 1000,
     editLyrics,
     editSongTitle,
+    editReading,
+    editMusicPreferences,
+    updateReadings,
   };
 }

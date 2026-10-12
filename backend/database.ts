@@ -5,6 +5,7 @@ import type {
   JobDocument,
   LyricBlock,
   LyricRevision,
+  MusicPreferences,
   SongDocument,
   Utterance,
 } from "../shared/contracts.ts";
@@ -46,7 +47,7 @@ export type JobRow = {
   id: string;
   owner_id: string;
   draft_id: string;
-  kind: "prepare" | "generate";
+  kind: "prepare" | "generate" | "readings";
   idempotency_key: string;
   fingerprint: string;
   status: JobDocument["status"];
@@ -62,6 +63,8 @@ export type JobRow = {
   transcript_reviewed_at?: string | null;
   expected_chunks?: number;
   completed_chunks?: number;
+  generation_version?: number;
+  music_preferences_json?: string | null;
 };
 export type AudioRow = {
   id: string;
@@ -191,12 +194,27 @@ export async function lyrics(
 ): Promise<LyricRevision | null> {
   if (revision === 0) return null;
   const row = await env.DB.prepare(
-    "SELECT blocks_json FROM lyric_revisions WHERE draft_id = ? AND revision = ?",
+    "SELECT blocks_json, generation_version, music_preferences_json FROM lyric_revisions WHERE draft_id = ? AND revision = ?",
   )
     .bind(draftId, revision)
-    .first<{ blocks_json: string }>();
+    .first<{
+      blocks_json: string;
+      generation_version: number;
+      music_preferences_json: string | null;
+    }>();
   return row
-    ? { revision, blocks: JSON.parse(row.blocks_json) as LyricBlock[] }
+    ? {
+        revision,
+        blocks: JSON.parse(row.blocks_json) as LyricBlock[],
+        ...(row.generation_version === 2
+          ? {
+              generationVersion: 2 as const,
+              musicPreferences: JSON.parse(
+                String(row.music_preferences_json),
+              ) as MusicPreferences,
+            }
+          : {}),
+      }
     : null;
 }
 async function savedTranscriptionAvailable(env: Env, row: DraftRow) {
@@ -311,7 +329,9 @@ export async function setJob(
     status === "queued" || status === "running"
       ? row.kind === "prepare"
         ? "preparing"
-        : "generating"
+        : row.kind === "readings"
+          ? "updating_readings"
+          : "generating"
       : status;
   await env.DB.batch([
     env.DB.prepare(

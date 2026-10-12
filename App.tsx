@@ -53,7 +53,11 @@ import { TranscriptTimingNotice } from "./src/components/TranscriptTimingNotice"
 import { figmaColors } from "./src/design/figma";
 import { colors, radii } from "./src/design/tokens";
 import { formatTime } from "./src/domain/session";
-import { sourceContext, sourcePlaybackRange } from "./src/pipeline/library";
+import {
+  editLyricText,
+  sourceContext,
+  sourcePlaybackRange,
+} from "./src/pipeline/library";
 import { explainError } from "./src/pipeline/messages";
 import { speakerLabel } from "./src/pipeline/speakers";
 import { FigmaLibraryScreen } from "./src/screens/FigmaLibraryScreen";
@@ -96,6 +100,7 @@ const statusLabel: Record<string, string> = {
   local: "マイクオフ",
   uploading: "残した会話を届けています",
   preparing: "会話から、歌詞へ",
+  updating_readings: "歌詞の読みを更新しています",
   needs_audio_review: "音声と文字起こしを確認しよう",
   waiting_review: "歌詞を確かめよう",
   generating: "この一日が、一曲になる",
@@ -426,6 +431,10 @@ function SessionApp({
   const songSource =
     overlay?.kind === "source" && "audioId" in overlay.document;
   useEffect(() => {
+    if (overlay?.kind === "review" && draft?.status === "updating_readings") {
+      setOverlay({ kind: "progress", draftId: draft.id });
+      return;
+    }
     if (overlay?.kind === "progress" && draft?.status === "waiting_review") {
       setEditedBlocks(draft.lyrics?.blocks ?? []);
       setSongTitle(draft.songTitle ?? "");
@@ -693,6 +702,9 @@ function SessionApp({
             <FinishMemory
               draft={draft}
               busy={app.busy}
+              onMusicPreferences={(preferences) => {
+                void app.editMusicPreferences(draft.id, preferences);
+              }}
               onPrepare={() => {
                 void prepare();
               }}
@@ -719,10 +731,31 @@ function SessionApp({
               onChange={(id, text) => {
                 setEditedBlocks((blocks) =>
                   blocks.map((block) =>
-                    block.id === id ? { ...block, text } : block,
+                    block.id === id ? editLyricText(block, text) : block,
                   ),
                 );
                 void app.editLyrics(draft.id, id, text);
+              }}
+              onReading={(id, reading) => {
+                setEditedBlocks((blocks) =>
+                  blocks.map((block) =>
+                    block.id === id
+                      ? {
+                          ...block,
+                          singingText: reading.trim() ? reading : undefined,
+                        }
+                      : block,
+                  ),
+                );
+                void app.editReading(draft.id, id, reading);
+              }}
+              onUpdateReadings={() => {
+                void app
+                  .updateReadings(draft.id, editedBlocks)
+                  .then((updated) => {
+                    if (updated)
+                      setOverlay({ kind: "progress", draftId: draft.id });
+                  });
               }}
               onSource={(block) =>
                 show({

@@ -181,17 +181,30 @@ export type Utterance = {
   timingIssues?: TranscriptTimingIssue[];
 };
 
+export type MusicPreferences = {
+  genre: "acoustic" | "jpop" | "piano" | "rock" | "rnb" | "bossa";
+  vocal: "male" | "female" | "auto";
+};
+export type LyricSection = "verse" | "pre_chorus" | "chorus" | "bridge";
 export type LyricBlock = {
   id: string;
   text: string;
   sourceUtteranceIds: string[];
+  section?: LyricSection;
+  singingText?: string;
 };
 
-export type LyricRevision = { revision: number; blocks: LyricBlock[] };
+export type LyricRevision = {
+  revision: number;
+  blocks: LyricBlock[];
+  generationVersion?: 2;
+  musicPreferences?: MusicPreferences;
+};
 export type DraftStatus =
   | "local"
   | "uploading"
   | "preparing"
+  | "updating_readings"
   | "waiting_review"
   | "needs_audio_review"
   | "generating"
@@ -216,6 +229,8 @@ export type DraftDocument = {
 export type LocalDraft = Omit<DraftDocument, "clips"> & {
   clips: LocalClip[];
   songTitle?: string;
+  musicPreferences?: MusicPreferences;
+  readingsKey?: string;
   prepareKey?: string;
   generateKey?: string;
   locationEnabled?: boolean;
@@ -238,7 +253,7 @@ export type SongDocument = {
 export type JobDocument = {
   id: string;
   draftId: string;
-  kind: "prepare" | "generate";
+  kind: "prepare" | "generate" | "readings";
   status:
     | "queued"
     | "running"

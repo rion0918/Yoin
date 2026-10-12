@@ -3,11 +3,13 @@ import {
   type WorkflowEvent,
   type WorkflowStep,
 } from "cloudflare:workers";
+import { GOOGLE_MODELS } from "../pipeline/google.ts";
 import {
   type LyricBlock,
   MAX_AUDIO_MS,
   type RegisteredSpeaker,
 } from "../shared/contracts.ts";
+import { hasReadyReadings, singingLyricsMatch } from "../shared/music.ts";
 import { resourceOwner } from "./accounts.ts";
 import { analyzeTranscriptCoverage } from "./audio-coverage.ts";
 import {
@@ -22,7 +24,12 @@ import {
 import { identifySpeakersInChunk, inspectClip, probeSong } from "./media.ts";
 import { paidCall, RESERVATION_USD } from "./paid.ts";
 import type { SavedMusic } from "./providers.ts";
-import { createLyrics, generateMusic, transcribeAudio } from "./providers.ts";
+import {
+  createLyrics,
+  createReadings,
+  generateMusic,
+  transcribeAudio,
+} from "./providers.ts";
 import { sha256 } from "./security.ts";
 import { transcriptionAttemptId } from "./transcription.ts";
 import {
@@ -31,7 +38,11 @@ import {
   ReconciliationError,
   type WorkflowParams,
 } from "./types.ts";
-import { validateBlocks, validateUtterances } from "./validation.ts";
+import {
+  validateBlocks,
+  validateMusicPreferences,
+  validateUtterances,
+} from "./validation.ts";
 
 const paidStep = {
   retries: { limit: 0, delay: "1 second" },
@@ -110,17 +121,29 @@ async function saveLyrics(env: Env, job: JobRow, blocks: LyricBlock[]) {
   const draft = await ownedDraft(env, job.draft_id, job.owner_id);
   if (draft.job_id !== job.id) throw new HttpError(409, "draft_job_conflict");
   const current = await lyrics(env, draft.id, draft.lyric_revision);
-  if (current && JSON.stringify(current.blocks) === JSON.stringify(blocks))
+  if (job.kind === "readings" && draft.lyric_revision !== job.lyric_revision)
+    throw new HttpError(409, "lyric_revision_conflict");
+  if (
+    current &&
+    current.generationVersion ===
+      (job.generation_version === 2 ? 2 : undefined) &&
+    (current.musicPreferences
+      ? JSON.stringify(current.musicPreferences)
+      : null) === (job.music_preferences_json ?? null) &&
+    JSON.stringify(current.blocks) === JSON.stringify(blocks)
+  )
     return current.revision;
   const revision = draft.lyric_revision + 1;
   await env.DB.batch([
     env.DB.prepare(
-      "INSERT OR IGNORE INTO lyric_revisions (draft_id, revision, blocks_json, created_at) VALUES (?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO lyric_revisions (draft_id, revision, blocks_json, created_at, generation_version, music_preferences_json) VALUES (?, ?, ?, ?, ?, ?)",
     ).bind(
       draft.id,
       revision,
       JSON.stringify(blocks),
       new Date().toISOString(),
+      job.generation_version ?? 1,
+      job.music_preferences_json ?? null,
     ),
     env.DB.prepare(
       "UPDATE drafts SET lyric_revision = ? WHERE id = ? AND owner_id = ? AND job_id = ?",
@@ -399,7 +422,25 @@ export async function prepareDraft(
       }
     }
     await setJob(env, job, "running", "creating_lyrics");
-    const sourceHash = transcriptFingerprint;
+    const settings =
+      job.generation_version === 2
+        ? {
+            generationVersion: 2,
+            musicPreferences: validateMusicPreferences(
+              JSON.parse(String(job.music_preferences_json)),
+            ),
+          }
+        : undefined;
+    const sourceHash = settings
+      ? await sha256(
+          JSON.stringify({
+            transcriptFingerprint,
+            model: GOOGLE_MODELS.lyrics,
+            promptVersion: 2,
+            ...settings,
+          }),
+        )
+      : transcriptFingerprint;
     const blocks = await step.do("create_lyrics", paidStep, () =>
       paidCall(
         env,
@@ -412,7 +453,7 @@ export async function prepareDraft(
             env,
             job,
             `lyrics-${job.draft_id}-${sourceHash}`,
-            { utterances: source },
+            { utterances: source, ...settings },
           );
           return {
             value: validateBlocks(result.value, source),
@@ -423,8 +464,74 @@ export async function prepareDraft(
       ),
     );
     validateBlocks(blocks, source);
+    if (settings && !hasReadyReadings(blocks))
+      throw new HttpError(422, "readings_not_ready");
     await step.do("save_lyrics", () => saveLyrics(env, job, blocks));
     await step.do("waiting_review", () =>
+      setJob(env, job, "waiting_review", "review_lyrics"),
+    );
+  } catch (error) {
+    await failure(env, job, error);
+  }
+}
+
+export async function updateLyricReadings(
+  env: Env,
+  jobId: string,
+  step: WorkflowStep,
+) {
+  const job = await ownedJob(
+    env,
+    jobId,
+    await resourceOwner(env, "jobs", jobId),
+  );
+  if (
+    job.kind !== "readings" ||
+    !job.blocks_json ||
+    !job.lyric_revision ||
+    job.generation_version !== 2
+  )
+    throw new HttpError(409, "wrong_workflow_kind");
+  if (["waiting_review", "ready", "needs_reconciliation"].includes(job.status))
+    return;
+  try {
+    await step.do("start_readings", () =>
+      setJob(env, job, "running", "updating_readings"),
+    );
+    const draft = await ownedDraft(env, job.draft_id, job.owner_id);
+    if (draft.job_id !== job.id || draft.lyric_revision !== job.lyric_revision)
+      throw new HttpError(409, "lyric_revision_conflict");
+    const source = await utterances(env, job.draft_id, job.owner_id);
+    const blocks = validateBlocks(JSON.parse(job.blocks_json), source);
+    const updated = await step.do("create_readings", paidStep, () =>
+      paidCall<LyricBlock[]>(
+        env,
+        job,
+        `readings-${job.id}`,
+        "readings",
+        RESERVATION_USD.readings,
+        () =>
+          createReadings(env, job, `readings-${job.id}`, {
+            blocks,
+            utterances: source,
+          }),
+      ),
+    );
+    const checked = validateBlocks(updated, source);
+    const unchanged =
+      checked.length === blocks.length &&
+      checked.every((block, i) => {
+        const { singingText, ...display } = block;
+        const { singingText: previousReading, ...previous } = blocks[i];
+        return (
+          JSON.stringify(display) === JSON.stringify(previous) &&
+          (previousReading === undefined || previousReading === singingText)
+        );
+      });
+    if (!unchanged || !hasReadyReadings(checked))
+      throw new HttpError(422, "invalid_reading_update");
+    await step.do("save_readings", () => saveLyrics(env, job, checked));
+    await step.do("readings_review", () =>
       setJob(env, job, "waiting_review", "review_lyrics"),
     );
   } catch (error) {
@@ -465,6 +572,17 @@ export async function generateSong(
       JSON.parse(job.blocks_json),
       await utterances(env, job.draft_id, job.owner_id),
     );
+    const settings =
+      job.generation_version === 2
+        ? {
+            generationVersion: 2,
+            musicPreferences: validateMusicPreferences(
+              JSON.parse(String(job.music_preferences_json)),
+            ),
+          }
+        : undefined;
+    if (settings && !hasReadyReadings(blocks))
+      throw new HttpError(422, "readings_not_ready");
     const saved = await step.do("generate_music", paidStep, () =>
       paidCall<SavedMusic>(
         env,
@@ -472,10 +590,15 @@ export async function generateSong(
         `music-${job.id}`,
         "music",
         RESERVATION_USD.music,
-        () => generateMusic(env, job, `music-${job.id}`, { blocks }),
+        () =>
+          generateMusic(env, job, `music-${job.id}`, { blocks, ...settings }),
       ),
     );
-    if (!lyricsMatch(blocks, saved.returnedLyrics)) {
+    if (
+      !(settings
+        ? singingLyricsMatch(blocks, saved.returnedLyrics)
+        : lyricsMatch(blocks, saved.returnedLyrics))
+    ) {
       await setJob(
         env,
         job,
@@ -522,7 +645,14 @@ export async function generateSong(
 
 export class PrepareWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
   async run(event: WorkflowEvent<WorkflowParams>, step: WorkflowStep) {
-    await prepareDraft(this.env, event.payload.jobId, step);
+    const job = await ownedJob(
+      this.env,
+      event.payload.jobId,
+      await resourceOwner(this.env, "jobs", event.payload.jobId),
+    );
+    if (job.kind === "readings")
+      await updateLyricReadings(this.env, job.id, step);
+    else await prepareDraft(this.env, job.id, step);
   }
 }
 export class GenerateWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {

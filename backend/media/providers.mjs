@@ -1,5 +1,6 @@
 import {
   createLyrics,
+  createReadings,
   GoogleProviderError,
   generateMusic,
   parseTranscription,
@@ -134,10 +135,27 @@ export async function runProvider(
       });
       value = result.utterances;
     } else if (stage === "lyrics") {
-      result = await createLyrics({ ...options, utterances: body.utterances });
+      result = await createLyrics({
+        ...options,
+        utterances: body.utterances,
+        generationVersion: body.generationVersion,
+        musicPreferences: body.musicPreferences,
+      });
+      value = result.blocks;
+    } else if (stage === "readings") {
+      result = await createReadings({
+        ...options,
+        blocks: body.blocks,
+        utterances: body.utterances,
+      });
       value = result.blocks;
     } else {
-      result = await generateMusic({ ...options, blocks: body.blocks });
+      result = await generateMusic({
+        ...options,
+        blocks: body.blocks,
+        generationVersion: body.generationVersion,
+        musicPreferences: body.musicPreferences,
+      });
     }
   } catch (error) {
     if (error instanceof GoogleProviderError && error.response !== null) {

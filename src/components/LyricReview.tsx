@@ -1,6 +1,14 @@
 import { Feather } from "@expo/vector-icons";
+import { useState } from "react";
 import { StyleSheet, Text, TextInput, View } from "react-native";
 import type { DraftDocument, LyricBlock } from "../../shared/contracts";
+import {
+  hasReadyReadings,
+  isSingingText,
+  MUSIC_PRESETS,
+  SECTION_LABELS,
+  VOCAL_LABELS,
+} from "../../shared/music";
 import { colors, radii } from "../design/tokens";
 import { blockContext } from "../pipeline/library";
 import { ActionButton } from "./ActionButton";
@@ -13,6 +21,8 @@ export function LyricReview({
   onSongTitle,
   onSource,
   onGenerate,
+  onReading,
+  onUpdateReadings,
   busy,
 }: {
   draft: DraftDocument;
@@ -22,22 +32,76 @@ export function LyricReview({
   onSongTitle: (title: string) => void;
   onSource: (block: LyricBlock) => void;
   onGenerate: () => void;
+  onReading: (id: string, reading: string) => void;
+  onUpdateReadings: () => void;
   busy: boolean;
 }) {
+  const [readingsOpen, setReadingsOpen] = useState(false);
+  const modern = draft.lyrics?.generationVersion === 2;
+  const preferences = draft.lyrics?.musicPreferences;
+  const readyReadings = hasReadyReadings(blocks);
+  const locked = busy || draft.status === "updating_readings";
   return (
     <View testID="lyrics-review">
+      {preferences && (
+        <Text style={styles.settings}>
+          {MUSIC_PRESETS[preferences.genre].label} / 歌声：
+          {VOCAL_LABELS[preferences.vocal]}
+        </Text>
+      )}
+      {modern && (
+        <ActionButton
+          label={readingsOpen ? "歌詞の読みを閉じる" : "歌詞の読みを確認・修正"}
+          onPress={() => setReadingsOpen((value) => !value)}
+          style={styles.readingToggle}
+          testID="toggle-readings"
+        >
+          <Text style={styles.settingLabel}>歌詞の読みを確認・修正</Text>
+          <Feather
+            name={readingsOpen ? "chevron-up" : "chevron-down"}
+            size={18}
+            color={colors.ink}
+          />
+        </ActionButton>
+      )}
       {blocks.map((block) => {
         const context = blockContext(draft, block);
         return (
           <View key={block.id} style={styles.block}>
+            {modern && block.section && (
+              <Text style={styles.section}>
+                {SECTION_LABELS[block.section]}
+              </Text>
+            )}
             <TextInput
               value={block.text}
               onChangeText={(text) => onChange(block.id, text)}
               multiline
+              editable={!locked}
               accessibilityLabel="歌詞を編集"
               style={styles.input}
               testID={`lyric-editor-${block.id}`}
             />
+            {modern && readingsOpen && (
+              <View style={styles.readingField}>
+                <Text style={styles.readingHint}>歌う読み</Text>
+                <TextInput
+                  value={block.singingText ?? ""}
+                  onChangeText={(reading) => onReading(block.id, reading)}
+                  editable={!locked}
+                  multiline
+                  accessibilityLabel={`${block.id}の歌う読みを編集`}
+                  placeholder="読みを更新するか、かなで入力"
+                  style={styles.readingInput}
+                  testID={`reading-editor-${block.id}`}
+                />
+                {!isSingingText(block.text, block.singingText) && (
+                  <Text style={styles.readingHint}>
+                    かなで本文と同じ行数にしてください。自動更新もできます。
+                  </Text>
+                )}
+              </View>
+            )}
             <ActionButton
               label="元の会話を確認"
               onPress={() => onSource(block)}
@@ -54,6 +118,23 @@ export function LyricReview({
           </View>
         );
       })}
+      {modern && !readyReadings && (
+        <View style={styles.readingUpdate}>
+          <Text style={styles.readingHint}>
+            編集した歌詞の読みを更新してから、曲を作れます。
+          </Text>
+          <ActionButton
+            label="読みを更新"
+            onPress={onUpdateReadings}
+            disabled={locked || blocks.some((block) => !block.text.trim())}
+            style={styles.readingToggle}
+            testID="update-readings"
+          >
+            <Text style={styles.settingLabel}>読みを更新</Text>
+            <Feather name="refresh-cw" size={18} color={colors.ink} />
+          </ActionButton>
+        </View>
+      )}
       <View style={styles.songTitleField}>
         <Text style={styles.songTitleLabel}>曲名</Text>
         <TextInput
@@ -66,6 +147,7 @@ export function LyricReview({
           placeholderTextColor={colors.muted}
           style={styles.songTitleInput}
           testID="song-title-input"
+          editable={!locked}
         />
         <Text style={styles.songTitleHint}>プレイリストに表示されます。</Text>
       </View>
@@ -73,7 +155,8 @@ export function LyricReview({
         label="この歌詞で曲を作る"
         onPress={onGenerate}
         disabled={
-          busy ||
+          locked ||
+          (modern && !readyReadings) ||
           !songTitle.trim() ||
           !blocks.length ||
           blocks.some((block) => !block.text.trim())
@@ -89,6 +172,36 @@ export function LyricReview({
 }
 
 const styles = StyleSheet.create({
+  settings: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 22,
+    marginBottom: 12,
+  },
+  settingLabel: { color: colors.ink, fontSize: 14, fontWeight: "600" },
+  section: { color: colors.muted, fontSize: 12, marginBottom: 6 },
+  readingToggle: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 16,
+  },
+  readingField: { paddingTop: 12, gap: 6 },
+  readingInput: {
+    minHeight: 68,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 12,
+    padding: 12,
+    color: colors.ink,
+    fontSize: 16,
+    lineHeight: 25,
+    textAlignVertical: "top",
+  },
+  readingHint: { color: colors.muted, fontSize: 12, lineHeight: 21 },
+  readingUpdate: { marginBottom: 14 },
   block: {
     marginBottom: 28,
   },

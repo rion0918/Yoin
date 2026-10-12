@@ -7,18 +7,25 @@ import initialSchema from "../migrations/0001_initial.sql?raw";
 import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
 import speakerSchema from "../migrations/0003_speaker_profiles.sql?raw";
 import draftSpeakersSchema from "../migrations/0005_draft_speaker_profiles.sql?raw";
-import { createLyrics, generateMusic, transcribeAudio } from "../providers.ts";
+import {
+  createLyrics,
+  createReadings,
+  generateMusic,
+  transcribeAudio,
+} from "../providers.ts";
 import { applyAccountSchema } from "./schema.ts";
 
 const schema = `${initialSchema}\n${runtimeSchema}\n${speakerSchema}\n${draftSpeakersSchema}`;
 
 import type { Env } from "../types.ts";
+import * as workflows from "../workflows.ts";
 import { generateSong, prepareDraft } from "../workflows.ts";
 
 vi.mock("../providers.ts", async (original) => ({
   ...(await original<typeof import("../providers.ts")>()),
   transcribeAudio: vi.fn(),
   createLyrics: vi.fn(),
+  createReadings: vi.fn(),
   generateMusic: vi.fn(),
 }));
 vi.mock("../media.ts", () => ({
@@ -725,4 +732,177 @@ it("preserves the full unverified transcript and waits for review without naming
   expect(identifySpeakersInChunk).not.toHaveBeenCalled();
   expect(createLyrics).toHaveBeenCalledOnce();
   expect(transcribeAudio).toHaveBeenCalledOnce();
+});
+
+async function seedReadingJob() {
+  const input = [
+    {
+      id: "verse",
+      text: "三宮",
+      section: "verse" as const,
+      sourceUtteranceIds: ["clip:u:100:1"],
+    },
+  ];
+  await bindings.DB.prepare(
+    "INSERT INTO utterances (id, clip_id, start_ms, end_ms, speaker, text) VALUES ('clip:u:100:1', 'clip', 100, 500, 'spk_1', '三宮に行こう')",
+  ).run();
+  await bindings.DB.prepare(
+    "INSERT INTO lyric_revisions (draft_id, revision, blocks_json, created_at, generation_version, music_preferences_json) VALUES ('draft', 1, ?, '2026-10-12', 2, ?)",
+  )
+    .bind(
+      JSON.stringify(input),
+      JSON.stringify({ genre: "jpop", vocal: "female" }),
+    )
+    .run();
+  await bindings.DB.prepare(
+    "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, created_at, generation_version, music_preferences_json) VALUES ('read-job', 'private-tester', 'draft', 'readings', 'read-key', 'frozen', 1, ?, '2026-10-12', 2, ?)",
+  )
+    .bind(
+      JSON.stringify(input),
+      JSON.stringify({ genre: "jpop", vocal: "female" }),
+    )
+    .run();
+  await bindings.DB.prepare(
+    "UPDATE drafts SET lyric_revision = 1, status = 'updating_readings', job_id = 'read-job' WHERE id = 'draft'",
+  ).run();
+  return input;
+}
+it("updates only frozen readings and returns to review without repeat spending", async () => {
+  const input = await seedReadingJob();
+  vi.mocked(createReadings).mockResolvedValue({
+    value: [{ ...input[0], singingText: "さんのみや" }],
+    costUsd: 0.01,
+    usage: { model: "read-test" },
+  });
+  await workflows.updateLyricReadings(bindings, "read-job", step);
+  const draft = await draftDocument(bindings, "draft", "private-tester");
+  expect(draft.status).toBe("waiting_review");
+  expect(draft.lyrics).toMatchObject({
+    revision: 2,
+    generationVersion: 2,
+    musicPreferences: { genre: "jpop", vocal: "female" },
+    blocks: [{ ...input[0], singingText: "さんのみや" }],
+  });
+  await workflows.updateLyricReadings(bindings, "read-job", step);
+  expect(createReadings).toHaveBeenCalledOnce();
+});
+it("does not accept provider rewriting the display lyrics during reading update", async () => {
+  const input = await seedReadingJob();
+  vi.mocked(createReadings).mockResolvedValue({
+    value: [{ ...input[0], text: "京都", singingText: "きょうと" }],
+    costUsd: 0.01,
+    usage: {},
+  });
+  await workflows.updateLyricReadings(bindings, "read-job", step);
+  expect(
+    (await draftDocument(bindings, "draft", "private-tester")).lyrics?.revision,
+  ).toBe(1);
+  expect((await ownedJob(bindings, "read-job", "private-tester")).status).toBe(
+    "failed",
+  );
+});
+it("retains unknown reading reservations and does not submit twice", async () => {
+  await seedReadingJob();
+  vi.mocked(createReadings).mockRejectedValue(new Error("connection lost"));
+  await workflows.updateLyricReadings(bindings, "read-job", step);
+  await workflows.updateLyricReadings(bindings, "read-job", step);
+  expect(createReadings).toHaveBeenCalledOnce();
+  expect((await ownedJob(bindings, "read-job", "private-tester")).status).toBe(
+    "needs_reconciliation",
+  );
+  expect(
+    (
+      await bindings.DB.prepare(
+        "SELECT SUM(amount_micros) AS n FROM budget_ledger",
+      ).first()
+    )?.n,
+  ).toBe(500000);
+});
+
+it("changed musical settings create new lyrics without retranscribing cached audio", async () => {
+  const modernBlocks = [
+    {
+      ...blocks[0],
+      section: "verse" as const,
+      singingText: "あのさかみちを またあるこう",
+    },
+  ];
+  const rock = JSON.stringify({ genre: "rock", vocal: "male" });
+  const bossa = JSON.stringify({ genre: "bossa", vocal: "male" });
+  await bindings.DB.prepare(
+    "UPDATE jobs SET generation_version = 2, music_preferences_json = ? WHERE id = 'prepare-job'",
+  )
+    .bind(rock)
+    .run();
+  vi.mocked(createLyrics).mockResolvedValue({
+    value: modernBlocks,
+    costUsd: 0.01,
+    usage: {},
+  });
+  await prepareDraft(bindings, "prepare-job", step);
+  await bindings.DB.prepare(
+    "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, created_at, generation_version, music_preferences_json) VALUES ('new-style', 'private-tester', 'draft', 'prepare', 'new-style', 'different-style', '2026-10-12', 2, ?)",
+  )
+    .bind(bossa)
+    .run();
+  await bindings.DB.prepare(
+    "UPDATE drafts SET job_id = 'new-style', status = 'preparing' WHERE id = 'draft'",
+  ).run();
+  await prepareDraft(bindings, "new-style", step);
+  expect(transcribeAudio).toHaveBeenCalledTimes(2);
+  expect(createLyrics).toHaveBeenCalledTimes(2);
+  expect(
+    (await draftDocument(bindings, "draft", "private-tester")).lyrics,
+  ).toMatchObject({
+    revision: 2,
+    generationVersion: 2,
+    musicPreferences: { genre: "bossa", vocal: "male" },
+  });
+});
+
+it("new songs compare sung readings while preserving display lyrics and settings", async () => {
+  const modernBlocks = [
+    {
+      ...blocks[0],
+      section: "verse" as const,
+      singingText: "あのさかみちを またあるこう",
+    },
+  ];
+  const preferences = JSON.stringify({ genre: "piano", vocal: "female" });
+  await bindings.DB.prepare(
+    "UPDATE jobs SET generation_version = 2, music_preferences_json = ? WHERE id = 'prepare-job'",
+  )
+    .bind(preferences)
+    .run();
+  vi.mocked(createLyrics).mockResolvedValue({
+    value: modernBlocks,
+    costUsd: 0.01,
+    usage: {},
+  });
+  await prepareDraft(bindings, "prepare-job", step);
+  await bindings.DB.prepare(
+    "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, created_at, generation_version, music_preferences_json) VALUES ('modern-song', 'private-tester', 'draft', 'generate', 'modern-song', 'approved', 1, ?, '2026-10-12', 2, ?)",
+  )
+    .bind(JSON.stringify(modernBlocks), preferences)
+    .run();
+  await bindings.DB.prepare(
+    "UPDATE drafts SET status = 'generating', job_id = 'modern-song' WHERE id = 'draft'",
+  ).run();
+  const original = vi.mocked(generateMusic).getMockImplementation();
+  if (!original) throw new Error("missing mock");
+  vi.mocked(generateMusic).mockImplementation(async (...args) => {
+    const result = await original(...args);
+    result.value.returnedLyrics = "[Verse 1]\nアノサカミチヲ マタアルコウ";
+    return result;
+  });
+  await generateSong(bindings, "modern-song", step);
+  const job = await ownedJob(bindings, "modern-song", "private-tester");
+  expect(job.status).toBe("ready");
+  expect(
+    (await songDocument(bindings, "song-modern-song", "private-tester")).lyrics,
+  ).toMatchObject({
+    generationVersion: 2,
+    musicPreferences: { genre: "piano", vocal: "female" },
+    blocks: modernBlocks,
+  });
 });

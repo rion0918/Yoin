@@ -198,7 +198,7 @@ jobs:
           actual_env_names="$(jq --compact-output '[.spec.template.spec.containers[].env[]?.name] | sort' "$RUNNER_TEMP/cloud-run-after.json")"
           test "$actual_env_names" = "$EXPECTED_ENV_NAMES"
           test "$(curl --silent --show-error --fail --retry 10 --retry-all-errors --retry-delay 2 "$RUN_URL/health")" = ok
-          for route in inspect probe transcribe lyrics music enroll-speaker identify-speakers accounts/delete; do
+          for route in inspect probe transcribe lyrics readings music enroll-speaker identify-speakers accounts/delete; do
             status="$(curl --silent --output /dev/null --write-out '%{http_code}' --request POST "$RUN_URL/$route" --data '{}')"
             test "$status" = 401
           done

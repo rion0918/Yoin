@@ -127,3 +127,17 @@ it("reads a saved transcription only with a signed GET for its claimed owning at
   await bindings.DB.prepare("UPDATE jobs SET status = 'failed'").run();
   expect((await request("raw", "GET")).status).toBe(409);
 });
+
+it("claims reading attempts only for reading jobs and never accepts a song upload", async () => {
+  await bindings.DB.prepare(
+    "UPDATE jobs SET kind = 'readings' WHERE id = 'job'",
+  ).run();
+  await bindings.DB.prepare(
+    "UPDATE provider_attempts SET stage = 'readings' WHERE id = 'music-job'",
+  ).run();
+  const claim = await request("claim", "POST");
+  expect(claim.status).toBe(200);
+  expect(await claim.json()).toEqual({ stage: "readings" });
+  expect((await request("claim", "POST")).status).toBe(409);
+  expect((await request("song", "PUT", "ID3")).status).toBe(409);
+});

@@ -1,4 +1,8 @@
-import type { LyricBlock, Utterance } from "../shared/contracts.ts";
+import type {
+  LyricBlock,
+  MusicPreferences,
+  Utterance,
+} from "../shared/contracts.ts";
 import type { JobRow } from "./database.ts";
 import { callMedia } from "./media.ts";
 import { signedUrl } from "./security.ts";
@@ -58,7 +62,11 @@ export async function createLyrics(
   env: Env,
   _job: JobRow,
   attemptId: string,
-  input: { utterances: Utterance[] },
+  input: {
+    utterances: Utterance[];
+    generationVersion?: number;
+    musicPreferences?: MusicPreferences;
+  },
 ) {
   return callMedia<Output<LyricBlock[]>>(
     env,
@@ -75,7 +83,11 @@ export async function generateMusic(
   env: Env,
   _job: JobRow,
   attemptId: string,
-  input: { blocks: LyricBlock[] },
+  input: {
+    blocks: LyricBlock[];
+    generationVersion?: number;
+    musicPreferences?: MusicPreferences;
+  },
 ) {
   const song = await signedUrl(
     env,
@@ -95,7 +107,6 @@ export async function generateMusic(
     attemptId,
   );
 }
-
 export async function recoverTranscription(
   env: Env,
   attemptId: string,
@@ -109,6 +120,20 @@ export async function recoverTranscription(
     env,
     "/recover-transcription",
     { rawSourceUrl: raw.url, resultUrl: result.url, ...input },
+    attemptId,
+  );
+}
+
+export async function createReadings(
+  env: Env,
+  _job: JobRow,
+  attemptId: string,
+  input: { blocks: LyricBlock[]; utterances: Utterance[] },
+) {
+  return callMedia<Output<LyricBlock[]>>(
+    env,
+    "/readings",
+    { ...(await targets(env, attemptId)), ...input },
     attemptId,
   );
 }

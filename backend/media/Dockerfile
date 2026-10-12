@@ -9,6 +9,7 @@ ENV LD_LIBRARY_PATH=/app/backend/media/node_modules/sherpa-onnx-linux-x64:/app/b
 COPY --chown=node:node backend/media/*.mjs ./
 COPY --chown=node:node pipeline/google.ts /app/pipeline/google.ts
 COPY --chown=node:node shared/contracts.ts /app/shared/contracts.ts
+COPY --chown=node:node shared/music.ts /app/shared/music.ts
 USER node
 EXPOSE 8080
 CMD ["node", "server.mjs"]

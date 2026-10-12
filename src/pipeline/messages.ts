@@ -1,4 +1,14 @@
 const explanations: Record<string, string> = {
+  invalid_music_preferences: "曲調と歌声を選び直してください。",
+  invalid_lyric_section: "歌詞の曲構成を確認できませんでした。",
+  invalid_singing_text: "読みはかなで、歌詞本文と同じ行数にしてください。",
+  readings_not_ready: "歌詞の読みを確認・更新してから曲を作ってください。",
+  readings_not_available:
+    "この歌詞は従来の生成方式です。読み更新は新しい歌詞作成から利用できます。",
+  readings_already_ready:
+    "すべての歌詞に読みが入っています。確認後に曲を作れます。",
+  invalid_reading_update:
+    "読みの更新結果を確認できませんでした。元の歌詞は保存されています。",
   route_not_found: "現在この操作を利用できません。時間をおいてお試しください。",
   unauthorized: "ログインを確認できません。もう一度ログインしてください。",
   authentication_not_configured:

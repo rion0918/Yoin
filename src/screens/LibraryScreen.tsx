@@ -35,6 +35,7 @@ type LibraryScreenProps = {
 const draftLabels: Partial<Record<LocalDraft["status"], string>> = {
   uploading: "一日の言葉を届けています",
   preparing: "会話から、歌詞へ",
+  updating_readings: "歌詞の読みを更新しています",
   waiting_review: "歌詞を確かめよう",
   needs_audio_review: "会話の内容を確認しよう",
   generating: "この一日が、一曲になる",

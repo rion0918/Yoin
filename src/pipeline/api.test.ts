@@ -340,3 +340,26 @@ test("transcription recovery uses its authenticated endpoint without sending aud
     },
   ]);
 });
+
+test("updates readings with the approved revision and idempotency key", async () => {
+  const requests: { url: string; method: string; body: unknown }[] = [];
+  const api = createApi(
+    { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
+    async (url, options) => {
+      requests.push({
+        url: String(url),
+        method: options?.method ?? "GET",
+        body: options?.body,
+      });
+      return Response.json({ jobId: "reading-job" }, { status: 202 });
+    },
+  );
+  await api.readings("draft-a", 4, "reading-key");
+  assert.deepEqual(requests, [
+    {
+      url: "https://test.invalid/drafts/draft-a/readings",
+      method: "POST",
+      body: JSON.stringify({ revision: 4, idempotencyKey: "reading-key" }),
+    },
+  ]);
+});

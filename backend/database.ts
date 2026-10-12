@@ -199,6 +199,30 @@ export async function lyrics(
     ? { revision, blocks: JSON.parse(row.blocks_json) as LyricBlock[] }
     : null;
 }
+async function savedTranscriptionAvailable(env: Env, row: DraftRow) {
+  if (!row.job_id || row.status !== "needs_reconciliation") return false;
+  const attempts = (
+    await env.DB.prepare(
+      "SELECT p.id, p.runtime_claimed_at FROM provider_attempts p JOIN jobs j ON j.id = p.job_id AND j.owner_id = p.owner_id WHERE j.id = ? AND j.draft_id = ? AND j.owner_id = ? AND j.kind = 'prepare' AND j.status = 'needs_reconciliation' AND p.stage = 'transcribe' AND p.status = 'needs_reconciliation'",
+    )
+      .bind(row.job_id, row.id, row.owner_id)
+      .all<{ id: string; runtime_claimed_at: string | null }>()
+  ).results;
+  if (
+    !attempts.length ||
+    attempts.some((attempt) => !attempt.runtime_claimed_at)
+  )
+    return false;
+  for (const attempt of attempts) {
+    if (
+      !(await env.AUDIO.head(`results/${row.owner_id}/${attempt.id}.json`)) &&
+      !(await env.AUDIO.head(`results/${row.owner_id}/${attempt.id}.raw.json`))
+    )
+      return false;
+  }
+  return true;
+}
+
 export async function draftDocument(
   env: Env,
   draftId: string,
@@ -215,6 +239,14 @@ export async function draftDocument(
     lyrics: await lyrics(env, draftId, row.lyric_revision),
     status: row.status,
     jobId: row.job_id,
+    ...(row.status === "needs_reconciliation"
+      ? {
+          transcriptRecoveryAvailable: await savedTranscriptionAvailable(
+            env,
+            row,
+          ),
+        }
+      : {}),
     error: row.error,
   };
 }

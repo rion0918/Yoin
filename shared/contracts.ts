@@ -209,6 +209,7 @@ export type DraftDocument = {
   lyrics: LyricRevision | null;
   status: DraftStatus;
   jobId: string | null;
+  transcriptRecoveryAvailable?: boolean;
   error: string | null;
 };
 

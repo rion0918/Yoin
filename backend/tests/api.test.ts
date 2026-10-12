@@ -856,6 +856,29 @@ describe("saved transcription recovery", () => {
     ).toMatchObject({ status: "queued" });
   });
 
+  it("offers recovery only for a claimed transcription with a saved response", async () => {
+    const { attemptId } = await seedSavedResponse();
+    expect(await (await request(`/drafts/${draftId}`)).json()).toMatchObject({
+      transcriptRecoveryAvailable: true,
+    });
+    await bindings.DB.prepare(
+      "UPDATE provider_attempts SET stage = 'lyrics' WHERE id = ?",
+    )
+      .bind(attemptId)
+      .run();
+    expect(await (await request(`/drafts/${draftId}`)).json()).toMatchObject({
+      transcriptRecoveryAvailable: false,
+    });
+    await bindings.DB.prepare(
+      "UPDATE provider_attempts SET stage = 'transcribe' WHERE id = ?",
+    )
+      .bind(attemptId)
+      .run();
+    await bindings.AUDIO.delete(`results/private-tester/${attemptId}.raw.json`);
+    expect(await (await request(`/drafts/${draftId}`)).json()).toMatchObject({
+      transcriptRecoveryAvailable: false,
+    });
+  });
   it("rejects another account's draft without reading or recovering its response", async () => {
     const { recover, restart } = await seedSavedResponse();
     const alice = await firebaseToken("alice");

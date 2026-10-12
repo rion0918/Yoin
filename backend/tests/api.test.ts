@@ -743,7 +743,7 @@ describe("saved transcription recovery", () => {
     const inspection = {
       durationMs: 90000,
       sizeBytes: 3,
-      sourceEtag: source?.etag,
+      sourceEtag: source?.httpEtag,
       transformVersion: 1,
       chunks: [{ key, offsetMs: 0, durationMs: 90000, mimeType: "audio/mp4" }],
     };

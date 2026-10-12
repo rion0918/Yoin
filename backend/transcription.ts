@@ -80,7 +80,7 @@ export async function recoverDraftTranscript(
     const source = await env.AUDIO.head(clip.object_key);
     if (
       !source ||
-      source.etag !== inspection.sourceEtag ||
+      source.httpEtag !== inspection.sourceEtag ||
       source.size !== clip.size_bytes ||
       inspection.sizeBytes !== clip.size_bytes
     )

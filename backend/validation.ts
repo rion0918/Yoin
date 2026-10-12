@@ -286,13 +286,32 @@ export function validateUtterances(
     ids.add(utteranceId);
     const startMs = integer(item.startMs, 0, durationMs);
     const endMs = integer(item.endMs, startMs + 1, durationMs);
+    const timingIssues = item.timingIssues;
+    if (
+      timingIssues !== undefined &&
+      (!Array.isArray(timingIssues) ||
+        timingIssues.length < 1 ||
+        timingIssues.some(
+          (issue) =>
+            !issue ||
+            typeof issue.text !== "string" ||
+            !issue.text.trim() ||
+            (issue.startOffset !== null &&
+              typeof issue.startOffset !== "string") ||
+            (issue.endOffset !== null && typeof issue.endOffset !== "string") ||
+            !Number.isSafeInteger(issue.chunkOffsetMs) ||
+            issue.chunkOffsetMs !== startMs,
+        ))
+    )
+      throw new HttpError(422, "invalid_transcript_timing_issues");
     return {
       id: utteranceId,
       clipId,
       startMs,
       endMs,
       speaker: text(item.speaker, 100),
-      text: text(item.text, 10_000),
+      text: text(item.text, timingIssues ? 80_000 : 10_000),
+      ...(timingIssues ? { timingIssues } : {}),
     };
   });
 }

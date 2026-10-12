@@ -57,6 +57,10 @@ const explanations: Record<string, string> = {
     "曲の生成サービスの接続を準備できませんでした。Googleへの送信は始まっていません。設定を確認してください。",
   provider_not_submitted:
     "曲の生成を開始できませんでした。Googleへの送信は始まっていません。時間をおいてもう一度お試しください。",
+  saved_transcription_unavailable:
+    "回復できる文字起こしの応答が見つかりません。元音声は保存されています。追加の送信は行っていません。",
+  saved_transcription_source_changed:
+    "元音声と保存済み応答を照合できません。追加の送信は行っていません。",
   transcript_review_conflict:
     "文字起こしの確認状態が更新されています。記録を開き直してください。",
   invalid_transcript_fingerprint: "文字起こしの確認情報を読み取れません。",

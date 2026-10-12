@@ -109,3 +109,21 @@ it("rejects unsigned callbacks and attempts whose owning job has stopped", async
   ).run();
   expect((await request("claim", "POST")).status).toBe(409);
 });
+
+it("reads a saved transcription only with a signed GET for its claimed owning attempt", async () => {
+  await bindings.DB.prepare(
+    "UPDATE jobs SET kind = 'prepare', status = 'needs_reconciliation'",
+  ).run();
+  await bindings.DB.prepare(
+    "UPDATE provider_attempts SET stage = 'transcribe', status = 'needs_reconciliation', runtime_claimed_at = '2026-10-12'",
+  ).run();
+  const raw = JSON.stringify({ status: "completed", private: "full source" });
+  await bindings.AUDIO.put("results/private-tester/music-job.raw.json", raw);
+  const result = await request("raw", "GET");
+  expect(result.status).toBe(200);
+  expect(await result.text()).toBe(raw);
+  expect(result.headers.get("cache-control")).toBe("private, no-store");
+  expect((await request("result", "GET")).status).not.toBe(200);
+  await bindings.DB.prepare("UPDATE jobs SET status = 'failed'").run();
+  expect((await request("raw", "GET")).status).toBe(409);
+});

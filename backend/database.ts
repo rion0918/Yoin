@@ -162,11 +162,21 @@ export async function utterances(
 ): Promise<Utterance[]> {
   return (
     await env.DB.prepare(
-      "SELECT u.id, u.clip_id AS clipId, u.start_ms AS startMs, u.end_ms AS endMs, u.speaker, u.text, u.speaker_profile_id AS speakerProfileId, u.speaker_name AS speakerName FROM utterances u JOIN clips c ON c.id = u.clip_id WHERE c.draft_id = ? AND c.owner_id = ? ORDER BY c.rowid, u.start_ms",
+      "SELECT u.id, u.clip_id AS clipId, u.start_ms AS startMs, u.end_ms AS endMs, u.speaker, u.text, u.speaker_profile_id AS speakerProfileId, u.speaker_name AS speakerName, u.timing_issues_json AS timingIssuesJson FROM utterances u JOIN clips c ON c.id = u.clip_id WHERE c.draft_id = ? AND c.owner_id = ? ORDER BY c.rowid, u.start_ms",
     )
       .bind(draftId, owner)
-      .all<Utterance>()
-  ).results.map((item) => {
+      .all<Utterance & { timingIssuesJson?: string | null }>()
+  ).results.map(({ timingIssuesJson, ...row }) => {
+    const item: Utterance = {
+      ...row,
+      ...(timingIssuesJson
+        ? {
+            timingIssues: JSON.parse(
+              timingIssuesJson,
+            ) as Utterance["timingIssues"],
+          }
+        : {}),
+    };
     if (!item.speakerProfileId || !item.speakerName) {
       const { speakerProfileId: _id, speakerName: _name, ...legacy } = item;
       return legacy;

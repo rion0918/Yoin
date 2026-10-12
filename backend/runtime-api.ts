@@ -54,6 +54,21 @@ export async function runtimeCallback(
     !["running", "needs_reconciliation"].includes(job.status)
   )
     throw new HttpError(409, "invalid_runtime_job");
+  if (action === "raw" && request.method === "GET") {
+    if (attempt.stage !== "transcribe" || job.kind !== "prepare")
+      throw new HttpError(409, "invalid_runtime_stage");
+    const raw = await env.AUDIO.get(
+      `results/${job.owner_id}/${attemptId}.raw.json`,
+    );
+    if (!raw) throw new HttpError(404, "saved_transcription_missing");
+    return new Response(raw.body, {
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": String(raw.size),
+        "Cache-Control": "private, no-store",
+      },
+    });
+  }
   const size = integer(
     Number(request.headers.get("content-length")),
     1,

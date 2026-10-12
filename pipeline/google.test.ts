@@ -58,6 +58,59 @@ function uploadResponses() {
     }),
   ];
 }
+test("invalid word timing preserves the full text for review over the inspected audio interval", () => {
+  const raw = response([
+    {
+      type: "text",
+      text: "駅へ向かおう。全文を残そう。",
+      annotations: [
+        {
+          type: "word_info",
+          text: "駅",
+          speaker: "spk:0",
+          start_offset: "0.100s",
+          end_offset: "0.600s",
+        },
+        {
+          type: "word_info",
+          text: "へ",
+          speaker: "spk:0",
+          start_offset: "3.900s",
+          end_offset: "1.100s",
+        },
+        {
+          type: "word_info",
+          text: "向かおう。",
+          speaker: "spk:0",
+          start_offset: "1.100s",
+          end_offset: "2.000s",
+        },
+      ],
+    },
+  ]);
+  const before = JSON.stringify(raw);
+  const result = parseTranscription(raw, {
+    clipId: "saved",
+    offsetMs: 60000,
+    durationMs: 90000,
+  });
+  assert.equal(result.utterances.length, 1);
+  const source = result.utterances[0];
+  assert.equal(source.text, "駅へ向かおう。全文を残そう。");
+  assert.equal(source.startMs, 60000);
+  assert.equal(source.endMs, 150000);
+  assert.equal(source.speaker, "話者未確認");
+  assert.deepEqual(source.timingIssues, [
+    {
+      text: "へ",
+      startOffset: "3.900s",
+      endOffset: "1.100s",
+      chunkOffsetMs: 60000,
+    },
+  ]);
+  assert.equal(result.costUsd, 0.00332);
+  assert.equal(JSON.stringify(raw), before);
+});
 test("STT uses documented word_info and preserves the original clip offset", async () => {
   const calls: { url: string; body: unknown }[] = [];
   const data = response([
@@ -750,4 +803,27 @@ test("AAC frame padding at the 25 minute split preserves source timestamps", asy
   });
   assert.equal(result.utterances[0]?.startMs, 2999500);
   assert.equal(result.utterances[0]?.endMs, 3000064);
+});
+
+test("network failures expose only a safe transport code and never retry", async () => {
+  let calls = 0;
+  await assert.rejects(
+    generateMusic({
+      blocks: [{ id: "verse", text: "hello", sourceUtteranceIds: ["u1"] }],
+      apiKey,
+      fetch: async () => {
+        calls++;
+        throw new TypeError("secret-key private lyrics", {
+          cause: { code: "UND_ERR_CONNECT_TIMEOUT", message: "private URL" },
+        });
+      },
+    }),
+    (error) => {
+      assert.ok(error instanceof GoogleProviderError);
+      assert.deepEqual(error.cause, { networkCode: "UND_ERR_CONNECT_TIMEOUT" });
+      assert.equal(JSON.stringify(error).includes("secret-key"), false);
+      return true;
+    },
+  );
+  assert.equal(calls, 1);
 });

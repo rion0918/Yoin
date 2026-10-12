@@ -2,6 +2,72 @@
 
 [ドキュメントの目次](README.md)へ
 
+## 2026-10-12 内部テスト・エミュレータの接続修復（反映前）
+
+ユーザーの指示により、現行アプリとクラウドAPIを揃え、両環境から生成・再生を確認する作業を開始した。mainのPRとCIから反映する経路は同日のチャットで確認済み。
+
+- EASの既存プロジェクトと、10月7日に完了した `playInternal` / versionCode `2` のAABをAPIで確認した。Play Consoleにも既存Yoinの内部テストアプリが存在する。以前の配布準備文書に残った「未作成」の記述は現況を表さない。
+- 配布前検査が環境変数のEAS IDだけを確認し、`app.json` の有効な既存IDを見落とす不具合を再現した。既存IDを渡す修正後に3件の回帰テストと実際のPlay用Expo config評価が成功した。
+- リモートD1の未適用migrationは `0005`〜`0008`。Workerは2026-10-05の `b20b0915-94ec-4b71-9df4-00109bde048e` が稼働している。現行ソースで公開の `/privacy` は配置先で401を返すため、ソースと配置コードが揃っていない。
+- D1の費用台帳と試行集計はともに、成功4件 / `1.285975` USD、照合待ち2件 / `1.20` USD。音楽生成成功1件と `ready` / `complete` のジョブ1件、完成曲1件も確認した。クラウド生成の成功は既に存在しており、以前の文書だけに基づく「クラウドの実AI生成は未確認」という整理を更新する。音声や会話内容はこの集計に含めていない。
+- 既存Google Play対応AVD `Pixel_9_API_35` をデータ消去せず起動した。アプリ・配布版の通し操作はまだ未完了。
+
+反映前に停止していたログインUIテストは、新しいデザイントークンをテストの読込先へ追加して6件成功した。書式検査も成功。Workerの型検査と76件のテスト、実FFmpeg/FFprobeを指定した音声サービス17件は成功し、音声テストのスキップは0。これらを実端末での通し生成・試聴の成功とは扱わない。
+
+[PR #11](https://github.com/rion0918/Yoin/pull/11)の初回CIは成功した。レビューで、`needs_audio_review` のWorkflow再実行が待機ステップへ到達せず終了する不具合と、FFmpegの負の `silence_start` を取りこぼす不具合を再現した。修正後にbackend 76件と実音声処理18件が成功した。再開テストでは保存済みステップを再利用し、有料の文字起こしが1回のまま歌詞確認へ進むことを確認した。Android起動テストの指摘は実際のExpo `UrlCreator` がホスト環境変数を扱うため再現せず、単独実行も成功した。
+
+同日のユーザー確認後、Play照合専用サービスアカウント・Yoinだけの読み取り専用権限・Android Publisher APIを設定した。鍵はGit管理外に権限600で保管し、既存スクリプトで `Play 最大 2 / EAS 現在 2 / 次回予定 3` の照合成功を確認した。EAS productionのFirebase設定file変数も登録済み。API実行前にGoogle公式の[文字起こし](https://ai.google.dev/gemini-api/docs/transcribe)、[音楽生成](https://ai.google.dev/gemini-api/docs/music-generation)、[Interactions](https://ai.google.dev/gemini-api/docs/interactions-overview)、[料金](https://ai.google.dev/gemini-api/docs/pricing)を確認した。
+
+## 2026-10-07 Play内部テスト版のGoogleログイン復旧
+
+Play Console の内部テストに公開された versionCode `2`（`0.1.0`）で、Google の画面から戻っても未ログインのままになるとの報告がありました。Firebase の Android アプリ `com.rion0918.yoin` に開発署名は登録済みでしたが、Play App Signing の SHA-1・SHA-256 は未登録でした。現在のログイン処理では Credential Manager のキャンセル応答から Firebase 認証へ進まず、この状態でログイン画面に残ります。
+
+ユーザーの個別確認後、Play Console の「Google Play による保護 → Google Play ストアの保護 → Play アプリ署名の管理」で取得した SHA-1 `27:B9:5A:24:14:CB:83:DE:A1:2A:DC:C6:44:E3:F5:B1:22:60:90:D7` と SHA-256 `C2:E2:45:86:8E:A2:1A:3C:F2:73:4F:BF:56:DA:29:05:8D:36:0D:6B:6E:98:A9:28:CA:02:0B:0F:07:F8:FD:D4` を Firebase に追加保存しました。既存証明書は保持しています。[Firebase の公式確認項目](https://firebase.google.com/docs/android/troubleshooting-faq)に沿った既存構成の設定修正で、新しい技術判断はないため ADR は追加しません。関連記録は [ADR 0014](adr/0014-firebase-account-isolation.md)・[ADR 0015](adr/0015-google-play-internal-distribution.md)です。
+
+| 確認 | 結果 | 確認できた範囲・制約 |
+| :--- | :--- | :--- |
+| Play 配布署名と Firebase 登録 | 修正前は未登録、修正後は一致 | 保存後の Firebase 一覧で SHA-1・SHA-256 の2件を確認 |
+| 更新済み `google-services.json` | 成功 | Android OAuth クライアントの SHA-1 を照合。Firebase アプリ ID、API キー、Web OAuth クライアントは維持。配布設定の既存検証も通過 |
+| 内部テスト版の Google ログイン | 成功（ユーザー確認） | アプリ終了・再起動後、ユーザーから「ログインできた」と確認。接続済み Android 端末がなく、エージェントによる端末ログ取得は未実施 |
+| Biome・型チェック・既存テスト・差分検査 | 成功 | Nix 環境で `npm run check`、`npm run typecheck`、`npm test`（124件）を確認。`git diff --check` も成功 |
+
+Firebase から取得した設定をローカルの `google-services.json` と生成済み Android 設定へ反映しました。修正前の設定と保存後の画面は Git 管理外の `.local/play-login-recovery-20261007/` に保持しています。アプリのコード、EAS production の file 変数、配布 AAB は変更していません。今回のログイン成功は認証設定の追加で確認され、再ビルド・再配布は行っていません。録音・生成・アカウント削除や複数アカウントの分離は今回の確認対象に含めません。
+
+## 2026-10-07 内部テストの公開文書と配布準備
+
+ユーザー指定の問い合わせ先でプライバシーポリシーを準備し、ログイン前・設定画面の導線を追加しました。公開文書の読み取りだけを未認証で提供し、データ API の認証境界を維持します。[ADR 0019](adr/0019-public-privacy-policy.md)は Proposed です。`GET /privacy` が設定なしでは 503 になるテストを RED で確認した後、GET と HEAD が成功し、私有 API と POST の拒否が継続することを GREEN で確認しました。
+
+| 確認 | 結果 | 確認できた範囲・制約 |
+| :--- | :--- | :--- |
+| Biome・アプリ型チェック・backend 型チェック | 成功 | Nix 環境 |
+| アプリ・backend・音声サービスのテスト | 124 / 74 / 17 件成功、スキップ 0 | 音声処理は実 FFmpeg / FFprobe、クラウド・Google 応答は置き換え |
+| Expo export・Worker dry-run | 成功 | 配布用 AAB とクラウド更新は未実施 |
+| actionlint・ShellCheck・git diff --check | 成功 | CI 定義と変更差分 |
+| 公開文書のローカル表示 | 成功 | Chrome で文書、連絡先、削除案内を確認。公開 URL と Android のリンク操作は未確認 |
+| linux/amd64 音声イメージ | 成功 | health 200、私有 8 API の無認証 401、実 ONNX モデルの 256 次元読み込み。有料 POST なし |
+| Android 再生成・`:app:bundleRelease` | 成功 | 位置権限が未反映の生成済み設定を RED で確認し、再生成後は録音・位置の権限を GREEN で確認。target API 36、4 ABI、70,036,370 bytes の AAB。開発署名であり、Play 用の署名は未確認 |
+| AAB 内の 64bit ネイティブライブラリー | 成功 | arm64 / x86_64 の 44 ライブラリーで ELF LOAD alignment が 16 KB 以上。Play 生成 APK の配置と 16 KB 端末上での動作は未確認 |
+| AAB 自体のマニフェスト・BundleConfig | 成功 | キャッシュ済み bundletool / AAPT2 protobuf で直接解析。package `com.rion0918.yoin`、target 36、debuggable false、非圧縮ネイティブの `PAGE_ALIGNMENT_16K`。録音・再生・位置のサービス種別を確認。Play 申告と動画は未提出 |
+
+Docker の配布許可一覧に新しい `activity.mjs` を追加しました。既存の予算設定 `8.733897` USD、D1 の確定費用 `1.285975` USD、照合待ち予約 `1.20` USD と PoC の移管済み状態を照合し、変更せず保持しています。Android 再生成前の設定は `/tmp/yoin-android-config-before-prebuild-20261007.tgz` に保存し、開発署名が Firebase 登録済み証明書と一致することも確認しました。端末へのインストールやデータ消去は行っていません。EAS・Play に Yoin は未作成、D1 の 0005〜0007 は未適用です。外部設定、デプロイ、Play 用の署名付き AAB と内部テストへの反映は、[配布手順](play-internal-release.md)に従って内容確認と実行指示を待ちます。
+
+## 2026-10-07 音声範囲検査と確認待ち
+
+録音の全区間を検査し、文字起こしが短い場合に歌詞作成を保留する処理を追加しました。確認待ちからは保存済みの認識結果で続行し、認識を再送しません。原音と部分結果を保持し、音声分割の再利用、区間別の処理状況、音声長の照合、歌詞出典区間と全文の再生を確認できるようにしています。処理確認と再利用の契約は[ADR 0018](adr/0018-verified-audio-coverage.md)にProposedとして記録しています。
+
+| 確認 | 結果 | 確認できた範囲・制約 |
+| :--- | :--- | :--- |
+| `npm run check`・`npm --prefix backend run check` | 成功 | Nix環境、Biome |
+| `npm run typecheck`・`npm run backend:typecheck` | 成功 | アプリとWorkerの型チェック |
+| `npm test` | 124/124成功 | 全区間再生、出典区間再生、録音時間の保持、確認操作など |
+| `npm run backend:test` | 72/72成功 | 短い認識応答、確認待ちと再開、重複確認、分割欠落、再利用、移行後の未検証データなど |
+| `npm --prefix backend run test:media` | 17/17成功、スキップ0 | NixのFFmpeg/FFprobeで26分・60分の分割、長い無音、−50dBを超える背景音を確認 |
+| `git diff --check` | 成功 | 空白エラーなし |
+
+実装前に、3分音声の冒頭数秒だけを含む正常形式の合成認識応答が成功扱いになることと、manifest連続性検査がないことを再現しました。修正後は長い無音と背景音を分け、未認識区間に有音が残る場合だけ確認待ちになることを合成データで検証しました。同じ入力・認識設定の再利用では、追加の認識要求を行わないこともテストで確認しています。有料実APIへの送信、デプロイ、既存曲の再認識は行っていません。
+
+実端末の録音継続性、実音声の認識品質、実際の3分歌唱と歌詞の脱落は未確認です。これらは内部テストで試聴・照合して記録します。
+
 ## 2026-10-06 Android実機のGoogleログイン復旧
 
 `1339dc8` の開発APKをSM_F971C（Android 17、arm64）で確認しました。アカウント選択後の `Account reauth failed` により、Firebase認証へ進まずログイン画面に残っていました。Firebaseプロジェクト `yoin-app-20261004` のAndroidアプリ `com.rion0918.yoin` には、実際の開発署名と異なるSHA-1が登録されていました。

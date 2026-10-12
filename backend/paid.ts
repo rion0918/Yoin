@@ -158,9 +158,29 @@ export async function paidCall<T>(
       error.code === "provider_cost_exceeded_reservation"
     )
       throw error;
-    const sent = !(
-      error instanceof GoogleProviderError && error.kind === "input"
-    );
+    const inputRejected =
+      error instanceof GoogleProviderError && error.kind === "input";
+    const notSubmittedCode =
+      error instanceof GoogleProviderError && error.kind === "not_submitted"
+        ? typeof error.response === "string" && /^[a-z_]+$/.test(error.response)
+          ? error.response
+          : "provider_not_submitted"
+        : error instanceof HttpError &&
+            [
+              "media_service_not_configured",
+              "media_signing_not_configured",
+            ].includes(error.code)
+          ? error.code
+          : null;
+    if (notSubmittedCode) {
+      const reset = await env.DB.prepare(
+        "UPDATE provider_attempts SET status = 'failed_before_submission', amount_micros = 0, error = ? WHERE id = ? AND owner_id = ? AND status = 'submitted' AND runtime_claimed_at IS NULL",
+      )
+        .bind(notSubmittedCode, attemptId, job.owner_id)
+        .run();
+      if (reset.meta.changes > 0) throw new HttpError(503, notSubmittedCode);
+    }
+    const sent = !inputRejected;
     await env.DB.prepare(
       "UPDATE provider_attempts SET status = ?, amount_micros = CASE WHEN ? = 0 THEN 0 ELSE amount_micros END, error = ? WHERE id = ? AND owner_id = ? AND status != 'cost_overrun'",
     )

@@ -12,7 +12,8 @@ import { promisify } from "node:util";
 import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { GoogleProviderError } from "../../pipeline/google.ts";
-import { runProvider } from "./providers.mjs";
+import { activityRangesFromSilenceLog } from "./activity.mjs";
+import { ProviderNotSubmittedError, runProvider } from "./providers.mjs";
 
 const execFile = promisify(execFileCallback);
 const MAX_BYTES = 100 * 1024 * 1024;
@@ -61,7 +62,7 @@ async function download(url, destination) {
     createWriteStream(destination),
   );
   if (bytes === 0) throw new Error("empty_audio");
-  return bytes;
+  return { sizeBytes: bytes, etag: response.headers.get("ETag") };
 }
 
 async function probe(file, ffprobe) {
@@ -103,19 +104,21 @@ async function inspect(body, options, split) {
   const directory = await mkdtemp(join(tmpdir(), "yoin-media-"));
   try {
     const source = join(directory, "source");
-    const sizeBytes = await download(sourceUrl, source);
+    const { sizeBytes, etag: sourceEtag } = await download(sourceUrl, source);
     const durationMs = await probe(source, options.ffprobe);
     if (!split) return { durationMs, sizeBytes, chunks: [] };
     const manifest = join(directory, "chunks.csv");
-    await execFile(
+    const encoded = await execFile(
       options.ffmpeg,
       [
         "-nostdin",
         "-hide_banner",
         "-loglevel",
-        "error",
+        "info",
         "-i",
         source,
+        "-af",
+        "silencedetect=noise=-50dB:d=0.25",
         "-map",
         "0:a:0",
         "-vn",
@@ -139,7 +142,11 @@ async function inspect(body, options, split) {
         "csv",
         join(directory, "chunk-%03d.m4a"),
       ],
-      { timeout: 600_000, maxBuffer: 1024 * 1024 },
+      { timeout: 600_000, maxBuffer: 8 * 1024 * 1024 },
+    );
+    const activityRanges = activityRangesFromSilenceLog(
+      encoded.stderr,
+      durationMs,
     );
     const rows = (await readFile(manifest, "utf8")).trim().split("\n");
     if (!rows.length || rows.length > 3) throw new Error("invalid_chunk_count");
@@ -180,9 +187,15 @@ async function inspect(body, options, split) {
         offsetMs,
         durationMs: chunkDuration,
         mimeType: "audio/mp4",
+        activityRanges: activityRanges
+          .map((range) => ({
+            startMs: Math.max(range.startMs, offsetMs),
+            endMs: Math.min(range.endMs, offsetMs + chunkDuration),
+          }))
+          .filter((range) => range.endMs > range.startMs),
       });
     }
-    return { durationMs, sizeBytes, chunks };
+    return { durationMs, sizeBytes, chunks, sourceEtag, transformVersion: 1 };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -204,6 +217,8 @@ export function createMediaServer({
   if (!token || token.length < 32 || !origin)
     throw new Error("media_service_not_configured");
   let busy = false;
+  let activePath = null;
+  let activeAttemptId = null;
   return createServer(async (request, response) => {
     if (request.url === "/health" && request.method === "GET") {
       response.writeHead(200);
@@ -232,12 +247,38 @@ export function createMediaServer({
       response.end();
       return;
     }
+    const paidRequest = ["/transcribe", "/lyrics", "/music"].includes(
+      request.url,
+    );
+    const suppliedAttemptId = request.headers["x-provider-attempt"];
+    const requestAttemptId =
+      typeof suppliedAttemptId === "string" &&
+      /^[a-zA-Z0-9_-]{1,200}$/.test(suppliedAttemptId)
+        ? suppliedAttemptId
+        : null;
     if (busy) {
-      response.writeHead(503, { "Retry-After": "5" });
-      response.end();
+      const activeIsPaidRequest = ["/transcribe", "/lyrics", "/music"].includes(
+        activePath,
+      );
+      const sameOrUnknownAttempt =
+        activeIsPaidRequest &&
+        (!activeAttemptId ||
+          !requestAttemptId ||
+          activeAttemptId === requestAttemptId);
+      const notSubmitted = paidRequest && !sameOrUnknownAttempt;
+      response.writeHead(503, {
+        "Retry-After": "5",
+        ...(notSubmitted ? { "X-Provider-Not-Submitted": "true" } : {}),
+        ...(notSubmitted ? { "Content-Type": "application/json" } : {}),
+      });
+      response.end(
+        notSubmitted ? JSON.stringify({ error: "media_service_busy" }) : "",
+      );
       return;
     }
     busy = true;
+    activePath = request.url;
+    activeAttemptId = paidRequest ? requestAttemptId : null;
     try {
       const parts = [];
       let size = 0;
@@ -281,14 +322,17 @@ export function createMediaServer({
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify(result));
     } catch (error) {
-      response.writeHead(422, {
+      const notSubmitted = error instanceof ProviderNotSubmittedError;
+      response.writeHead(notSubmitted ? 503 : 422, {
         "Content-Type": "application/json",
+        ...(notSubmitted ? { "X-Provider-Not-Submitted": "true" } : {}),
         ...(error instanceof GoogleProviderError && error.kind === "input"
           ? { "X-Provider-Input-Rejected": "true" }
           : {}),
       });
-      const code =
-        error instanceof GoogleProviderError && error.kind === "input"
+      const code = notSubmitted
+        ? error.message
+        : error instanceof GoogleProviderError && error.kind === "input"
           ? "provider_input_rejected"
           : typeof error?.message === "string" &&
               /^[a-z_]+$/.test(error.message)
@@ -297,6 +341,8 @@ export function createMediaServer({
       response.end(JSON.stringify({ error: code }));
     } finally {
       busy = false;
+      activePath = null;
+      activeAttemptId = null;
     }
   });
 }

@@ -1,3 +1,4 @@
+import { GoogleProviderError } from "../pipeline/google.ts";
 import {
   CHUNK_MS,
   MAX_AUDIO_MS,
@@ -10,29 +11,52 @@ import {
   SPEAKER_MODEL_VERSION,
   type SpeakerMatch,
 } from "../shared/contracts.ts";
+import {
+  analyzeTranscriptCoverage,
+  hasContinuousCoverage,
+} from "./audio-coverage.ts";
 import type { ClipRow, JobRow } from "./database.ts";
 import { chunkKey } from "./media-api.ts";
 import { signedUrl } from "./security.ts";
 import { type Env, HttpError } from "./types.ts";
 
+const paidProviderPaths = ["/transcribe", "/lyrics", "/music"] as const;
+
+function mediaConfigurationError(path: string) {
+  if ((paidProviderPaths as readonly string[]).includes(path))
+    return new GoogleProviderError(
+      path.slice(1) as "transcribe" | "lyrics" | "music",
+      "not_submitted",
+      503,
+      "media_service_not_configured",
+    );
+  return new HttpError(503, "media_service_not_configured");
+}
+
 export async function callMedia<T>(
   env: Env,
   path: string,
   body: unknown,
+  attemptId?: string,
 ): Promise<T> {
   if (
     !env.MEDIA_SERVICE_URL ||
     !env.MEDIA_SERVICE_TOKEN ||
     env.MEDIA_SERVICE_TOKEN.length < 32
   )
-    throw new HttpError(503, "media_service_not_configured");
-  const service = new URL(env.MEDIA_SERVICE_URL);
+    throw mediaConfigurationError(path);
+  let service: URL;
+  try {
+    service = new URL(env.MEDIA_SERVICE_URL);
+  } catch {
+    throw mediaConfigurationError(path);
+  }
   if (
     service.protocol !== "https:" &&
     service.hostname !== "127.0.0.1" &&
     service.hostname !== "localhost"
   )
-    throw new HttpError(503, "media_service_not_configured");
+    throw mediaConfigurationError(path);
   const response = await fetch(
     new Request(new URL(path, service), {
       method: "POST",
@@ -40,6 +64,7 @@ export async function callMedia<T>(
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${env.MEDIA_SERVICE_TOKEN}`,
+        ...(attemptId ? { "X-Provider-Attempt": attemptId } : {}),
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(850_000),
@@ -58,12 +83,30 @@ export async function callMedia<T>(
     }
     if (
       response.headers.get("X-Provider-Input-Rejected") === "true" &&
-      ["/transcribe", "/lyrics", "/music"].includes(path)
+      paidProviderPaths.includes(path as (typeof paidProviderPaths)[number])
     )
       throw new GoogleProviderError(
         path.slice(1) as "transcribe" | "lyrics" | "music",
         "input",
       );
+    if (
+      response.headers.get("X-Provider-Not-Submitted") === "true" &&
+      paidProviderPaths.includes(path as (typeof paidProviderPaths)[number])
+    ) {
+      const result = (await response.json().catch(() => null)) as {
+        error?: unknown;
+      } | null;
+      const code =
+        typeof result?.error === "string" && /^[a-z_]+$/.test(result.error)
+          ? result.error
+          : "provider_not_submitted";
+      throw new GoogleProviderError(
+        path.slice(1) as "transcribe" | "lyrics" | "music",
+        "not_submitted",
+        response.status,
+        code,
+      );
+    }
     throw new HttpError(502, "media_inspection_failed");
   }
   return (await response.json()) as T;
@@ -184,8 +227,49 @@ export async function identifySpeakersInChunk(
 }
 
 export async function inspectClip(env: Env, job: JobRow, clip: ClipRow) {
-  if (clip.inspection_json)
-    return JSON.parse(clip.inspection_json) as MediaInspection;
+  const sourceObject = await env.AUDIO.head(clip.object_key);
+  if (!sourceObject) throw new HttpError(422, "media_source_missing");
+  if (clip.inspection_json) {
+    const cached = JSON.parse(clip.inspection_json) as MediaInspection;
+    const reusable =
+      cached.transformVersion === 1 &&
+      cached.sourceEtag === sourceObject.httpEtag &&
+      cached.sizeBytes === clip.size_bytes &&
+      Number.isSafeInteger(cached.durationMs) &&
+      Array.isArray(cached.chunks) &&
+      cached.chunks.length >= 1 &&
+      hasContinuousCoverage(cached.durationMs, cached.chunks) &&
+      cached.chunks.every((chunk, index) => {
+        const key = chunk.key.split("/");
+        return (
+          chunk.mimeType === "audio/mp4" &&
+          Number.isSafeInteger(chunk.offsetMs) &&
+          Number.isSafeInteger(chunk.durationMs) &&
+          chunk.durationMs <= CHUNK_MS + 1000 &&
+          Array.isArray(chunk.activityRanges) &&
+          key.length === 5 &&
+          key[0] === "processed" &&
+          key[1] === job.owner_id &&
+          /^[a-zA-Z0-9_-]+$/.test(key[2] ?? "") &&
+          key[3] === clip.id &&
+          key[4] === `${index}.m4a` &&
+          chunk.activityRanges.every(
+            (range) =>
+              Number.isSafeInteger(range.startMs) &&
+              Number.isSafeInteger(range.endMs) &&
+              range.startMs >= chunk.offsetMs &&
+              range.endMs <= chunk.offsetMs + chunk.durationMs &&
+              range.endMs > range.startMs,
+          )
+        );
+      });
+    if (reusable) {
+      const objects = await Promise.all(
+        cached.chunks.map((chunk) => env.AUDIO.head(chunk.key)),
+      );
+      if (objects.every(Boolean)) return cached;
+    }
+  }
   const mediaOrigin = env.MEDIA_API_URL ?? env.PUBLIC_API_URL;
   const source = await signedUrl(
     env,
@@ -216,7 +300,10 @@ export async function inspectClip(env: Env, job: JobRow, clip: ClipRow) {
     inspection.sizeBytes !== clip.size_bytes ||
     !Array.isArray(inspection.chunks) ||
     inspection.chunks.length < 1 ||
-    inspection.chunks.length > 3
+    inspection.chunks.length > 3 ||
+    inspection.transformVersion !== 1 ||
+    inspection.sourceEtag !== sourceObject.httpEtag ||
+    !hasContinuousCoverage(inspection.durationMs, inspection.chunks)
   )
     throw new HttpError(422, "invalid_media_inspection");
   for (const [index, chunk] of inspection.chunks.entries()) {
@@ -231,15 +318,46 @@ export async function inspectClip(env: Env, job: JobRow, clip: ClipRow) {
       chunk.offsetMs + chunk.durationMs > inspection.durationMs + 1000
     )
       throw new HttpError(422, "invalid_media_chunk");
+    if (
+      !Array.isArray(chunk.activityRanges) ||
+      chunk.activityRanges.some(
+        (range) =>
+          !Number.isSafeInteger(range.startMs) ||
+          !Number.isSafeInteger(range.endMs) ||
+          range.startMs < chunk.offsetMs ||
+          range.endMs > chunk.offsetMs + chunk.durationMs ||
+          range.endMs <= range.startMs,
+      )
+    )
+      throw new HttpError(422, "invalid_media_activity");
     if (!(await env.AUDIO.head(chunk.key)))
       throw new HttpError(422, "media_chunk_missing");
   }
   await env.DB.batch([
     env.DB.prepare(
-      "UPDATE clips SET duration_ms = ?, inspection_json = ? WHERE id = ? AND owner_id = ?",
+      "UPDATE clips SET duration_ms = ?, inspection_json = ?, processing_json = ? WHERE id = ? AND owner_id = ?",
     ).bind(
       inspection.durationMs,
       JSON.stringify(inspection),
+      JSON.stringify({
+        status: "unverified",
+        recordedDurationMs: clip.capture_duration_ms,
+        clientDurationMs: clip.client_duration_ms || clip.duration_ms,
+        serverDurationMs: inspection.durationMs,
+        processedMs: inspection.durationMs,
+        speechActivityMs: analyzeTranscriptCoverage({
+          durationMs: inspection.durationMs,
+          activityRanges: inspection.chunks.flatMap(
+            (chunk) => chunk.activityRanges ?? [],
+          ),
+          utterances: [],
+        }).speechActivityMs,
+        transcribedMs: 0,
+        unrecognizedActivityMs: 0,
+        expectedChunks: inspection.chunks.length,
+        completedChunks: 0,
+        unrecognizedRanges: [],
+      }),
       clip.id,
       job.owner_id,
     ),
@@ -271,5 +389,3 @@ export async function probeSong(env: Env, _job: JobRow, audioId: string) {
     throw new HttpError(422, "invalid_generated_audio");
   return inspection;
 }
-
-import { GoogleProviderError } from "../pipeline/google.ts";

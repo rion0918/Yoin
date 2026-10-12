@@ -1,41 +1,18 @@
 import {
   createLyrics,
+  GoogleProviderError,
   generateMusic,
   transcribeAudio,
 } from "../../pipeline/google.ts";
 
-function signedTarget(value, origin, path) {
-  const url = new URL(value);
-  if (
-    url.origin !== origin ||
-    !path.test(url.pathname) ||
-    !url.searchParams.has("signature")
-  )
-    throw new Error("invalid_runtime_target");
-  return url;
+export class ProviderNotSubmittedError extends Error {
+  constructor(code) {
+    super(code);
+    this.name = "ProviderNotSubmittedError";
+  }
 }
 
-async function upload(url, bytes, contentType) {
-  const response = await fetch(url, {
-    method: "PUT",
-    redirect: "error",
-    headers: {
-      "Content-Type": contentType,
-      "Content-Length": String(bytes.byteLength),
-    },
-    body: bytes,
-    signal: AbortSignal.timeout(180_000),
-  });
-  if (!response.ok) throw new Error("runtime_result_upload_failed");
-  return response.json();
-}
-
-export async function runProvider(
-  stage,
-  body,
-  { origin, apiKey, providerFetch },
-) {
-  if (!apiKey) throw new Error("provider_not_configured");
+function runtimeTargets(stage, body, origin) {
   const claimUrl = signedTarget(
     body.claimUrl,
     origin,
@@ -72,6 +49,54 @@ export async function runProvider(
     if (songUrl.pathname !== `${base}/song`)
       throw new Error("runtime_attempt_mismatch");
   }
+  return { claimUrl, resultUrl, rawUrl, sourceUrl, songUrl };
+}
+
+function safeErrorCode(error) {
+  return typeof error?.message === "string" && /^[a-z_]+$/.test(error.message)
+    ? error.message
+    : "provider_not_submitted";
+}
+
+function signedTarget(value, origin, path) {
+  const url = new URL(value);
+  if (
+    url.origin !== origin ||
+    !path.test(url.pathname) ||
+    !url.searchParams.has("signature")
+  )
+    throw new Error("invalid_runtime_target");
+  return url;
+}
+
+async function upload(url, bytes, contentType) {
+  const response = await fetch(url, {
+    method: "PUT",
+    redirect: "error",
+    headers: {
+      "Content-Type": contentType,
+      "Content-Length": String(bytes.byteLength),
+    },
+    body: bytes,
+    signal: AbortSignal.timeout(180_000),
+  });
+  if (!response.ok) throw new Error("runtime_result_upload_failed");
+  return response.json();
+}
+
+export async function runProvider(
+  stage,
+  body,
+  { origin, apiKey, providerFetch },
+) {
+  if (!apiKey) throw new ProviderNotSubmittedError("provider_not_configured");
+  let targets;
+  try {
+    targets = runtimeTargets(stage, body, origin);
+  } catch (error) {
+    throw new ProviderNotSubmittedError(safeErrorCode(error));
+  }
+  const { claimUrl, resultUrl, rawUrl, sourceUrl, songUrl } = targets;
   const claim = await fetch(claimUrl, {
     method: "POST",
     redirect: "error",
@@ -94,13 +119,22 @@ export async function runProvider(
     const bytes = new Uint8Array(await audio.arrayBuffer());
     if (bytes.byteLength < 1 || bytes.byteLength > 16 * 1024 * 1024)
       throw new Error("invalid_runtime_audio_size");
-    result = await transcribeAudio({
-      ...options,
-      bytes,
-      mimeType: "audio/mp4",
-      clipId: body.clipId,
-      offsetMs: body.offsetMs,
-    });
+    try {
+      result = await transcribeAudio({
+        ...options,
+        bytes,
+        mimeType: "audio/mp4",
+        clipId: body.clipId,
+        offsetMs: body.offsetMs,
+      });
+    } catch (error) {
+      if (error instanceof GoogleProviderError && error.response !== null) {
+        const raw = Buffer.from(JSON.stringify(error.response));
+        if (raw.byteLength <= 100 * 1024 * 1024)
+          await upload(rawUrl, raw, "application/json");
+      }
+      throw error;
+    }
     value = result.utterances;
   } else if (stage === "lyrics") {
     result = await createLyrics({ ...options, utterances: body.utterances });

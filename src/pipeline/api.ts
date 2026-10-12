@@ -255,6 +255,16 @@ export function createApi(
         "POST",
         { idempotencyKey },
       ),
+    reviewTranscript: (
+      draftId: string,
+      jobId: string,
+      transcriptFingerprint: string,
+    ) =>
+      request<{ accepted: true }>(
+        `/drafts/${encodeURIComponent(draftId)}/transcript-review`,
+        "POST",
+        { jobId, transcriptFingerprint },
+      ),
     draft: (id: string) =>
       request<DraftDocument>(`/drafts/${encodeURIComponent(id)}`),
     job: (id: string) =>
@@ -265,11 +275,16 @@ export function createApi(
         "PATCH",
         { revision, blocks },
       ),
-    generate: (id: string, revision: number, idempotencyKey: string) =>
+    generate: (
+      id: string,
+      revision: number,
+      idempotencyKey: string,
+      songTitle: string,
+    ) =>
       request<{ jobId: string }>(
         `/drafts/${encodeURIComponent(id)}/generate`,
         "POST",
-        { revision, idempotencyKey },
+        { revision, idempotencyKey, songTitle },
       ),
     songs: () => request<SongDocument[]>("/songs"),
     song: (id: string) =>

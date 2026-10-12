@@ -14,6 +14,7 @@ import {
   mergeRemoteDraft,
   restoreRecording,
   sourceContext,
+  sourcePlaybackRange,
 } from "./library.ts";
 
 const clip: LocalClip = {
@@ -122,13 +123,15 @@ test("source context selects the locality nearest to the requested clip offset",
 
 test("remote preparation merges metadata while retaining local files and multipart progress", () => {
   const state = saved();
+  state.drafts[0].songTitle = "夜明け前";
   state.drafts[0].clips[0].upload = {
     uploadId: "u1",
     parts: [{ partNumber: 1, etag: "etag" }],
     complete: true,
   };
+  const { songTitle: _songTitle, ...remoteDraft } = state.drafts[0];
   const remote = {
-    ...state.drafts[0],
+    ...remoteDraft,
     status: "waiting_review" as const,
     clips: [{ ...clip, durationMs: 2950 }],
   };
@@ -136,6 +139,7 @@ test("remote preparation merges metadata while retaining local files and multipa
   assert.equal(merged.drafts[0].clips[0].localUri, clip.localUri);
   assert.equal(merged.drafts[0].clips[0].upload?.parts[0].etag, "etag");
   assert.equal(merged.drafts[0].clips[0].durationMs, 2950);
+  assert.equal(merged.drafts[0].songTitle, "夜明け前");
 });
 
 test("a clip moves its private route into the library and keeps it after song completion", () => {
@@ -244,4 +248,19 @@ test("only a real completed song removes its draft and repeated completion is ha
   assert.equal(completed.songs[0].durationMs, 113400);
   assert.deepEqual(completeSong(completed, song), completed);
   assert.equal(state.drafts.length, 1);
+});
+
+test("clip playback spans the full recording while lyric playback keeps its source interval", () => {
+  const lines = [
+    { startMs: 12_000, endMs: 14_000 },
+    { startMs: 16_000, endMs: 18_000 },
+  ];
+  assert.deepEqual(sourcePlaybackRange(clip, lines, true), {
+    startMs: 0,
+    endMs: undefined,
+  });
+  assert.deepEqual(sourcePlaybackRange(clip, lines), {
+    startMs: 12_000,
+    endMs: 18_000,
+  });
 });

@@ -25,10 +25,15 @@ ADR（Architecture Decision Record）は、1つの重要な判断について、
 | [0015: Google Play内部テスト用の配布ビルドを使用する](0015-google-play-internal-distribution.md) | Proposed | 2026-10-05 |
 | [0016: 思い出ごとに参加する話者を選ぶ](0016-memory-speaker-selection.md) | Accepted | 2026-10-06 |
 | [0017: 録音位置を端末取得し、クリップ単位で保存する](0017-recording-location.md) | Accepted | 2026-10-06 |
+| [0018: 音声の処理範囲を検証し、疑いがあれば確認を待つ](0018-verified-audio-coverage.md) | Proposed | 2026-10-07 |
+| [0019: プライバシーポリシーを未認証で公開する](0019-public-privacy-policy.md) | Proposed | 2026-10-07 |
+| [0020: 一日の時間と出典の言葉をUIの共通表現にする](0020-memory-led-ui.md) | Proposed | 2026-10-07 |
+| [0021: 思い出の光の表紙と白い時間の帯を共通素材にする](0021-memory-gallery.md) | Proposed | 2026-10-08 |
+| [0022: 制作名と完成曲名を分ける](0022-separate-creation-and-song-titles.md) | Proposed | 2026-10-10 |
 
 Accepted の記録が現在の採用済み判断です。Proposed は提案段階であり、採用済みとして扱いません。記録の追加・状態変更時には、この一覧も更新します。
 
-番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0018-<short-title>.md` です。
+番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0023-<short-title>.md` です。
 
 ## 作業前に読む
 

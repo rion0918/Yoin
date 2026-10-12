@@ -46,6 +46,7 @@ import type {
   AudioEngine,
   NativeStopListener,
   PendingRecording,
+  PreparedListener,
   RecorderPhase,
 } from "./types";
 
@@ -82,6 +83,7 @@ export function useAudioEngine(
   const [locationStatus, setLocationStatus] =
     useState<AudioEngine["state"]["locationStatus"]>("off");
   const pending = useRef<PendingRecording | null>(null);
+  const persistPending = useRef<PreparedListener | null>(null);
   const capturing = useRef(false);
   const manualStopId = useRef<string | null>(null);
   const nativeCallback = useRef(onNativeStop);
@@ -400,16 +402,30 @@ export function useAudioEngine(
         queue.run(async () => {
           setRecorderState("saving");
           capturing.current = false;
-          const locationRoute = await finishLocationCapture();
+          let locationRoute: RecordingLocationRoute | null = null;
           try {
+            const capturedDurationMs = recorder.getStatus().durationMillis;
+            const finalized =
+              Number.isFinite(capturedDurationMs) && capturedDurationMs > 0
+                ? {
+                    ...current,
+                    capturedDurationMs: Math.round(capturedDurationMs),
+                  }
+                : current;
             if (!alreadyStopped) await recorder.stop();
+            pending.current = finalized;
+            await persistPending.current?.(finalized);
+            locationRoute = await finishLocationCapture();
             const uri = finishedUri ?? recorder.uri ?? current.localUri;
             if (!uri) throw new Error("録音ファイルが見つかりません。");
             const inspection = await inspectLocalAudio(uri);
             const saved =
-              current.purpose === "speaker"
-                ? clipFromRecording({ ...current, localUri: uri }, inspection)
-                : clipFromRecording({ ...current, localUri: uri }, inspection);
+              finalized.purpose === "speaker"
+                ? clipFromRecording({ ...finalized, localUri: uri }, inspection)
+                : clipFromRecording(
+                    { ...finalized, localUri: uri },
+                    inspection,
+                  );
             const clip =
               locationRoute && saved.purpose !== "speaker"
                 ? { ...saved, locationRoute }
@@ -417,6 +433,7 @@ export function useAudioEngine(
             if (native && manualStopId.current !== current.clipId)
               await nativeCallback.current?.(clip);
             pending.current = null;
+            persistPending.current = null;
             completedLocationRoute.current = null;
             locationRecorder.current = null;
             locationSampleSeen.current = false;
@@ -425,6 +442,9 @@ export function useAudioEngine(
             if (!locationEnabled.current) setLocationStatus("off");
             return clip;
           } catch (cause) {
+            try {
+              locationRoute = await finishLocationCapture();
+            } catch {}
             setRecorderState("interrupted");
             setError(
               cause instanceof Error
@@ -587,6 +607,7 @@ export function useAudioEngine(
             shouldPlayInBackground: false,
             interruptionMode: "doNotMix",
           });
+          persistPending.current = onPrepared ?? null;
           const onRecordingPrepared = async (next: PendingRecording) => {
             pending.current = next;
             manualStopId.current = null;
@@ -622,6 +643,7 @@ export function useAudioEngine(
           return prepared;
         } catch (cause) {
           pending.current = null;
+          persistPending.current = null;
           capturing.current = false;
           await finishLocationCapture();
           try {

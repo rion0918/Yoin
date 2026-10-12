@@ -1,4 +1,4 @@
-function validateDistribution(env, services) {
+function validateDistribution(env, services, configuredProjectId) {
   const url = new URL(env.EXPO_PUBLIC_API_URL);
   if (
     url.protocol !== "https:" ||
@@ -44,7 +44,7 @@ function validateDistribution(env, services) {
     throw new Error("FirebaseのAndroid登録とWeb OAuthクライアントが必要です。");
   if (
     !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(
-      env.EAS_PROJECT_ID ?? "",
+      env.EAS_PROJECT_ID ?? configuredProjectId ?? "",
     )
   )
     throw new Error("EASプロジェクトIDが必要です。");

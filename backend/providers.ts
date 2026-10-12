@@ -35,12 +35,17 @@ export async function transcribeAudio(
     3600,
     env.MEDIA_API_URL ?? env.PUBLIC_API_URL,
   );
-  return callMedia<Output<Utterance[]>>(env, "/transcribe", {
-    ...(await targets(env, attemptId)),
-    sourceUrl: source.url,
-    clipId: input.clipId,
-    offsetMs: input.offsetMs,
-  });
+  return callMedia<Output<Utterance[]>>(
+    env,
+    "/transcribe",
+    {
+      ...(await targets(env, attemptId)),
+      sourceUrl: source.url,
+      clipId: input.clipId,
+      offsetMs: input.offsetMs,
+    },
+    attemptId,
+  );
 }
 
 export async function createLyrics(
@@ -49,10 +54,15 @@ export async function createLyrics(
   attemptId: string,
   input: { utterances: Utterance[] },
 ) {
-  return callMedia<Output<LyricBlock[]>>(env, "/lyrics", {
-    ...(await targets(env, attemptId)),
-    ...input,
-  });
+  return callMedia<Output<LyricBlock[]>>(
+    env,
+    "/lyrics",
+    {
+      ...(await targets(env, attemptId)),
+      ...input,
+    },
+    attemptId,
+  );
 }
 
 export async function generateMusic(
@@ -68,9 +78,14 @@ export async function generateMusic(
     3600,
     env.MEDIA_API_URL ?? env.PUBLIC_API_URL,
   );
-  return callMedia<Output<SavedMusic>>(env, "/music", {
-    ...(await targets(env, attemptId)),
-    songUploadUrl: song.url,
-    ...input,
-  });
+  return callMedia<Output<SavedMusic>>(
+    env,
+    "/music",
+    {
+      ...(await targets(env, attemptId)),
+      songUploadUrl: song.url,
+      ...input,
+    },
+    attemptId,
+  );
 }

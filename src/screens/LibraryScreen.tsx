@@ -1,23 +1,25 @@
 import { Feather } from "@expo/vector-icons";
 import { useState } from "react";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import {
-  Image,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 import type {
   LocalDraft,
   LocalSpeakerProfile,
   SongDocument,
 } from "../../shared/contracts";
 import { ActionButton } from "../components/ActionButton";
+import { DayTrace } from "../components/DayTrace";
+import { MemoryReveal } from "../components/MemoryReveal";
+import { MemoryWindow } from "../components/MemoryWindow";
 import { NativeSheet } from "../components/NativeSheet";
+import { TimeSculpture } from "../components/TimeSculpture";
+import { YoinLogo } from "../components/YoinLogo";
+import { colors, layout, radii } from "../design/tokens";
+import { memoryGroups } from "../domain/memories";
 import { formatTime } from "../domain/session";
-import { songDate } from "../pipeline/library";
 
 type LibraryScreenProps = {
   songs: SongDocument[];
@@ -30,7 +32,15 @@ type LibraryScreenProps = {
   onOpenSong: (song: SongDocument) => void;
 };
 
-const artwork = require("../../assets/season-background.png");
+const draftLabels: Partial<Record<LocalDraft["status"], string>> = {
+  uploading: "一日の言葉を届けています",
+  preparing: "会話から、歌詞へ",
+  waiting_review: "歌詞を確かめよう",
+  needs_audio_review: "会話の内容を確認しよう",
+  generating: "この一日が、一曲になる",
+  failed: "保存した記録から続きを確認",
+  needs_reconciliation: "受付の確認を待っています",
+};
 
 export function LibraryScreen({
   songs,
@@ -42,17 +52,15 @@ export function LibraryScreen({
   onOpenDraft,
   onOpenSong,
 }: LibraryScreenProps) {
+  const insets = useSafeAreaInsets();
+  const [dockHeight, setDockHeight] = useState(0);
   const [speakerSelectionOpen, setSpeakerSelectionOpen] = useState(false);
   const [selectedSpeakerProfileIds, setSelectedSpeakerProfileIds] = useState<
     string[]
   >([]);
-  const { width } = useWindowDimensions();
-  const albumWidth = (Math.min(width, 390) - 48) / 2;
   const registeredSpeakers = speakers.filter(
-    (speaker) =>
-      speaker.status === "ready" && speaker.sampleId && speaker.modelVersion,
+    (s) => s.status === "ready" && s.sampleId && s.modelVersion,
   );
-
   function openNewRecording() {
     if (!registeredSpeakers.length) {
       onSpeakerSettings();
@@ -61,140 +69,173 @@ export function LibraryScreen({
     setSelectedSpeakerProfileIds([]);
     setSpeakerSelectionOpen(true);
   }
-
-  function startRecording() {
-    setSpeakerSelectionOpen(false);
-    onNewRecording(selectedSpeakerProfileIds);
-  }
-
-  function toggleSpeaker(speakerId: string) {
+  function toggleSpeaker(id: string) {
     setSelectedSpeakerProfileIds((selected) =>
-      selected.includes(speakerId)
-        ? selected.filter((value) => value !== speakerId)
-        : [...selected, speakerId],
+      selected.includes(id)
+        ? selected.filter((value) => value !== id)
+        : [...selected, id],
     );
   }
-
   return (
-    <SafeAreaView style={styles.screen} testID="home">
+    <SafeAreaView
+      edges={["top", "left", "right"]}
+      style={styles.screen}
+      testID="home"
+    >
       <View style={styles.header}>
-        <Text style={styles.wordmark}>Yoin</Text>
-        <View style={{ flexDirection: "row", gap: 12 }}>
+        <YoinLogo style={styles.wordmark} />
+        <View style={styles.headerActions}>
           <ActionButton
             label="話者設定"
             onPress={onSpeakerSettings}
-            style={styles.newRecording}
+            style={styles.iconButton}
             testID="speaker-settings"
           >
-            <Feather name="users" size={20} color="#332317" />
+            <Feather name="users" size={20} color={colors.ink} />
           </ActionButton>
           <ActionButton
             label="設定"
             onPress={onSettings}
-            style={styles.newRecording}
+            style={styles.iconButton}
             testID="account-settings"
           >
-            <Feather name="settings" size={21} color="#332317" />
-          </ActionButton>
-          <ActionButton
-            label="新しい記録"
-            onPress={openNewRecording}
-            style={styles.newRecording}
-            testID="new-recording"
-          >
-            <Feather name="plus" size={25} color="#332317" />
+            <Feather name="settings" size={20} color={colors.ink} />
           </ActionButton>
         </View>
       </View>
       <ScrollView
-        contentContainerStyle={styles.content}
+        style={[
+          styles.scroll,
+          {
+            marginBottom: dockHeight
+              ? dockHeight + insets.bottom + 24
+              : insets.bottom + 116,
+          },
+        ]}
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={[
+          styles.content,
+          { paddingBottom: insets.bottom + 24 },
+        ]}
       >
-        <Text style={styles.heading} accessibilityRole="header">
-          ライブラリ
-        </Text>
-        <Text style={styles.subtitle}>あなたの時間を、もう一度。</Text>
-
-        {drafts.length > 0 && (
+        <View style={styles.introduction}>
+          <Text accessibilityRole="header" style={styles.heading}>
+            {songs.length
+              ? "あの日のことを、\nもう一度。"
+              : "今日を、\n未来に残そう。"}
+          </Text>
+          <Text style={styles.intro}>声も、笑った理由も、ここに。</Text>
+        </View>
+        {!!drafts.length && (
           <View style={styles.drafts}>
             <Text style={styles.sectionHeading} accessibilityRole="header">
-              記録の途中
+              途中の一日
             </Text>
             {drafts.map((draft) => (
               <ActionButton
                 key={draft.id}
-                label={`${draft.title}を再開`}
+                label={`${draft.title}の続きを開く`}
                 onPress={() => onOpenDraft(draft)}
                 style={styles.draftRow}
                 testID={`draft-${draft.id}`}
               >
                 <View style={styles.draftIcon}>
-                  <Feather name="mic" size={21} color="#332317" />
+                  <Feather name="mic" size={20} color={colors.ink} />
                 </View>
                 <View style={styles.rowInformation}>
                   <Text style={styles.draftTitle}>{draft.title}</Text>
-                  <Text style={styles.rowDetail}>
-                    {draft.clips.length}件の会話 ·{" "}
-                    {formatTime(
-                      draft.clips.reduce(
-                        (sum, clip) => sum + clip.durationMs,
-                        0,
-                      ) / 1000,
-                    )}
+                  <Text style={styles.detail}>
+                    {draftLabels[draft.status] ??
+                      `${draft.clips.length}区間の会話 / ${formatTime(draft.clips.reduce((sum, clip) => sum + clip.durationMs, 0) / 1000)}`}
                   </Text>
+                  <DayTrace clips={draft.clips} />
                 </View>
-                <Feather name="chevron-right" size={18} color="#726d69" />
+                <Feather name="arrow-up-right" size={20} color={colors.ink} />
               </ActionButton>
             ))}
           </View>
         )}
-
-        {!songs.length && (
-          <Text style={styles.subtitle}>
-            右上の＋から、会話を残してみよう。
+        <View style={styles.memoriesHeading}>
+          <Text style={styles.sectionHeading} accessibilityRole="header">
+            わたしたちの思い出
           </Text>
-        )}
-        <View style={styles.albums}>
-          {songs.map((song) => (
-            <ActionButton
-              key={song.id}
-              label={`${song.title} ${songDate(song)}の曲を開く`}
-              onPress={() => onOpenSong(song)}
-              style={[styles.album, { width: albumWidth }]}
-              testID={`album-${song.id}`}
-            >
-              <Image
-                source={artwork}
-                style={[
-                  styles.cover,
-                  { width: albumWidth, height: albumWidth },
-                ]}
-                resizeMode="cover"
-                accessibilityLabel={`${song.title}の仮ジャケット`}
-              />
-              <Text style={styles.albumTitle}>{song.title}</Text>
-              <Text style={styles.albumDate}>{songDate(song)}</Text>
-            </ActionButton>
-          ))}
+          <Text style={styles.detail}>
+            {songs.length
+              ? `${songs.length}つの思い出`
+              : "はじめての一日を、ここに。"}
+          </Text>
         </View>
+        {memoryGroups(songs).map((group) => (
+          <View key={group.key}>
+            <Text style={styles.monthLabel} accessibilityRole="header">
+              {group.label}
+            </Text>
+            {group.songs.map((song) => (
+              <MemoryReveal key={song.id}>
+                <MemoryWindow
+                  song={song}
+                  names={(song.speakerProfileIds ?? []).flatMap((id) => {
+                    const name = speakers.find((s) => s.id === id)?.name;
+                    return name ? [name] : [];
+                  })}
+                  onOpen={() => onOpenSong(song)}
+                />
+              </MemoryReveal>
+            ))}
+          </View>
+        ))}
+        {!songs.length && (
+          <View style={styles.empty}>
+            <TimeSculpture clips={[]} />
+            <Text style={styles.emptyWords}>
+              {"なんでもない話が、\n忘れたくない一日になる。"}
+            </Text>
+            <Text style={styles.intro}>今日の会話から、思い出の一曲を。</Text>
+          </View>
+        )}
       </ScrollView>
+      <View
+        style={[styles.dock, { bottom: insets.bottom + 16 }]}
+        pointerEvents="box-none"
+      >
+        <View
+          style={styles.dockContent}
+          onLayout={(event) => setDockHeight(event.nativeEvent.layout.height)}
+        >
+          <Text style={styles.startHint}>メンバーを選んで録音へ</Text>
+          <ActionButton
+            label="メンバーを選んで会話を録音する"
+            onPress={openNewRecording}
+            style={styles.start}
+            testID="new-recording"
+          >
+            <View style={styles.startLeft}>
+              <Feather name="mic" size={21} color={colors.paper} />
+              <View style={styles.startDivider} />
+              <Text style={styles.startText}>会話を録音する</Text>
+            </View>
+          </ActionButton>
+        </View>
+      </View>
       <NativeSheet
         open={speakerSelectionOpen}
         onClose={() => setSpeakerSelectionOpen(false)}
-        title="参加する人を選ぶ"
-        description="この記録で話した人を選んでください。記録ごとに別の組み合わせを選べます。"
+        title="今日は、誰と？"
+        description="この一日を一緒に過ごす人を選んでください。"
         snap={0.66}
         footer={
           <ActionButton
             label="選んだ話者で新しい記録を始める"
-            onPress={startRecording}
+            onPress={() => {
+              setSpeakerSelectionOpen(false);
+              onNewRecording(selectedSpeakerProfileIds);
+            }}
             disabled={!selectedSpeakerProfileIds.length}
-            style={styles.startRecording}
+            style={styles.primary}
             testID="start-memory-recording"
           >
-            <Text style={styles.startRecordingLabel}>
-              選んだ人で記録をはじめる
-            </Text>
+            <Text style={styles.primaryText}>このメンバーで、残そう</Text>
+            <Feather name="arrow-right" size={19} color={colors.paper} />
           </ActionButton>
         }
       >
@@ -209,14 +250,11 @@ export function LibraryScreen({
                 style={styles.speakerOption}
                 testID={`select-speaker-${speaker.id}`}
               >
-                <View style={styles.speakerOptionCopy}>
-                  <Text style={styles.speakerName}>{speaker.name}</Text>
-                  <Text style={styles.speakerHint}>登録済みの話者</Text>
-                </View>
+                <Text style={styles.speakerName}>{speaker.name}</Text>
                 <Feather
                   name={selected ? "check-circle" : "circle"}
-                  size={22}
-                  color={selected ? "#9c5d2e" : "#aaa19a"}
+                  size={24}
+                  color={selected ? colors.ink : colors.muted}
                 />
               </ActionButton>
             );
@@ -228,136 +266,170 @@ export function LibraryScreen({
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#fff" },
+  screen: { flex: 1, backgroundColor: colors.paper },
   header: {
     width: "100%",
-    maxWidth: 390,
+    maxWidth: layout.pageWidth,
     alignSelf: "center",
-    height: 80,
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    minHeight: 80,
+    paddingHorizontal: layout.inset,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-  wordmark: {
-    color: "#332317",
-    fontSize: 32,
-    lineHeight: 36,
-    fontWeight: "700",
-    letterSpacing: -1.4,
-  },
-  newRecording: {
+  wordmark: { width: 144 },
+  headerActions: { flexDirection: "row", gap: 8 },
+  iconButton: {
     width: 44,
     height: 44,
     borderRadius: 22,
+    backgroundColor: colors.quiet,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#f1f0ef",
   },
   content: {
     width: "100%",
-    maxWidth: 390,
+    maxWidth: layout.pageWidth,
     alignSelf: "center",
-    paddingHorizontal: 16,
-    paddingTop: 24,
-    paddingBottom: 32,
+    paddingHorizontal: layout.inset,
   },
+  scroll: { flex: 1 },
+  introduction: { paddingTop: 18, paddingBottom: 34 },
   heading: {
-    color: "#332317",
-    fontSize: 38,
-    lineHeight: 48,
-    fontWeight: "700",
-    letterSpacing: -1.7,
-  },
-  subtitle: { marginTop: 8, color: "#726d69", fontSize: 16, lineHeight: 24 },
-  drafts: { marginTop: 28 },
-  sectionHeading: {
-    color: "#726d69",
-    fontSize: 13,
-    lineHeight: 20,
+    color: colors.ink,
+    fontSize: 34,
+    lineHeight: 46,
     fontWeight: "600",
-    marginBottom: 8,
+    letterSpacing: -1.3,
   },
+  intro: { color: colors.muted, fontSize: 13, lineHeight: 24, marginTop: 12 },
+  sectionHeading: {
+    color: colors.ink,
+    fontSize: 16,
+    lineHeight: 26,
+    fontWeight: "600",
+  },
+  detail: { color: colors.muted, fontSize: 12, lineHeight: 20 },
+  drafts: { marginBottom: 28 },
   draftRow: {
-    minHeight: 70,
-    paddingVertical: 10,
+    marginTop: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    borderRadius: radii.surface,
+    backgroundColor: colors.quiet,
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 14,
   },
   draftIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: "#f2f0ee",
+    width: 32,
+    height: 40,
     alignItems: "center",
     justifyContent: "center",
   },
-  rowInformation: { flex: 1, gap: 3 },
+  rowInformation: { flex: 1, gap: 4 },
   draftTitle: {
-    color: "#332317",
+    color: colors.ink,
     fontSize: 14,
-    lineHeight: 21,
-    fontWeight: "600",
-  },
-  rowDetail: {
-    color: "#726d69",
-    fontSize: 12,
-    lineHeight: 18,
-    fontVariant: ["tabular-nums"],
-  },
-  albums: {
-    marginTop: 28,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    columnGap: 16,
-    rowGap: 26,
-  },
-  album: { alignItems: "flex-start" },
-  cover: { width: "100%", aspectRatio: 1, borderRadius: 14 },
-  albumTitle: {
-    marginTop: 10,
-    color: "#332317",
-    fontSize: 17,
-    lineHeight: 24,
-    fontWeight: "600",
-  },
-  albumDate: {
-    marginTop: 5,
-    color: "#726d69",
-    fontSize: 13,
-    lineHeight: 20,
-    fontVariant: ["tabular-nums"],
-  },
-  speakerOption: {
-    minHeight: 64,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#e5ded8",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  speakerOptionCopy: { gap: 2 },
-  speakerName: {
-    color: "#332317",
-    fontSize: 16,
     lineHeight: 23,
     fontWeight: "600",
   },
-  speakerHint: { color: "#726d69", fontSize: 12, lineHeight: 18 },
-  startRecording: {
-    minHeight: 52,
-    justifyContent: "center",
-    alignItems: "center",
-    borderRadius: 14,
-    backgroundColor: "#493020",
-  },
-  startRecordingLabel: {
-    color: "#fff8f0",
-    fontSize: 15,
+  memoriesHeading: { paddingBottom: 20, gap: 5 },
+  monthLabel: {
+    color: colors.muted,
+    fontSize: 12,
     lineHeight: 22,
+    marginBottom: 14,
+    marginTop: 2,
+  },
+  dock: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    alignItems: "center",
+  },
+  dockContent: {
+    width: "100%",
+    maxWidth: layout.pageWidth,
+    paddingHorizontal: layout.inset,
+    alignItems: "flex-end",
+    gap: 8,
+  },
+  start: {
+    maxWidth: "100%",
+    alignSelf: "flex-end",
+    shadowColor: "#839286",
+    shadowOffset: { width: 0, height: 7 },
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    elevation: 8,
+    minHeight: 56,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: radii.control,
+    backgroundColor: colors.ink,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    gap: 12,
+  },
+  startHint: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 18,
+    paddingHorizontal: 1,
+  },
+  startLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
+  startDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 24,
+    backgroundColor: "#707872",
+  },
+  startText: {
+    color: colors.paper,
+    fontSize: 15,
+    lineHeight: 24,
     fontWeight: "600",
+    flexShrink: 1,
+  },
+  empty: { paddingVertical: 16, gap: 16 },
+  emptyWords: {
+    color: colors.ink,
+    fontSize: 23,
+    lineHeight: 36,
+    letterSpacing: -0.6,
+    fontWeight: "500",
+  },
+  primary: {
+    minHeight: 60,
+    paddingHorizontal: 22,
+    paddingVertical: 16,
+    borderRadius: radii.control,
+    backgroundColor: colors.ink,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 16,
+  },
+  primaryText: {
+    color: colors.paper,
+    fontSize: 15,
+    lineHeight: 25,
+    fontWeight: "600",
+    flexShrink: 1,
+  },
+  speakerOption: {
+    minHeight: 76,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 20,
+  },
+  speakerName: {
+    color: colors.ink,
+    fontSize: 24,
+    lineHeight: 34,
+    fontWeight: "500",
+    flex: 1,
   },
 });

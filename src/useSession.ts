@@ -98,6 +98,7 @@ export function useSession(identity: SessionIdentity) {
   const startupLocationRetry = useRef(false);
   const unsavedClip = useRef<SavedRecording | null>(null);
   const activeSong = useRef<SongDocument | null>(null);
+  const [activeSongId, setActiveSongId] = useState<string | null>(null);
   const [playback, setPlayback] = useState(initPlayback);
   const playbackRef = useRef(playback);
   const playbackRequest = useRef(0);
@@ -280,18 +281,26 @@ export function useSession(identity: SessionIdentity) {
       return draftId;
     });
   }
-  async function toggleRecording(draftId: string) {
+  async function toggleRecording(draftId: string, creationTitle: string) {
     return run(async () => {
       if (audioRef.current.state.recorderState === "recording") {
         await stopAndSave();
         return;
       }
+      const cleanTitle = creationTitle.trim();
+      if (!cleanTitle || cleanTitle.length > 80)
+        throw new Error("制作の名前を80文字以内で入力してください。");
       assertCanRecordConversation(stateRef.current);
       if (unsavedClip.current || stateRef.current.pendingRecording)
         await stopAndSave();
-      const draft = getDraft(draftId);
+      let draft = getDraft(draftId);
       if (draft.status !== "local")
         throw new Error("仕上げ中の記録には録音を追加できません。");
+      await updateDraft(draftId, (value) => ({
+        ...value,
+        title: cleanTitle,
+      }));
+      draft = getDraft(draftId);
       await waitForLocationSync();
       await audioRef.current.stopPlayback();
       const pending = await audioRef.current.startRecording(
@@ -580,10 +589,14 @@ export function useSession(identity: SessionIdentity) {
       return getDraft(draftId);
     });
   }
-  async function importClip(draftId: string) {
+  async function importClip(draftId: string, creationTitle: string) {
     return run(async () => {
       if (getDraft(draftId).status !== "local")
         throw new Error("仕上げ中の記録には音声を追加できません。");
+      const cleanTitle = creationTitle.trim();
+      if (!cleanTitle || cleanTitle.length > 80)
+        throw new Error("制作の名前を80文字以内で入力してください。");
+      await updateDraft(draftId, (draft) => ({ ...draft, title: cleanTitle }));
       await stopAndSave();
       const clip = await importAudio(identity.uid, draftId);
       if (clip) await commit((current) => addSavedClip(current, clip));
@@ -741,10 +754,9 @@ export function useSession(identity: SessionIdentity) {
     [commit, getDraft, updateDraft],
   );
 
-  async function prepare(draftId: string, title: string) {
+  async function prepare(draftId: string) {
     return run(async () => {
       let draft = getDraft(draftId);
-      if (!title.trim()) throw new Error("思い出の名前を入力してください。");
       if (!draft.clips.length)
         throw new Error("音声を残してから仕上げてください。");
       if (
@@ -763,7 +775,6 @@ export function useSession(identity: SessionIdentity) {
           : draft.prepareKey || id("prepare");
       await updateDraft(draftId, (value) => ({
         ...value,
-        title: title.trim(),
         status: "uploading",
         prepareKey,
         error: null,
@@ -890,14 +901,22 @@ export function useSession(identity: SessionIdentity) {
     startupLocationRetry.current = true;
     void syncLocationRoutes();
   }, [ready, busy, audio.state.recorderState, syncLocationRoutes]);
-  async function generate(draftId: string, blocks: LyricBlock[]) {
+  async function generate(
+    draftId: string,
+    blocks: LyricBlock[],
+    songTitle: string,
+  ) {
     return run(async () => {
       const draft = getDraft(draftId);
+      const cleanSongTitle = songTitle.trim();
+      if (!cleanSongTitle || cleanSongTitle.length > 80)
+        throw new Error("曲名を80文字以内で入力してください。");
       if (!draft.lyrics || blocks.some((block) => !block.text.trim()))
         throw new Error("歌詞を確認してください。");
       const api = createApi(connectionRef.current);
       await updateDraft(draftId, (value) => ({
         ...value,
+        songTitle: cleanSongTitle,
         lyrics: value.lyrics ? { ...value.lyrics, blocks } : null,
       }));
       const lyrics = await confirmLyrics(
@@ -915,7 +934,12 @@ export function useSession(identity: SessionIdentity) {
         jobId: null,
         error: null,
       }));
-      const result = await api.generate(draftId, lyrics.revision, generateKey);
+      const result = await api.generate(
+        draftId,
+        lyrics.revision,
+        generateKey,
+        cleanSongTitle,
+      );
       await updateDraft(draftId, (value) => ({
         ...value,
         jobId: result.jobId,
@@ -933,6 +957,7 @@ export function useSession(identity: SessionIdentity) {
         (value) =>
           value.status === "preparing" ||
           value.status === "generating" ||
+          value.status === "needs_audio_review" ||
           value.status === "needs_reconciliation",
       )) {
         let jobId = draft.jobId;
@@ -947,6 +972,7 @@ export function useSession(identity: SessionIdentity) {
                     draft.id,
                     draft.lyrics.revision,
                     draft.generateKey,
+                    draft.songTitle || draft.title,
                   )
                 : null;
           if (!result) continue;
@@ -964,6 +990,7 @@ export function useSession(identity: SessionIdentity) {
           await commit((current) => completeSong(current, song));
         } else if (
           job.status === "waiting_review" ||
+          job.status === "needs_audio_review" ||
           job.status === "failed" ||
           job.status === "needs_reconciliation"
         ) {
@@ -1069,11 +1096,21 @@ export function useSession(identity: SessionIdentity) {
     async (song: SongDocument) => {
       playbackRequest.current++;
       activeSong.current = song;
+      setActiveSongId(song.id);
       changePlayback({ type: "selectSong", durationMs: song.durationMs });
       await audioRef.current.stopPlayback();
     },
     [changePlayback],
   );
+  async function pauseSong() {
+    playbackRequest.current++;
+    if (playbackRef.current.target === "song")
+      changePlayback({
+        type: "pauseSong",
+        currentMs: audioRef.current.state.positionMs,
+      });
+    await audioRef.current.pause();
+  }
   async function togglePlayback() {
     return run(async () => {
       const song = activeSong.current;
@@ -1101,7 +1138,7 @@ export function useSession(identity: SessionIdentity) {
   async function playSource(
     clipId: string,
     startMs: number,
-    endMs: number,
+    endMs?: number,
     draftId?: string,
   ) {
     return run(async () => {
@@ -1118,6 +1155,23 @@ export function useSession(identity: SessionIdentity) {
         local || (await createApi(connectionRef.current).audioUrl(clipId)).url;
       if (request !== playbackRequest.current || scope.signal.aborted) return;
       await audioRef.current.play(uri, startMs, endMs);
+    });
+  }
+  async function approveTranscript(draftId: string) {
+    return run(async () => {
+      const draft = getDraft(draftId);
+      if (!draft.jobId) throw new Error("確認する文字起こしが見つかりません。");
+      const api = createApi(connectionRef.current);
+      const job = await api.job(draft.jobId);
+      if (job.status !== "needs_audio_review" || !job.transcriptFingerprint)
+        throw new Error("確認する文字起こしが見つかりません。");
+      await api.reviewTranscript(draftId, job.id, job.transcriptFingerprint);
+      await updateDraft(draftId, (value) => ({
+        ...value,
+        status: "preparing",
+        error: null,
+      }));
+      return true;
     });
   }
   async function closeSource() {
@@ -1148,6 +1202,13 @@ export function useSession(identity: SessionIdentity) {
       setError(`歌詞を端末に保存できませんでした。${message(failure)}`);
     }
   };
+  const editSongTitle = async (draftId: string, songTitle: string) => {
+    try {
+      await updateDraft(draftId, (draft) => ({ ...draft, songTitle }));
+    } catch (failure) {
+      setError(`曲名を端末に保存できませんでした。${message(failure)}`);
+    }
+  };
   return {
     state,
     ready,
@@ -1174,9 +1235,12 @@ export function useSession(identity: SessionIdentity) {
     importClip,
     setPlace,
     prepare,
+    approveTranscript,
     generate,
     refresh,
     openSong,
+    pauseSong,
+    activeSongId,
     togglePlayback,
     seek,
     playSource,
@@ -1186,5 +1250,6 @@ export function useSession(identity: SessionIdentity) {
     sourcePlaying: audio.state.playing && playback.target === "source",
     position: playback.positionMs / 1000,
     editLyrics,
+    editSongTitle,
   };
 }

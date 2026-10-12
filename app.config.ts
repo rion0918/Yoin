@@ -12,6 +12,7 @@ export default ({ config }: ConfigContext) => {
     validateDistribution(
       process.env,
       JSON.parse(readFileSync(servicesFile, "utf8")),
+      config.extra?.eas?.projectId,
     );
   }
   return {

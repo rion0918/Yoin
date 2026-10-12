@@ -14,6 +14,8 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { figmaColors } from "../design/figma";
+import { colors, radii } from "../design/tokens";
 import { ActionButton, useReducedMotion } from "./ActionButton";
 
 type Props = {
@@ -26,6 +28,7 @@ type Props = {
   footer?: ReactNode;
   closeDisabled?: boolean;
   avoidKeyboard?: boolean;
+  appearance?: "default" | "songSource" | "recording" | "dark";
 };
 
 export function NativeSheet({
@@ -38,13 +41,21 @@ export function NativeSheet({
   footer,
   closeDisabled = false,
   avoidKeyboard = false,
+  appearance = "default",
 }: Props) {
-  const { height } = useWindowDimensions();
+  const { height, width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const reduced = useReducedMotion();
   const translation = useRef(new Animated.Value(height)).current;
+  const heightRef = useRef(height);
+  heightRef.current = height;
   const [presented, setPresented] = useState(open);
-  const sheetHeight = Math.min(height - insets.top - 16, height * snap);
+  const songSource = appearance === "songSource";
+  const recordingSheet = appearance === "recording";
+  const darkSheet = appearance === "dark";
+  const sheetHeight = songSource
+    ? Math.min(442, height - insets.top - insets.bottom - 32)
+    : Math.min(height - insets.top - 16, height * snap);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   const openRef = useRef(open);
@@ -70,14 +81,15 @@ export function NativeSheet({
         }).start();
     } else {
       Animated.timing(translation, {
-        toValue: height,
+        toValue: heightRef.current,
         duration: reduced ? 0 : 220,
         useNativeDriver: Platform.OS !== "web",
       }).start(({ finished }) => {
         if (finished) setPresented(false);
       });
     }
-  }, [open, reduced, height, translation]);
+    return () => translation.stopAnimation();
+  }, [open, reduced, translation]);
 
   const responder = useMemo(
     () =>
@@ -97,6 +109,7 @@ export function NativeSheet({
             !closeDisabledRef.current
           )
             closeRef.current();
+          else if (reduced) translation.setValue(0);
           else
             Animated.spring(translation, {
               toValue: 0,
@@ -107,6 +120,10 @@ export function NativeSheet({
         },
         onPanResponderTerminate: () => {
           if (!openRef.current) return;
+          if (reduced) {
+            translation.setValue(0);
+            return;
+          }
           Animated.spring(translation, {
             toValue: 0,
             damping: 30,
@@ -115,7 +132,7 @@ export function NativeSheet({
           }).start();
         },
       }),
-    [translation],
+    [translation, reduced],
   );
 
   return (
@@ -132,11 +149,7 @@ export function NativeSheet({
           avoidKeyboard && { paddingTop: insets.top + 8 },
         ]}
         behavior={
-          Platform.OS === "ios"
-            ? "padding"
-            : avoidKeyboard
-              ? "height"
-              : undefined
+          Platform.OS === "ios" && avoidKeyboard ? "padding" : undefined
         }
       >
         <Animated.View
@@ -144,6 +157,9 @@ export function NativeSheet({
           style={[
             StyleSheet.absoluteFill,
             styles.dim,
+            songSource && styles.sourceDim,
+            recordingSheet && styles.recordingDim,
+            darkSheet && styles.darkDim,
             {
               opacity: translation.interpolate({
                 inputRange: [0, height],
@@ -153,58 +169,134 @@ export function NativeSheet({
             },
           ]}
         />
-        <Pressable
-          style={StyleSheet.absoluteFill}
-          onPress={requestClose}
-          accessibilityLabel="シートを閉じる"
-          accessibilityRole="button"
-        />
         <Animated.View
           pointerEvents={open ? "auto" : "none"}
           accessibilityViewIsModal
           style={[
             styles.card,
+            songSource && styles.sourceCard,
+            recordingSheet && styles.recordingCard,
+            darkSheet && styles.darkCard,
+            songSource && {
+              width: Math.min(358, width - 32),
+              marginBottom: Math.max(16, insets.bottom - 11),
+            },
             avoidKeyboard && { flexShrink: 1 },
             { height: sheetHeight, transform: [{ translateY: translation }] },
           ]}
         >
-          <View {...responder.panHandlers} style={styles.handleArea}>
-            <View style={styles.handle} />
+          <View
+            {...responder.panHandlers}
+            style={[
+              styles.handleArea,
+              songSource && styles.sourceHandleArea,
+              recordingSheet && styles.recordingHandleArea,
+            ]}
+          >
+            <View
+              style={[
+                styles.handle,
+                songSource && styles.sourceHandle,
+                recordingSheet && styles.recordingHandle,
+                darkSheet && styles.darkHandle,
+              ]}
+            />
           </View>
-          <View style={styles.header}>
+          <View
+            style={[
+              styles.header,
+              songSource && styles.sourceHeader,
+              recordingSheet && styles.recordingHeader,
+            ]}
+          >
             <View style={styles.heading}>
-              <Text style={styles.title} accessibilityRole="header">
+              {songSource && (
+                <Text style={styles.sourceEyebrow}>ORIGINAL CONVERSATION</Text>
+              )}
+              <Text
+                style={[
+                  styles.title,
+                  songSource && styles.sourceTitle,
+                  recordingSheet && styles.recordingTitle,
+                  darkSheet && styles.darkTitle,
+                ]}
+                accessibilityRole="header"
+              >
                 {title}
               </Text>
-              <Text style={styles.description}>{description}</Text>
+              {!songSource && (
+                <Text
+                  style={[
+                    styles.description,
+                    recordingSheet && styles.recordingDescription,
+                    darkSheet && styles.darkDescription,
+                  ]}
+                >
+                  {description}
+                </Text>
+              )}
             </View>
-            <ActionButton
-              label="シートを閉じる"
-              onPress={requestClose}
-              disabled={closeDisabled}
-              style={styles.close}
-              testID="close-sheet"
-            >
-              <Feather name="x" size={20} color="#493020" />
-            </ActionButton>
+            {!recordingSheet && (
+              <ActionButton
+                label="シートを閉じる"
+                onPress={requestClose}
+                disabled={closeDisabled}
+                style={[
+                  styles.close,
+                  songSource && styles.sourceClose,
+                  darkSheet && styles.darkClose,
+                ]}
+                testID="close-sheet"
+              >
+                <Feather
+                  name="x"
+                  size={20}
+                  color={
+                    songSource || darkSheet ? figmaColors.primary : colors.ink
+                  }
+                />
+              </ActionButton>
+            )}
           </View>
           <ScrollView
+            key={title}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={[
               styles.content,
-              { paddingBottom: footer ? 20 : insets.bottom + 28 },
+              songSource && styles.sourceContent,
+              recordingSheet && styles.recordingContent,
+              {
+                paddingBottom: songSource
+                  ? 20
+                  : footer
+                    ? 20
+                    : insets.bottom + 28,
+              },
             ]}
           >
             {children}
           </ScrollView>
           {footer && (
             <View
-              style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}
+              style={[
+                styles.footer,
+                recordingSheet && styles.recordingFooter,
+                darkSheet && styles.darkFooter,
+                { paddingBottom: insets.bottom + 16 },
+              ]}
             >
               {footer}
             </View>
           )}
         </Animated.View>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={requestClose}
+          disabled={closeDisabled}
+          accessibilityLabel="シートを閉じる"
+          accessibilityRole="button"
+          tabIndex={-1}
+        />
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -212,18 +304,38 @@ export function NativeSheet({
 
 const styles = StyleSheet.create({
   overlay: { flex: 1, justifyContent: "flex-end" },
-  dim: { backgroundColor: "rgba(40,29,21,0.32)" },
+  dim: { backgroundColor: "rgba(41,39,38,0.26)" },
+  sourceDim: { backgroundColor: "rgba(0,0,0,0.68)" },
+  recordingDim: { backgroundColor: "rgba(0,0,0,0.68)" },
+  darkDim: { backgroundColor: "rgba(0,0,0,0.68)" },
   card: {
+    zIndex: 1,
     width: "100%",
     maxWidth: 600,
     alignSelf: "center",
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    backgroundColor: "#fffaf5",
+    borderTopLeftRadius: radii.window,
+    borderTopRightRadius: radii.window,
+    backgroundColor: colors.paper,
     overflow: "hidden",
   },
+  sourceCard: {
+    borderRadius: 24,
+    backgroundColor: figmaColors.raised,
+  },
+  recordingCard: { backgroundColor: figmaColors.surface },
+  darkCard: { backgroundColor: figmaColors.canvas },
   handleArea: { height: 28, alignItems: "center", justifyContent: "center" },
-  handle: { width: 36, height: 4, borderRadius: 2, backgroundColor: "#cec2b8" },
+  sourceHandleArea: { height: 32 },
+  recordingHandleArea: { height: 30 },
+  handle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.line,
+  },
+  sourceHandle: { width: 40, backgroundColor: figmaColors.border },
+  recordingHandle: { backgroundColor: figmaColors.border },
+  darkHandle: { backgroundColor: figmaColors.border },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -231,29 +343,71 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
     gap: 12,
   },
+  sourceHeader: { paddingHorizontal: 20, paddingBottom: 12 },
+  recordingHeader: { paddingHorizontal: 24, paddingBottom: 14 },
   heading: { flex: 1 },
+  sourceEyebrow: {
+    color: figmaColors.gold,
+    fontSize: 11,
+    lineHeight: 17,
+    fontWeight: "500",
+    marginBottom: 3,
+  },
   title: {
-    color: "#332317",
+    color: colors.ink,
     fontSize: 24,
     lineHeight: 32,
-    fontWeight: "700",
+    fontWeight: "600",
     letterSpacing: -0.7,
   },
-  description: { color: "#726050", fontSize: 13, lineHeight: 20, marginTop: 6 },
+  sourceTitle: {
+    color: figmaColors.primary,
+    fontSize: 17,
+    lineHeight: 27,
+    fontWeight: "400",
+    letterSpacing: 0,
+  },
+  recordingTitle: {
+    color: figmaColors.primary,
+    fontSize: 22,
+    lineHeight: 31,
+    letterSpacing: -0.5,
+  },
+  darkTitle: { color: figmaColors.primary },
+  description: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 20,
+    marginTop: 6,
+  },
+  recordingDescription: { color: figmaColors.secondary, marginTop: 5 },
+  darkDescription: { color: figmaColors.secondary },
   close: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: "#ede5dd",
+    backgroundColor: colors.quiet,
     alignItems: "center",
     justifyContent: "center",
   },
+  sourceClose: { backgroundColor: figmaColors.inset },
+  darkClose: { backgroundColor: figmaColors.raised },
   content: { paddingHorizontal: 24 },
+  sourceContent: { paddingHorizontal: 20 },
+  recordingContent: { paddingHorizontal: 24 },
   footer: {
     paddingHorizontal: 24,
     paddingTop: 14,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#ddcfc1",
-    backgroundColor: "#fffaf5",
+    borderTopColor: colors.line,
+    backgroundColor: colors.paper,
+  },
+  recordingFooter: {
+    borderTopColor: figmaColors.border,
+    backgroundColor: figmaColors.surface,
+  },
+  darkFooter: {
+    borderTopColor: figmaColors.border,
+    backgroundColor: figmaColors.canvas,
   },
 });

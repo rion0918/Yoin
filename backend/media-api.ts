@@ -113,7 +113,21 @@ export async function serveMediaChunk(
     index > 2
   )
     throw new HttpError(409, "invalid_media_job");
-  const object = await env.AUDIO.get(chunkKey(owner, jobId, clipId, index));
+  let key = chunkKey(owner, jobId, clipId, index);
+  if (clip.inspection_json) {
+    const manifest = JSON.parse(clip.inspection_json) as {
+      chunks?: Array<{ key?: unknown }>;
+    };
+    const savedKey = manifest.chunks?.[index]?.key;
+    if (
+      typeof savedKey === "string" &&
+      savedKey.startsWith(`processed/${owner}/`) &&
+      savedKey.split("/")[3] === clip.id &&
+      savedKey.split("/")[4] === `${index}.m4a`
+    )
+      key = savedKey;
+  }
+  const object = await env.AUDIO.get(key);
   if (!object) throw new HttpError(404, "media_chunk_missing");
   return new Response(object.body, {
     headers: {

@@ -104,6 +104,7 @@ export type ConversationPendingRecording = {
   recordedAt: string;
   timezone: string;
   localUri: string | null;
+  capturedDurationMs?: number;
 };
 export type SpeakerPendingRecording = {
   purpose: "speaker";
@@ -112,10 +113,25 @@ export type SpeakerPendingRecording = {
   recordedAt: string;
   timezone: string;
   localUri: string | null;
+  capturedDurationMs?: number;
 };
 export type PendingRecording =
   | ConversationPendingRecording
   | SpeakerPendingRecording;
+export type AudioActivityRange = { startMs: number; endMs: number };
+export type AudioProcessingSummary = {
+  status: "verified" | "needs_review" | "unverified";
+  recordedDurationMs: number | null;
+  clientDurationMs: number;
+  serverDurationMs: number;
+  processedMs: number;
+  speechActivityMs: number;
+  transcribedMs: number;
+  unrecognizedActivityMs: number;
+  expectedChunks: number;
+  completedChunks: number;
+  unrecognizedRanges: AudioActivityRange[];
+};
 
 export type AudioClip = {
   id: string;
@@ -123,11 +139,13 @@ export type AudioClip = {
   mimeType: string;
   sizeBytes: number;
   durationMs: number;
+  captureDurationMs?: number | null;
   recordedAt: string | null;
   importedAt: string | null;
   timezone: string;
   place: string | null;
   locationSummary?: AudioLocationSummary;
+  processing?: AudioProcessingSummary;
 };
 
 export type UploadProgress = {
@@ -167,6 +185,7 @@ export type DraftStatus =
   | "uploading"
   | "preparing"
   | "waiting_review"
+  | "needs_audio_review"
   | "generating"
   | "ready"
   | "failed"
@@ -187,6 +206,7 @@ export type DraftDocument = {
 
 export type LocalDraft = Omit<DraftDocument, "clips"> & {
   clips: LocalClip[];
+  songTitle?: string;
   prepareKey?: string;
   generateKey?: string;
   locationEnabled?: boolean;
@@ -214,12 +234,16 @@ export type JobDocument = {
     | "queued"
     | "running"
     | "waiting_review"
+    | "needs_audio_review"
     | "ready"
     | "failed"
     | "needs_reconciliation";
   stage: string;
   error: string | null;
   songId: string | null;
+  transcriptFingerprint?: string | null;
+  expectedChunks?: number;
+  completedChunks?: number;
 };
 
 export type LibraryDocument = {
@@ -237,11 +261,14 @@ export type MediaChunk = {
   offsetMs: number;
   durationMs: number;
   mimeType: string;
+  activityRanges?: AudioActivityRange[];
 };
 export type MediaInspection = {
   durationMs: number;
   sizeBytes: number;
   chunks: MediaChunk[];
+  sourceEtag?: string | null;
+  transformVersion?: number;
 };
 export type UploadCreated = {
   uploadId: string;

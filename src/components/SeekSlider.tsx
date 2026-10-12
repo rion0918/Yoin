@@ -1,5 +1,7 @@
 import Slider from "@react-native-community/slider";
 import { StyleSheet } from "react-native";
+import { figmaColors } from "../design/figma";
+import { colors } from "../design/tokens";
 import { formatTime } from "../domain/session";
 
 export type SeekSliderProps = {
@@ -7,6 +9,7 @@ export type SeekSliderProps = {
   position: number;
   onSeek: (seconds: number) => void;
   onScrub: (scrubbing: boolean) => void;
+  dark?: boolean;
 };
 
 export function SeekSlider({
@@ -14,6 +17,7 @@ export function SeekSlider({
   position,
   onSeek,
   onScrub,
+  dark = false,
 }: SeekSliderProps) {
   return (
     <Slider
@@ -29,9 +33,9 @@ export function SeekSlider({
         onSeek(seconds);
         onScrub(false);
       }}
-      minimumTrackTintColor="#9c5d2e"
-      maximumTrackTintColor="rgba(89, 61, 42, 0.22)"
-      thumbTintColor="#9c5d2e"
+      minimumTrackTintColor={dark ? figmaColors.rose : colors.ink}
+      maximumTrackTintColor={dark ? figmaColors.inset : colors.line}
+      thumbTintColor={dark ? figmaColors.rose : colors.ink}
       tapToSeek
       accessibilityRole="adjustable"
       accessibilityLabel="曲の再生位置"

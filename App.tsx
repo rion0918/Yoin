@@ -2,9 +2,9 @@ import { Feather } from "@expo/vector-icons";
 import {
   createNavigationContainerRef,
   DefaultTheme,
+  type NavigationAction,
   NavigationContainer,
   StackActions,
-  useFocusEffect,
   usePreventRemove,
 } from "@react-navigation/native";
 import {
@@ -24,6 +24,7 @@ import {
   ActivityIndicator,
   Alert,
   Keyboard,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -34,6 +35,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import type {
   AudioClip,
   DraftDocument,
+  LocalDraft,
   LyricBlock,
   SongDocument,
   Utterance,
@@ -41,13 +43,20 @@ import type {
 import type { SessionIdentity } from "./src/auth/types";
 import { useAuthentication } from "./src/auth/useAuthentication";
 import { ActionButton, useReducedMotion } from "./src/components/ActionButton";
+import { FinishMemory } from "./src/components/FinishMemory";
+import { GenerationProgress } from "./src/components/GenerationProgress";
+import { LyricReview } from "./src/components/LyricReview";
 import { NativeSheet } from "./src/components/NativeSheet";
+import { SongSourceContent } from "./src/components/SongSourceContent";
 import { SpeakerEnrollmentSheet } from "./src/components/SpeakerEnrollmentSheet";
+import { figmaColors } from "./src/design/figma";
+import { colors, radii } from "./src/design/tokens";
 import { formatTime } from "./src/domain/session";
-import { blockContext, sourceContext } from "./src/pipeline/library";
+import { sourceContext, sourcePlaybackRange } from "./src/pipeline/library";
 import { explainError } from "./src/pipeline/messages";
 import { speakerLabel } from "./src/pipeline/speakers";
-import { LibraryScreen } from "./src/screens/LibraryScreen";
+import { FigmaLibraryScreen } from "./src/screens/FigmaLibraryScreen";
+import { LoginScreen } from "./src/screens/LoginScreen";
 import { MusicScreen } from "./src/screens/MusicScreen";
 import { RecordingScreen } from "./src/screens/RecordingScreen";
 import { useSession } from "./src/useSession";
@@ -84,10 +93,11 @@ function useController() {
 }
 const statusLabel: Record<string, string> = {
   local: "マイクオフ",
-  uploading: "音声を送信中",
-  preparing: "歌詞を準備中",
+  uploading: "残した会話を届けています",
+  preparing: "会話から、歌詞へ",
+  needs_audio_review: "音声と文字起こしを確認しよう",
   waiting_review: "歌詞を確かめよう",
-  generating: "曲を作っています",
+  generating: "この一日が、一曲になる",
   ready: "曲ができました",
   failed: "処理を続けられませんでした",
   needs_reconciliation: "曲の受付を確認できませんでした",
@@ -97,26 +107,49 @@ function LibraryRoute({
   navigation,
 }: NativeStackScreenProps<Routes, "Library">) {
   const app = useController();
+  const screenProps = {
+    songs: app.state.songs,
+    drafts: app.state.drafts,
+    speakers: app.state.speakerProfiles ?? [],
+    onSettings: () => app.show({ kind: "settings" }),
+    onSpeakerSettings: () => app.show({ kind: "speakers" }),
+    onNewRecording: async (speakerProfileIds: string[]) => {
+      await app.pauseSong();
+      const draftId = await app.newRecording(speakerProfileIds);
+      if (!draftId) return false;
+      navigation.navigate("Recording", { draftId });
+      return true;
+    },
+    onOpenDraft: (draft: LocalDraft) => {
+      void app
+        .pauseSong()
+        .then(() => navigation.navigate("Recording", { draftId: draft.id }));
+    },
+    onOpenSong: (song: SongDocument) => {
+      if (app.activeSongId === song.id) {
+        navigation.navigate("Music", { songId: song.id });
+        return;
+      }
+      void app
+        .openSong(song)
+        .then(() => navigation.navigate("Music", { songId: song.id }));
+    },
+  };
   return (
-    <LibraryScreen
-      songs={app.state.songs}
-      drafts={app.state.drafts}
-      speakers={app.state.speakerProfiles ?? []}
-      onSettings={() => app.show({ kind: "settings" })}
-      onSpeakerSettings={() => app.show({ kind: "speakers" })}
-      onNewRecording={(speakerProfileIds) => {
-        void app.newRecording(speakerProfileIds).then((draftId) => {
-          if (draftId) navigation.navigate("Recording", { draftId });
-        });
+    <FigmaLibraryScreen
+      {...screenProps}
+      busy={app.busy}
+      activeSongId={app.activeSongId}
+      playing={app.playing}
+      position={app.position}
+      onToggleSong={(song) => {
+        void (async () => {
+          if (app.activeSongId !== song.id) await app.openSong(song);
+          await app.togglePlayback();
+        })();
       }}
-      onOpenDraft={(draft) => {
-        void app.pause();
-        navigation.navigate("Recording", { draftId: draft.id });
-      }}
-      onOpenSong={(song) => {
-        void app
-          .openSong(song)
-          .then(() => navigation.navigate("Music", { songId: song.id }));
+      onSeek={(seconds) => {
+        void app.seek(seconds);
       }}
     />
   );
@@ -134,17 +167,35 @@ function RecordingRoute({
     app.state.pendingRecording?.draftId === draftId &&
     app.recorder.recorderState === "recording";
   const exiting = useRef(false);
+  const pendingRemoval = useRef<NavigationAction | null>(null);
+  const exit = useCallback(
+    (action: NavigationAction) => {
+      if (exiting.current) return;
+      exiting.current = true;
+      void app
+        .leave(draftId)
+        .then((saved) => {
+          if (saved) navigation.dispatch(action);
+        })
+        .finally(() => {
+          exiting.current = false;
+        });
+    },
+    [app.leave, draftId, navigation],
+  );
+  useEffect(() => {
+    const action = pendingRemoval.current;
+    if (app.busy || !action) return;
+    pendingRemoval.current = null;
+    exit(action);
+  }, [app.busy, exit]);
   usePreventRemove(true, ({ data }) => {
-    if (exiting.current || app.busy) return;
-    exiting.current = true;
-    void app
-      .leave(draftId)
-      .then((saved) => {
-        if (saved) navigation.dispatch(data.action);
-      })
-      .finally(() => {
-        exiting.current = false;
-      });
+    if (exiting.current) return;
+    if (app.busy) {
+      pendingRemoval.current = data.action;
+      return;
+    }
+    exit(data.action);
   });
   if (!draft) return null;
   return (
@@ -177,11 +228,11 @@ function RecordingRoute({
               ? undefined
               : statusLabel[draft.status]
       }
-      onToggle={() => {
-        void app.toggleRecording(draftId);
+      onToggle={(title) => {
+        void app.toggleRecording(draftId, title);
       }}
-      onImport={() => {
-        void app.importClip(draftId);
+      onImport={(title) => {
+        void app.importClip(draftId, title);
       }}
       onBack={() => navigation.goBack()}
       onFinish={() => {
@@ -213,16 +264,6 @@ function MusicRoute({
   navigation,
 }: NativeStackScreenProps<Routes, "Music">) {
   const app = useController();
-  const pause = useRef(app.pause);
-  pause.current = app.pause;
-  useFocusEffect(
-    useCallback(
-      () => () => {
-        void pause.current();
-      },
-      [],
-    ),
-  );
   const song = app.state.songs.find(
     (value) => value.id === route.params.songId,
   );
@@ -230,20 +271,9 @@ function MusicRoute({
   return (
     <MusicScreen
       song={song}
-      speakerNames={(song.speakerProfileIds ?? [])
-        .map(
-          (speakerId) =>
-            app.state.speakerProfiles?.find(
-              (speaker) => speaker.id === speakerId,
-            )?.name,
-        )
-        .filter((name): name is string => !!name)}
       playing={app.playing}
       position={app.position}
-      onBack={() => {
-        void app.pause();
-        navigation.goBack();
-      }}
+      onBack={() => navigation.goBack()}
       onToggle={() => {
         void app.togglePlayback();
       }}
@@ -253,8 +283,42 @@ function MusicRoute({
       onScrub={(scrubbing) => {
         if (scrubbing) void app.pause();
       }}
-      onMemory={(block) => app.show({ kind: "source", document: song, block })}
+      onMemory={(block) => {
+        void app
+          .pauseSong()
+          .then(() => app.show({ kind: "source", document: song, block }));
+      }}
     />
+  );
+}
+
+function PrivacyPolicyLink({ dark = false }: { dark?: boolean }) {
+  return (
+    <ActionButton
+      label="プライバシーポリシー"
+      onPress={() => {
+        void Linking.openURL(
+          "https://yoin-private-api.h-rion-0910.workers.dev/privacy",
+        ).catch(() => {
+          Alert.alert(
+            "ページを開けませんでした",
+            "通信を確認して、もう一度お試しください。",
+          );
+        });
+      }}
+      style={dark ? extra.accountSecondary : styles.secondary}
+      testID="privacy-policy"
+    >
+      <Text
+        style={
+          dark
+            ? extra.accountSecondaryText
+            : [styles.secondaryText, { color: colors.paper }]
+        }
+      >
+        プライバシーポリシー
+      </Text>
+    </ActionButton>
   );
 }
 
@@ -271,30 +335,15 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <StatusBar style="dark" />
-      <View style={[extra.loading, { padding: 32 }]}>
-        <Text style={extra.brand}>Yoin</Text>
-        <Text style={styles.summary}>会話を、思い出の一曲に。</Text>
-        {auth.ready ? (
-          <ActionButton
-            label="Googleでログイン"
-            onPress={() => {
-              void auth.signIn();
-            }}
-            disabled={auth.busy}
-            style={styles.primary}
-            testID="google-login"
-          >
-            <Text style={styles.primaryText}>Googleでログイン</Text>
-          </ActionButton>
-        ) : (
-          <ActivityIndicator color="#493020" />
-        )}
-        {!!auth.error && (
-          <Text accessibilityLiveRegion="polite" style={extra.errorCopy}>
-            {auth.error}
-          </Text>
-        )}
-      </View>
+      <LoginScreen
+        ready={auth.ready}
+        busy={auth.busy}
+        error={auth.error}
+        onSignIn={() => {
+          void auth.signIn();
+        }}
+        privacyPolicy={<PrivacyPolicyLink />}
+      />
     </SafeAreaProvider>
   );
 }
@@ -308,33 +357,36 @@ function SessionApp({
   const app = useSession(identity);
   const reducedMotion = useReducedMotion();
   const [overlay, setOverlay] = useState<Overlay | null>(null);
+  const [activeRoute, setActiveRoute] = useState<keyof Routes>("Library");
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [finishTitle, setFinishTitle] = useState("");
+  const [songTitle, setSongTitle] = useState("");
   const [place, setPlace] = useState("");
   const [placeEditing, setPlaceEditing] = useState(false);
+  const [activeSourceClipId, setActiveSourceClipId] = useState<string | null>(
+    null,
+  );
   const [editedBlocks, setEditedBlocks] = useState<LyricBlock[]>([]);
   const close = () => {
     Keyboard.dismiss();
     void app.closeSource();
+    setActiveSourceClipId(null);
     setSheetOpen(false);
   };
   const show = useCallback(
     (next: Overlay) => {
       Keyboard.dismiss();
       app.clearError();
-      if (next.kind === "finish")
-        setFinishTitle(
-          app.state.drafts.find((draft) => draft.id === next.draftId)?.title ??
-            "",
+      if (next.kind === "review") {
+        const draft = app.state.drafts.find(
+          (value) => value.id === next.draftId,
         );
-      if (next.kind === "review")
-        setEditedBlocks(
-          app.state.drafts.find((draft) => draft.id === next.draftId)?.lyrics
-            ?.blocks ?? [],
-        );
+        setEditedBlocks(draft?.lyrics?.blocks ?? []);
+        setSongTitle(draft?.songTitle ?? "");
+      }
       if (next.kind === "source") {
         setPlace(next.clip?.place ?? "");
         setPlaceEditing(false);
+        setActiveSourceClipId(null);
       }
       setOverlay(next);
       setSheetOpen(true);
@@ -370,12 +422,21 @@ function SessionApp({
     overlay?.kind === "progress" && draft?.status === "waiting_review"
       ? "review"
       : overlay?.kind;
+  const songSource =
+    overlay?.kind === "source" && "audioId" in overlay.document;
   useEffect(() => {
     if (overlay?.kind === "progress" && draft?.status === "waiting_review") {
       setEditedBlocks(draft.lyrics?.blocks ?? []);
+      setSongTitle(draft.songTitle ?? "");
       setOverlay({ kind: "review", draftId: draft.id });
     }
-  }, [overlay?.kind, draft?.id, draft?.status, draft?.lyrics]);
+  }, [
+    overlay?.kind,
+    draft?.id,
+    draft?.status,
+    draft?.lyrics,
+    draft?.songTitle,
+  ]);
   useEffect(() => {
     const route = navigationRef.isReady()
       ? navigationRef.getCurrentRoute()
@@ -395,38 +456,38 @@ function SessionApp({
   }, [app.state.songs, app.openSong]);
   const prepare = async () => {
     if (!draft) return;
-    if (await app.prepare(draft.id, finishTitle))
+    if (await app.prepare(draft.id))
       setOverlay({ kind: "progress", draftId: draft.id });
   };
   const generate = async () => {
     if (!draft) return;
-    if (await app.generate(draft.id, editedBlocks))
+    if (await app.generate(draft.id, editedBlocks, songTitle))
       setOverlay({ kind: "progress", draftId: draft.id });
   };
   const title =
     overlayKind === "settings"
       ? "設定"
       : overlayKind === "speakers"
-        ? "話者の声を登録"
+        ? "友達の声を登録"
         : overlayKind === "source"
           ? "あのときの会話"
           : overlayKind === "review"
             ? "この歌詞で、残そう。"
             : overlayKind === "progress"
-              ? statusLabel[draft?.status ?? "preparing"]
-              : "思い出を一曲に";
+              ? "思い出の仕上げ"
+              : "この一日を、仕上げよう。";
   const description =
     overlayKind === "settings"
       ? "アカウントと、登録した声を管理できます。"
       : overlayKind === "speakers"
-        ? "名前と声を登録すると、次の会話から発話者を名前で表示します。"
+        ? "友達の名前と声を登録すると、会話を友達ごとに振り返れます。"
         : overlayKind === "review"
           ? "会話を確かめながら、言葉を整えられます。"
           : overlayKind === "source"
             ? "歌詞の元になった音声を聴き返せます。"
             : overlayKind === "progress"
               ? "この画面を閉じても、記録は残ります。"
-              : "残した音声を確かめて、名前を付けよう。";
+              : "残した音声を確かめて、歌詞にしよう。";
   let sourceUtterances: Utterance[] = [];
   let sourceClips: AudioClip[] = [];
   if (overlay?.kind === "source") {
@@ -444,24 +505,56 @@ function SessionApp({
 
   return (
     <SafeAreaProvider>
-      <StatusBar style="dark" />
+      <StatusBar
+        style={
+          activeRoute === "Music" ||
+          activeRoute === "Library" ||
+          activeRoute === "Recording"
+            ? "light"
+            : "dark"
+        }
+      />
       <SessionContext.Provider value={{ ...app, show }}>
-        <NavigationContainer ref={navigationRef} theme={navigationTheme}>
+        <NavigationContainer
+          ref={navigationRef}
+          theme={navigationTheme}
+          onStateChange={() => {
+            setActiveRoute(navigationRef.getCurrentRoute()?.name ?? "Library");
+          }}
+        >
           <Stack.Navigator
             screenOptions={{
               headerShown: false,
               animation: reducedMotion ? "none" : "slide_from_right",
-              contentStyle: { backgroundColor: "#fff" },
+              contentStyle: { backgroundColor: colors.paper },
             }}
           >
-            <Stack.Screen name="Library" component={LibraryRoute} />
-            <Stack.Screen name="Recording" component={RecordingRoute} />
-            <Stack.Screen name="Music" component={MusicRoute} />
+            <Stack.Screen
+              name="Library"
+              component={LibraryRoute}
+              options={{
+                contentStyle: { backgroundColor: figmaColors.canvas },
+              }}
+            />
+            <Stack.Screen
+              name="Recording"
+              component={RecordingRoute}
+              options={{
+                contentStyle: { backgroundColor: figmaColors.canvas },
+              }}
+            />
+            <Stack.Screen
+              name="Music"
+              component={MusicRoute}
+              options={{
+                contentStyle: { backgroundColor: figmaColors.canvas },
+              }}
+            />
           </Stack.Navigator>
         </NavigationContainer>
         {!app.ready && (
           <View style={extra.loading}>
-            <ActivityIndicator color="#493020" />
+            <ActivityIndicator color={colors.ink} />
             <Text style={styles.summary}>
               {app.error || "思い出を読み込んでいます"}
             </Text>
@@ -500,12 +593,31 @@ function SessionApp({
           onClose={close}
           title={title}
           description={description}
+          appearance={
+            overlayKind === "settings"
+              ? "dark"
+              : songSource
+                ? "songSource"
+                : "default"
+          }
+          avoidKeyboard={
+            overlayKind === "finish" ||
+            overlayKind === "review" ||
+            (overlayKind === "source" && placeEditing)
+          }
           snap={
             overlayKind === "review" || overlayKind === "source" ? 0.84 : 0.72
           }
         >
           {!!app.error && (
-            <Text accessibilityLiveRegion="polite" style={extra.errorCopy}>
+            <Text
+              accessibilityLiveRegion="polite"
+              style={
+                overlayKind === "settings"
+                  ? extra.accountErrorCopy
+                  : extra.errorCopy
+              }
+            >
               {app.error}
             </Text>
           )}
@@ -515,17 +627,19 @@ function SessionApp({
             </Text>
           )}
           {overlayKind === "settings" && (
-            <View testID="account-sheet">
-              <Text style={styles.fieldLabel}>ログイン中のアカウント</Text>
-              <Text style={styles.summary}>{identity.name}</Text>
-              <Text style={styles.summary}>{identity.email}</Text>
+            <View testID="account-sheet" style={extra.accountContent}>
+              <Text style={extra.accountFieldLabel}>
+                ログイン中のアカウント
+              </Text>
+              <Text style={extra.accountSummary}>{identity.name}</Text>
+              <Text style={extra.accountSummary}>{identity.email}</Text>
               <ActionButton
-                label="話者を管理"
+                label="友達の声を登録"
                 onPress={() => show({ kind: "speakers" })}
                 disabled={app.busy}
-                style={styles.primary}
+                style={extra.accountPrimary}
               >
-                <Text style={styles.primaryText}>話者を管理</Text>
+                <Text style={extra.accountPrimaryText}>友達の声を登録</Text>
               </ActionButton>
               <ActionButton
                 label="ログアウト"
@@ -533,9 +647,9 @@ function SessionApp({
                   void logout();
                 }}
                 disabled={app.busy || auth.busy}
-                style={styles.secondary}
+                style={extra.accountSecondary}
               >
-                <Text style={styles.secondaryText}>ログアウト</Text>
+                <Text style={extra.accountSecondaryText}>ログアウト</Text>
               </ActionButton>
               <ActionButton
                 label="アカウントを削除"
@@ -557,186 +671,218 @@ function SessionApp({
                   );
                 }}
                 disabled={app.busy || auth.busy}
-                style={styles.secondary}
+                style={extra.accountSecondary}
               >
-                <Text style={styles.secondaryText}>アカウントを削除</Text>
+                <Text style={extra.accountDeleteText}>アカウントを削除</Text>
               </ActionButton>
+              <PrivacyPolicyLink dark />
               {!!(accountError || auth.error) && (
-                <Text accessibilityLiveRegion="polite" style={extra.errorCopy}>
+                <Text
+                  accessibilityLiveRegion="polite"
+                  style={extra.accountErrorCopy}
+                >
                   {accountError || auth.error}
                 </Text>
               )}
             </View>
           )}
           {overlayKind === "finish" && draft && (
-            <View testID="finish-sheet">
-              <Text style={styles.summary}>
-                {draft.clips.length}件の音声 ·{" "}
-                {formatTime(
-                  draft.clips.reduce(
-                    (sum, clip) => sum + clip.durationMs / 1000,
-                    0,
-                  ),
-                )}
-              </Text>
-              <Text style={styles.fieldLabel}>思い出の名前</Text>
-              <TextInput
-                value={finishTitle}
-                onChangeText={setFinishTitle}
-                editable={draft.status === "local"}
-                maxLength={40}
-                returnKeyType="done"
-                onSubmitEditing={Keyboard.dismiss}
-                accessibilityLabel="思い出の名前"
-                style={styles.input}
-                testID="finish-title"
-              />
-              <View style={styles.finishClips}>
-                {draft.clips.map((clip) => {
-                  const context = sourceContext(clip);
-                  return (
-                    <ActionButton
-                      key={clip.id}
-                      label={`${context.place}の音声を確認`}
-                      onPress={() =>
-                        show({
-                          kind: "source",
-                          document: draft,
-                          clip,
-                          draftId: draft.id,
-                        })
-                      }
-                      style={styles.clipRow}
-                    >
-                      <Feather
-                        name="message-circle"
-                        size={18}
-                        color="#493020"
-                      />
-                      <Text style={styles.clipContext}>
-                        {context.date} {context.time} · {context.place}
-                      </Text>
-                      <Text style={styles.clipDuration}>
-                        {formatTime(clip.durationMs / 1000)}
-                      </Text>
-                    </ActionButton>
-                  );
-                })}
-              </View>
-              <ActionButton
-                label="歌詞を準備する"
-                onPress={() => {
-                  void prepare();
-                }}
-                disabled={app.busy || !finishTitle.trim()}
-                style={styles.primary}
-                testID="prepare-lyrics"
-              >
-                <Text style={styles.primaryText}>
-                  {app.busy ? "音声を送信中" : "歌詞を準備する"}
-                </Text>
-                <Feather name="chevron-right" size={20} color="#fff8f0" />
-              </ActionButton>
-            </View>
+            <FinishMemory
+              draft={draft}
+              busy={app.busy}
+              onPrepare={() => {
+                void prepare();
+              }}
+              onClip={(clip) =>
+                show({
+                  kind: "source",
+                  document: draft,
+                  clip,
+                  draftId: draft.id,
+                })
+              }
+            />
           )}
           {overlayKind === "review" && draft && (
-            <View testID="lyrics-review">
-              <ScrollView
-                keyboardShouldPersistTaps="handled"
-                style={{ maxHeight: 350 }}
-              >
-                {editedBlocks.map((block) => {
-                  const context = blockContext(draft, block);
-                  return (
-                    <View key={block.id} style={{ marginBottom: 24 }}>
-                      <TextInput
-                        value={block.text}
-                        onChangeText={(text) => {
-                          setEditedBlocks((blocks) =>
-                            blocks.map((value) =>
-                              value.id === block.id
-                                ? { ...value, text }
-                                : value,
-                            ),
-                          );
-                          void app.editLyrics(draft.id, block.id, text);
-                        }}
-                        multiline
-                        accessibilityLabel="歌詞を編集"
-                        style={[
-                          styles.input,
-                          {
-                            minHeight: 100,
-                            lineHeight: 28,
-                            textAlignVertical: "top",
-                          },
-                        ]}
-                        testID={`lyric-editor-${block.id}`}
-                      />
-                      <ActionButton
-                        label="元の会話を確認"
-                        onPress={() =>
-                          show({
-                            kind: "source",
-                            document: draft,
-                            block,
-                            draftId: draft.id,
-                          })
-                        }
-                        style={styles.clipRow}
-                      >
-                        <Feather
-                          name="message-circle"
-                          size={20}
-                          color="#493020"
-                        />
-                        <Text style={styles.clipContext}>
-                          {context.date} {context.time} · {context.place}
-                        </Text>
-                      </ActionButton>
-                    </View>
-                  );
-                })}
-              </ScrollView>
-              <ActionButton
-                label="この歌詞で曲を作る"
-                onPress={() => {
-                  void generate();
-                }}
-                disabled={
-                  app.busy ||
-                  !editedBlocks.length ||
-                  editedBlocks.some((block) => !block.text.trim())
-                }
-                style={styles.primary}
-                testID="create-song"
-              >
-                <Text style={styles.primaryText}>この歌詞で曲を作る</Text>
-              </ActionButton>
-            </View>
+            <LyricReview
+              draft={draft}
+              blocks={editedBlocks}
+              songTitle={songTitle}
+              busy={app.busy}
+              onSongTitle={(title) => {
+                setSongTitle(title);
+                void app.editSongTitle(draft.id, title);
+              }}
+              onChange={(id, text) => {
+                setEditedBlocks((blocks) =>
+                  blocks.map((block) =>
+                    block.id === id ? { ...block, text } : block,
+                  ),
+                );
+                void app.editLyrics(draft.id, id, text);
+              }}
+              onSource={(block) =>
+                show({
+                  kind: "source",
+                  document: draft,
+                  block,
+                  draftId: draft.id,
+                })
+              }
+              onGenerate={() => {
+                void generate();
+              }}
+            />
           )}
           {overlayKind === "progress" && draft && (
             <View testID="generation-progress">
-              <Text style={styles.story}>
-                {draft.status === "needs_reconciliation"
-                  ? "曲の受付を確認できませんでした。音声と歌詞は保存されています。この状態では作り直せません。時間をおいて状況を確認してください。"
-                  : draft.status === "failed"
-                    ? "音声と歌詞は残っています。ホームからこの記録を開き、もう一度仕上げられます。"
-                    : "思い出の言葉を、一曲にしています。完成したらライブラリに残ります。"}
-              </Text>
-              {["preparing", "generating", "uploading"].includes(
-                draft.status,
-              ) && <ActivityIndicator color="#493020" />}
-              <ActionButton
-                label="閉じる"
-                onPress={close}
-                style={styles.primary}
-              >
-                <Text style={styles.primaryText}>閉じる</Text>
-              </ActionButton>
+              {draft.status === "needs_audio_review" ? (
+                <>
+                  <Text style={styles.story}>
+                    認識できていない発話が残っている可能性があります。原音と全文を確認してください。内容を使って続けると、保存済みの文字起こしから歌詞を作ります。
+                  </Text>
+                  <ScrollView style={{ maxHeight: 310 }}>
+                    {draft.clips.map((clip) => (
+                      <View key={clip.id} style={{ marginBottom: 18 }}>
+                        <Text style={styles.summary}>
+                          処理した音声{" "}
+                          {formatTime(
+                            (clip.processing?.processedMs ?? clip.durationMs) /
+                              1000,
+                          )}
+                          {" · "}発話のある時間{" "}
+                          {formatTime(
+                            (clip.processing?.speechActivityMs ?? 0) / 1000,
+                          )}
+                          {" · "}認識した時間{" "}
+                          {formatTime(
+                            (clip.processing?.transcribedMs ?? 0) / 1000,
+                          )}
+                        </Text>
+                        {clip.processing?.unrecognizedActivityMs ? (
+                          <Text style={styles.summary}>
+                            未認識の有音区間{" "}
+                            {formatTime(
+                              clip.processing.unrecognizedActivityMs / 1000,
+                            )}
+                          </Text>
+                        ) : null}
+                        {clip.processing?.status === "needs_review" ? (
+                          <Text style={styles.summary}>
+                            録音器{" "}
+                            {clip.processing.recordedDurationMs
+                              ? formatTime(
+                                  clip.processing.recordedDurationMs / 1000,
+                                )
+                              : "不明"}
+                            {" · "}端末ファイル{" "}
+                            {formatTime(
+                              clip.processing.clientDurationMs / 1000,
+                            )}
+                            {" · "}サーバー検査{" "}
+                            {formatTime(
+                              clip.processing.serverDurationMs / 1000,
+                            )}
+                          </Text>
+                        ) : null}
+                        <ActionButton
+                          label="全文を確認"
+                          onPress={() =>
+                            show({
+                              kind: "source",
+                              document: draft,
+                              clip,
+                              draftId: draft.id,
+                            })
+                          }
+                          style={styles.clipRow}
+                          testID={`audio-review-source-${clip.id}`}
+                        >
+                          <Feather
+                            name="headphones"
+                            size={18}
+                            color={colors.ink}
+                          />
+                          <Text style={styles.clipContext}>
+                            原音を最初から最後まで聴く
+                          </Text>
+                        </ActionButton>
+                      </View>
+                    ))}
+                    {draft.utterances.map((utterance) => (
+                      <View
+                        key={utterance.id}
+                        style={{
+                          flexDirection: "row",
+                          gap: 12,
+                          marginBottom: 12,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            width: 74,
+                            color: colors.muted,
+                            fontSize: 12,
+                          }}
+                        >
+                          {formatTime(utterance.startMs / 1000)}
+                        </Text>
+                        <Text
+                          style={[styles.story, { flex: 1, marginBottom: 0 }]}
+                        >
+                          {speakerLabel(utterance)} · 「{utterance.text}」
+                        </Text>
+                      </View>
+                    ))}
+                  </ScrollView>
+                  <ActionButton
+                    label="認識済み内容で続ける"
+                    onPress={() => void app.approveTranscript(draft.id)}
+                    disabled={app.busy || !draft.jobId}
+                    style={styles.primary}
+                    testID="approve-transcript"
+                  >
+                    <Text style={styles.primaryText}>認識済み内容で続ける</Text>
+                    <Feather
+                      name="chevron-right"
+                      size={20}
+                      color={colors.paper}
+                    />
+                  </ActionButton>
+                </>
+              ) : (
+                <GenerationProgress draft={draft} onClose={close} />
+              )}
+              {draft.status === "needs_audio_review" && (
+                <ActionButton
+                  label="閉じる"
+                  onPress={close}
+                  style={styles.primary}
+                >
+                  <Text style={styles.primaryText}>閉じる</Text>
+                </ActionButton>
+              )}
             </View>
           )}
-          {overlay?.kind === "source" && (
+          {overlay?.kind === "source" && songSource && (
+            <SongSourceContent
+              clips={sourceClips}
+              utterances={sourceUtterances}
+              songPosition={app.position}
+              sourcePlaying={app.sourcePlaying}
+              activeClipId={activeSourceClipId}
+              busy={app.busy}
+              onPlay={(clipId, startMs, endMs) => {
+                setActiveSourceClipId(clipId);
+                void app.playSource(clipId, startMs, endMs);
+              }}
+              onStop={() => {
+                setActiveSourceClipId(null);
+                void app.closeSource();
+              }}
+            />
+          )}
+          {overlay?.kind === "source" && !songSource && (
             <View testID="memory-sheet">
               <ScrollView style={{ maxHeight: 270 }}>
                 {sourceClips.map((clip) => {
@@ -745,12 +891,29 @@ function SessionApp({
                   );
                   const context = sourceContext(clip, lines[0]?.startMs ?? 0);
                   return (
-                    <Text
-                      key={clip.id}
-                      style={[styles.summary, { marginBottom: 16 }]}
-                    >
-                      {context.date} {context.time} · {context.place}
-                    </Text>
+                    <View key={clip.id} style={{ marginBottom: 16 }}>
+                      <Text style={styles.summary}>
+                        {context.date} {context.time} · {context.place}
+                      </Text>
+                      {overlay.block && (
+                        <ActionButton
+                          label="全文を確認"
+                          onPress={() =>
+                            show({
+                              kind: "source",
+                              document: overlay.document,
+                              clip,
+                              draftId: overlay.draftId,
+                            })
+                          }
+                          style={styles.clipRow}
+                        >
+                          <Text style={styles.clipContext}>
+                            この録音の全文を確認
+                          </Text>
+                        </ActionButton>
+                      )}
+                    </View>
                   );
                 })}
                 {sourceUtterances.length ? (
@@ -764,7 +927,7 @@ function SessionApp({
                       }}
                     >
                       <Text
-                        style={{ width: 50, color: "#6f5d4e", fontSize: 12 }}
+                        style={{ width: 50, color: colors.muted, fontSize: 12 }}
                       >
                         {speakerLabel(utterance)}
                       </Text>
@@ -789,7 +952,7 @@ function SessionApp({
                     style={styles.clipRow}
                     testID="edit-recording-place"
                   >
-                    <Feather name="map-pin" size={17} color="#493020" />
+                    <Feather name="map-pin" size={17} color={colors.ink} />
                     <Text style={styles.clipContext}>
                       {placeEditing ? "編集を閉じる" : "場所を編集"}
                     </Text>
@@ -833,27 +996,33 @@ function SessionApp({
                 const lines = sourceUtterances.filter(
                   (value) => value.clipId === clip.id,
                 );
-                const start = lines.length
-                  ? Math.min(...lines.map((value) => value.startMs))
-                  : 0;
-                const end = lines.length
-                  ? Math.max(...lines.map((value) => value.endMs))
-                  : clip.durationMs;
+                const { startMs, endMs } = sourcePlaybackRange(
+                  clip,
+                  lines,
+                  Boolean(overlay.clip),
+                );
                 return (
                   <ActionButton
                     key={clip.id}
-                    label="元の会話を聴く"
+                    label={overlay.clip ? "録音全体を聴く" : "元の会話を聴く"}
                     onPress={() => {
-                      void app.playSource(clip.id, start, end, overlay.draftId);
+                      void app.playSource(
+                        clip.id,
+                        startMs,
+                        endMs,
+                        overlay.draftId,
+                      );
                     }}
                     disabled={app.busy}
                     style={styles.primary}
                     testID="listen-memory"
                   >
-                    <Feather name="play" size={19} color="#fff8f0" />
+                    <Feather name="play" size={19} color={colors.paper} />
                     <Text style={styles.primaryText}>元の会話を聴く</Text>
                     <Text style={styles.buttonNote}>
-                      {formatTime(start / 1000)}から
+                      {overlay.clip
+                        ? "最初から最後まで"
+                        : `${formatTime(startMs / 1000)}から`}
                     </Text>
                   </ActionButton>
                 );
@@ -879,13 +1048,18 @@ function SessionApp({
                     );
                     if (current)
                       show({
-                        kind: current.lyrics ? "review" : "finish",
+                        kind:
+                          current.status === "needs_audio_review"
+                            ? "progress"
+                            : current.lyrics
+                              ? "review"
+                              : "finish",
                         draftId: current.id,
                       });
                   }}
                   style={styles.clipRow}
                 >
-                  <Feather name="chevron-left" size={18} color="#493020" />
+                  <Feather name="chevron-left" size={18} color={colors.ink} />
                   <Text style={styles.clipContext}>確認に戻る</Text>
                 </ActionButton>
               )}
@@ -898,7 +1072,6 @@ function SessionApp({
 }
 
 const extra = StyleSheet.create({
-  brand: { color: "#493020", fontSize: 32, fontWeight: "600" },
   loading: {
     ...StyleSheet.absoluteFill,
     backgroundColor: "#fff",
@@ -921,12 +1094,67 @@ const extra = StyleSheet.create({
     lineHeight: 22,
     marginBottom: 18,
   },
+  accountContent: { gap: 8 },
+  accountFieldLabel: {
+    color: figmaColors.secondary,
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: "600",
+    marginTop: 4,
+  },
+  accountSummary: {
+    color: figmaColors.primary,
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  accountPrimary: {
+    minHeight: 56,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.control,
+    backgroundColor: figmaColors.rose,
+    paddingHorizontal: 16,
+    marginTop: 12,
+  },
+  accountPrimaryText: {
+    color: figmaColors.onRose,
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: "600",
+  },
+  accountSecondary: {
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.control,
+    backgroundColor: figmaColors.surface,
+    paddingHorizontal: 16,
+  },
+  accountSecondaryText: {
+    color: figmaColors.primary,
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: "600",
+  },
+  accountDeleteText: {
+    color: figmaColors.rose,
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: "600",
+  },
+  accountErrorCopy: {
+    color: figmaColors.rose,
+    fontSize: 13,
+    lineHeight: 22,
+    marginBottom: 18,
+  },
 });
 
 const styles = StyleSheet.create({
-  story: { color: "#493020", fontSize: 15, lineHeight: 26, marginBottom: 24 },
+  story: { color: colors.ink, fontSize: 15, lineHeight: 26, marginBottom: 24 },
   sectionHeading: {
-    color: "#6f5d4e",
+    color: colors.muted,
     fontSize: 13,
     lineHeight: 20,
     fontWeight: "600",
@@ -936,17 +1164,17 @@ const styles = StyleSheet.create({
     marginTop: 28,
     paddingTop: 20,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#ddcfc1",
+    borderTopColor: colors.line,
   },
-  lyric: { color: "#332317", fontSize: 18, lineHeight: 29, fontWeight: "600" },
+  lyric: { color: colors.ink, fontSize: 18, lineHeight: 29, fontWeight: "600" },
   primary: {
     minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 12,
-    borderRadius: 16,
-    backgroundColor: "#493020",
+    borderRadius: radii.control,
+    backgroundColor: colors.ink,
     paddingHorizontal: 16,
     marginTop: 28,
   },
@@ -956,17 +1184,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 16,
   },
-  secondaryText: { color: "#493020", fontSize: 15 },
+  secondaryText: { color: colors.ink, fontSize: 15 },
   primaryText: {
-    color: "#fff8f0",
+    color: colors.paper,
     fontSize: 15,
     lineHeight: 22,
     fontWeight: "600",
   },
-  buttonNote: { color: "#f0ded0", fontSize: 12 },
-  summary: { color: "#544033", fontSize: 13, lineHeight: 22 },
+  buttonNote: { color: colors.paper, fontSize: 12 },
+  summary: { color: colors.muted, fontSize: 13, lineHeight: 22 },
   fieldLabel: {
-    color: "#493020",
+    color: colors.ink,
     fontSize: 13,
     lineHeight: 20,
     fontWeight: "600",
@@ -975,27 +1203,26 @@ const styles = StyleSheet.create({
   },
   input: {
     minHeight: 52,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#cdb7a5",
+    borderRadius: 0,
+    borderBottomWidth: 1,
+    borderColor: colors.line,
     paddingHorizontal: 14,
     paddingVertical: 12,
     backgroundColor: "#fff",
-    color: "#332317",
+    color: colors.ink,
     fontSize: 16,
   },
-  finishClips: { gap: 16, marginTop: 26 },
-  clipRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  clipContext: { flex: 1, color: "#493020", fontSize: 13, lineHeight: 20 },
-  clipDuration: {
-    color: "#544033",
-    fontSize: 12,
-    fontVariant: ["tabular-nums"],
+  clipRow: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
   },
+  clipContext: { flex: 1, color: colors.ink, fontSize: 13, lineHeight: 20 },
   share: { alignItems: "center" },
   shareArtwork: { width: 160, height: 160, borderRadius: 16 },
   shareTitle: {
-    color: "#332317",
+    color: colors.ink,
     fontSize: 22,
     lineHeight: 30,
     fontWeight: "700",

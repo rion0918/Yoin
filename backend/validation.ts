@@ -224,6 +224,10 @@ export function clipMetadata(
     mimeType,
     sizeBytes: integer(value.sizeBytes, 1, MAX_AUDIO_BYTES),
     durationMs: integer(value.durationMs, 1, MAX_AUDIO_MS),
+    captureDurationMs:
+      value.captureDurationMs === undefined || value.captureDurationMs === null
+        ? null
+        : integer(value.captureDurationMs, 1, MAX_AUDIO_MS),
     recordedAt: nullableDate(value.recordedAt),
     importedAt: nullableDate(value.importedAt),
     timezone,

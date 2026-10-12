@@ -36,6 +36,9 @@ export type ClipRow = {
   upload_id: string | null;
   status: string;
   inspection_json: string | null;
+  client_duration_ms: number;
+  capture_duration_ms: number | null;
+  processing_json: string | null;
   location_summary_json: string | null;
   location_hash: string | null;
 };
@@ -51,9 +54,14 @@ export type JobRow = {
   error: string | null;
   lyric_revision: number | null;
   blocks_json: string | null;
+  song_title?: string | null;
   song_id: string | null;
   created_at: string;
   speaker_snapshot_json?: string | null;
+  transcript_fingerprint?: string | null;
+  transcript_reviewed_at?: string | null;
+  expected_chunks?: number;
+  completed_chunks?: number;
 };
 export type AudioRow = {
   id: string;
@@ -118,10 +126,26 @@ export function audioClip(row: ClipRow): AudioClip {
     mimeType: row.mime_type,
     sizeBytes: row.size_bytes,
     durationMs: row.duration_ms,
+    captureDurationMs: row.capture_duration_ms,
     recordedAt: row.recorded_at,
     importedAt: row.imported_at,
     timezone: row.timezone,
     place: row.place,
+    processing: row.processing_json
+      ? (JSON.parse(row.processing_json) as AudioClip["processing"])
+      : {
+          status: "unverified",
+          recordedDurationMs: row.capture_duration_ms,
+          clientDurationMs: row.client_duration_ms || row.duration_ms,
+          serverDurationMs: 0,
+          processedMs: 0,
+          speechActivityMs: 0,
+          transcribedMs: 0,
+          unrecognizedActivityMs: 0,
+          expectedChunks: 0,
+          completedChunks: 0,
+          unrecognizedRanges: [],
+        },
     ...(row.location_summary_json
       ? {
           locationSummary: JSON.parse(
@@ -193,6 +217,9 @@ export function jobDocument(row: JobRow): JobDocument {
     stage: row.stage,
     error: row.error,
     songId: row.song_id,
+    transcriptFingerprint: row.transcript_fingerprint ?? null,
+    expectedChunks: row.expected_chunks ?? 0,
+    completedChunks: row.completed_chunks ?? 0,
   };
 }
 export async function songDocument(

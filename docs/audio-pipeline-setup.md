@@ -191,6 +191,12 @@ npm run backend:dev
 
 ローカルD1・R2・Workflowsを使います。Dockerのビルド送信対象は[Dockerfileのignore](../backend/media/Dockerfile.dockerignore)で限定し、秘密情報・音声を含めません。開発版のUSB転送とビルド時の接続設定は[内部テスト](internal-testing.md#androidへの導入と接続設定)を参照してください。
 
+## 音声範囲の検証と確認待ち
+
+準備Workflowはmanifestの開始・区間の連続性・終端を検査します。録音器の経過時間、端末の検査時間、サーバーの検査時間も保存し、差が1秒または1%の大きい方を超えた場合に確認対象にします。FFmpegは−50dBを有音とする区間を記録します。これは雑音も拾うため、認識漏れの断定には使いません。
+
+認識範囲を前後2秒広げても、15秒以上の未認識区間に5秒以上の有音が残る場合は `needs_audio_review` で止まり、アプリに全文と元音声を表示します。利用者が認識済み内容で続けると、同じWorkflowが保存済み文字起こしから歌詞作成へ進みます。最大30日の確認待ちが期限切れでも音声・生応答・部分結果は保持されます。再準備では指紋が一致する分割音声と有料認識結果を再利用し、未確定の有料POSTは自動再送しません。[ADR 0018](adr/0018-verified-audio-coverage.md)はProposedであり、実音声の品質保証ではありません。
+
 ## Cloud RunとCloudflareへの配置
 
 [ADR 0011](adr/0011-cloudflare-free-audio-runtime.md)に従い、Workers FreeにAPI・D1・非公開R2・Workflowsを置き、Cloud RunにFFmpegとGoogleアダプターを置きます。[実際の配置情報](audio-pipeline-verification.md#配置リソース)を確認し、既存環境の更新か新規構築かを判断して作業します。
@@ -314,6 +320,8 @@ GoogleキーをWorkerへ登録しません。D1移行は `0001`〜`0004` を番�
 | 認証失敗 | Firebaseプロジェクト・Google証明書・検証済みメールの許可リストと、Cloud Run用トークンを確認 |
 | `ai_budget_exhausted` | 設定された累積枠と、D1の費用・未確定予約を確認。台帳を初期化して回避しない |
 | 音声検査失敗 | 元音声の署名期限・実ファイル・callbackのorigin・保存先を確認 |
+| `transcript_review_conflict` | 現在のジョブと全文を再取得し、その文字起こしの確認操作をやり直す |
+| `audio_review_expired` | 原音と文字起こしが残っていることを確認し、準備を再開する。指紋が一致する結果は再利用される |
 | `needs_reconciliation` / `provider_outcome_unconfirmed` | 同じ有料POSTを再送せず、D1の試行と予約、R2の結果・生応答、Google Usageを照合 |
 | 予約額を超えた見積もり | 新しい有料呼び出しを止め、usageと請求を照合 |
 | 結果は保存済みだがHTTP応答を失った | 同じ試行の回復用結果を使う。手動でclaim列を消して再実行しない |

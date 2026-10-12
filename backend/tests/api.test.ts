@@ -5,6 +5,7 @@ import initialSchema from "../migrations/0001_initial.sql?raw";
 import runtimeSchema from "../migrations/0002_audio_runtime.sql?raw";
 import speakerSchema from "../migrations/0003_speaker_profiles.sql?raw";
 import draftSpeakersSchema from "../migrations/0005_draft_speaker_profiles.sql?raw";
+import { sha256 } from "../security.ts";
 import { applyAccountSchema } from "./schema.ts";
 
 const schema = `${initialSchema}\n${runtimeSchema}\n${speakerSchema}\n${draftSpeakersSchema}`;
@@ -57,6 +58,33 @@ function request(
 }
 
 describe("private API", () => {
+  it("serves the privacy policy without account or storage configuration", async () => {
+    const response = await handleRequest(
+      new Request("https://yoin.test/privacy"),
+      {} as Env,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/html");
+    const text = await response.text();
+    expect(text).toContain("Yoin プライバシーポリシー");
+    expect(text).toContain("rion.developer.apps@gmail.com");
+    expect(text).toContain("画面ロック");
+    expect(text).toContain("アカウントを削除");
+    const head = await handleRequest(
+      new Request("https://yoin.test/privacy", { method: "HEAD" }),
+      {} as Env,
+    );
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe("");
+  });
+
+  it("keeps data routes and non-read privacy requests authenticated", async () => {
+    for (const path of ["/account", "/songs", "/drafts/private-draft"]) {
+      expect((await request(path, "GET", undefined, "wrong")).status).toBe(401);
+    }
+    expect((await request("/privacy", "POST", {}, "wrong")).status).toBe(401);
+  });
+
   it("accepts account deletion as a durable operation", async () => {
     bindings.DELETE_ACCOUNT = {
       create: vi.fn(async () => ({ id: "deletion" })),
@@ -122,6 +150,74 @@ describe("private API", () => {
       id: draftId,
       title: "秋の旅",
       clips: [],
+    });
+  });
+
+  it("accepts the current owned transcript once and makes duplicate approval idempotent", async () => {
+    await request("/drafts", "POST", {
+      id: draftId,
+      title: "旅",
+      createdAt: "2026-10-04T01:00:00Z",
+    });
+    await bindings.DB.prepare(
+      "INSERT INTO clips (id, draft_id, owner_id, mime_type, size_bytes, duration_ms, recorded_at, timezone, object_key, status) VALUES ('clip-review', ?, 'private-tester', 'audio/mp4', 10, 180000, '2026-10-04T01:00:00Z', 'Asia/Tokyo', 'originals/private-tester/clip-review', 'uploaded')",
+    )
+      .bind(draftId)
+      .run();
+    const transcript = [
+      {
+        id: "clip-review:u:100:1",
+        clipId: "clip-review",
+        startMs: 100,
+        endMs: 500,
+        speaker: "spk_1",
+        text: "出発しよう",
+      },
+    ];
+    await bindings.DB.prepare(
+      "INSERT INTO utterances (id, clip_id, start_ms, end_ms, speaker, text) VALUES (?, 'clip-review', 100, 500, 'spk_1', '出発しよう')",
+    )
+      .bind(transcript[0].id)
+      .run();
+    const fingerprint = await sha256(JSON.stringify(transcript));
+    await bindings.DB.prepare(
+      "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, status, stage, transcript_fingerprint, created_at) VALUES ('prepare-review', 'private-tester', ?, 'prepare', 'review-key', 'input', 'needs_audio_review', 'review_audio', ?, '2026-10-04')",
+    )
+      .bind(draftId, fingerprint)
+      .run();
+    await bindings.DB.prepare(
+      "UPDATE drafts SET status = 'needs_audio_review', job_id = 'prepare-review' WHERE id = ?",
+    )
+      .bind(draftId)
+      .run();
+    const sendEvent = vi.fn(async () => {});
+    bindings.PREPARE = {
+      get: vi.fn(async () => ({ sendEvent })),
+    } as unknown as Env["PREPARE"];
+
+    const first = await request(
+      `/drafts/${draftId}/transcript-review`,
+      "POST",
+      {
+        jobId: "prepare-review",
+        transcriptFingerprint: fingerprint,
+      },
+    );
+    await bindings.DB.prepare(
+      "UPDATE jobs SET status = 'running' WHERE id = 'prepare-review'",
+    ).run();
+    const duplicate = await request(
+      `/drafts/${draftId}/transcript-review`,
+      "POST",
+      { jobId: "prepare-review", transcriptFingerprint: fingerprint },
+    );
+
+    expect(first.status).toBe(202);
+    expect(duplicate.status).toBe(200);
+    expect(sendEvent).toHaveBeenCalledOnce();
+    expect(sendEvent).toHaveBeenCalledWith({
+      type: "audio-transcript-review",
+      payload: { transcriptFingerprint: fingerprint },
     });
   });
 
@@ -406,14 +502,25 @@ describe("private API", () => {
     const first = await request(`/drafts/${draftId}/generate`, "POST", {
       revision: 1,
       idempotencyKey: "generation-key",
+      songTitle: "夜明け前",
     });
     const retry = await request(`/drafts/${draftId}/generate`, "POST", {
       revision: 1,
       idempotencyKey: "generation-key",
+      songTitle: "夜明け前",
     });
     expect(first.status).toBe(202);
     const submitted = await first.json<{ jobId: string }>();
     expect(await retry.json()).toEqual(submitted);
+    expect(
+      (
+        await request(`/drafts/${draftId}/generate`, "POST", {
+          revision: 1,
+          idempotencyKey: "generation-key",
+          songTitle: "別の曲名",
+        })
+      ).status,
+    ).toBe(409);
     expect((await request(`/jobs/${submitted.jobId}`)).status).toBe(200);
     expect(create).toHaveBeenCalledTimes(3);
     expect(
@@ -436,14 +543,43 @@ describe("private API", () => {
       ).status,
     ).toBe(409);
     const frozen = await bindings.DB.prepare(
-      "SELECT lyric_revision, blocks_json FROM jobs WHERE id = ?",
+      "SELECT lyric_revision, blocks_json, song_title FROM jobs WHERE id = ?",
     )
       .bind(submitted.jobId)
       .first();
     expect(frozen).toEqual({
       lyric_revision: 1,
       blocks_json: JSON.stringify([block]),
+      song_title: "夜明け前",
     });
+  });
+
+  it("reuses a submitted generation job created before song titles were stored", async () => {
+    const block = {
+      id: "verse-1",
+      text: "秋の風",
+      sourceUtteranceIds: ["clip:u:0:1"],
+    };
+    await seedReview(block);
+    const blocks = JSON.stringify([block]);
+    const legacyFingerprint = await sha256(
+      JSON.stringify({ draftId, revision: 1, blocks }),
+    );
+    await bindings.DB.prepare(
+      "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, status, stage, lyric_revision, blocks_json, created_at) VALUES ('legacy-job', 'private-tester', ?, 'generate', 'legacy-key', ?, 'running', 'generate_music', 1, ?, '2026-10-04')",
+    )
+      .bind(draftId, legacyFingerprint, blocks)
+      .run();
+    const response = await request(`/drafts/${draftId}/generate`, "POST", {
+      revision: 1,
+      idempotencyKey: "legacy-key",
+      songTitle: "旅",
+    });
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ jobId: "legacy-job" });
+    expect(
+      (await bindings.DB.prepare("SELECT id FROM jobs").all()).results,
+    ).toEqual([{ id: "legacy-job" }]);
   });
 
   it("rejects a stale lyric edit without changing the current revision", async () => {

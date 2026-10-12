@@ -42,9 +42,24 @@ npm --prefix backend ci
 | Metroを起動 | `npm start` |
 | Webの画面確認 | `npm run web` |
 | Android開発用アプリをビルド・起動 | `npm run android:device` |
+| インストール済みAndroidアプリへ再接続 | `npm run android` |
 | Workersをローカル起動 | `npm run backend:dev`。事前設定とD1適用は[ローカルバックエンド](audio-pipeline-setup.md#ローカルバックエンド)を参照 |
 
-各プロセスは別ターミナルで起動します。端末の接続・USB転送・API設定は[内部テストの端末設定](internal-testing.md#androidへの導入と接続設定)にまとめています。
+各プロセスは別ターミナルで起動します。Android用コマンドはMetroも起動するので、別途 `npm start` を実行する必要はありません。API設定は[設定・デプロイ・運用](audio-pipeline-setup.md)を参照してください。
+
+### Androidの開発接続
+
+`npm run android:device` と `npm run android` は開発サーバーの接続先を `127.0.0.1` に固定します。Expoが `adb reverse` で端末のMetro用ポートをPCへ転送するため、MacのLANアドレスが変わっても起動URLは変わりません。実機はUSB接続とUSBデバッグの許可が必要です。エミュレーターも同じ経路を使います。
+
+PC・端末の再起動後は、エミュレーターを起動するか実機を接続し、Nix環境で次を実行してください。
+
+```sh
+npm run android
+```
+
+このターミナルは開いたままにします。端末の再起動で消えるADB転送を設定し直し、保存済みの古いLAN URLを使わずにアプリを開きます。ネイティブ設定・依存関係を変更した場合は `npm run android:device` で再ビルドしてください。
+
+以前の `npm start` がMetroを起動している場合は、そのターミナルでCtrl+Cを押してからAndroid用コマンドを実行してください。開発用アプリはMetro停止中には起動できません。PCなしで使用する配布版については[Google Play内部テスト](play-internal-release.md)を参照してください。
 
 ## コードを検証する
 
@@ -106,7 +121,7 @@ Nixファイルの整形は `nix fmt flake.nix` を使います。更新した�
 | Node.jsやJDKの版が違う | 新しいターミナルにもNix環境を適用。`node --version`、`npm --version`、`java -version` を確認 |
 | Android端末が見つからない | `ANDROID_HOME`、USBデバッグ・端末上の許可、`adb devices -l` の状態を確認 |
 | Android SDK・ライセンスのエラー | Android Studioでビルドが要求するSDKを導入し、表示されたライセンスを確認 |
-| アプリがMetroへ接続できない | Metroが起動していることと端末の接続を確認。[USB転送](internal-testing.md#androidへの導入と接続設定)を設定 |
+| アプリがMetroへ接続できない | エミュレーターの起動、または実機のUSB接続を確認し、`npm run android` で[接続先とADB転送](#androidの開発接続)を設定し直す |
 | 録音・取り込みが使えない | Webの制約を確認。Androidではマイク権限とdevelopment buildの使用を確認 |
 | backendのコマンドが見つからない | `npm --prefix backend ci` の実行を確認 |
 | `setup:local` が失敗する | [予算引き継ぎと既存設定](audio-pipeline-setup.md#残予算の移管)を確認。既存台帳や設定を削除してやり直さない |

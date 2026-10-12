@@ -6,6 +6,7 @@ export type PlaybackState = {
 export type PlaybackEvent =
   | { type: "selectSong"; durationMs: number }
   | { type: "playSong" }
+  | { type: "pauseSong"; currentMs: number }
   | { type: "playSource"; currentMs: number }
   | { type: "closeSource" }
   | { type: "time"; positionMs: number }
@@ -24,6 +25,12 @@ export function playbackTransition(
       return { target: "none", positionMs: 0, durationMs: event.durationMs };
     case "playSong":
       return { ...state, target: "song" };
+    case "pauseSong":
+      return {
+        ...state,
+        target: "none",
+        positionMs: position(event.currentMs),
+      };
     case "playSource":
       return {
         ...state,

@@ -2,6 +2,7 @@
 !backend/
 !backend/media/
 !backend/media/server.mjs
+!backend/media/activity.mjs
 !backend/media/providers.mjs
 !backend/media/speakers.mjs
 !backend/media/package.json

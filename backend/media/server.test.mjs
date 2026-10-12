@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { mkdtemp, rm, stat } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -18,6 +18,23 @@ async function listen(server) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
+async function holdRequest(server, base, path, headers) {
+  const received = new Promise((resolve) => {
+    server.once("request", resolve);
+  });
+  const request = httpRequest(new URL(path, base), {
+    method: "POST",
+    headers: { ...headers, "Content-Length": "2" },
+  });
+  const response = new Promise((resolve) => {
+    request.once("response", resolve);
+    request.once("error", resolve);
+  });
+  request.flushHeaders();
+  await received;
+  return { request, response };
+}
+
 test("media service rejects invalid credentials without fetching audio", async () => {
   const server = createMediaServer({ token, origin: "https://yoin.test" });
   const base = await listen(server);
@@ -28,6 +45,97 @@ test("media service rejects invalid credentials without fetching audio", async (
     });
     assert.equal(response.status, 401);
   } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("media service marks missing provider configuration as not submitted", async () => {
+  const server = createMediaServer({ token, origin: "https://yoin.test" });
+  const base = await listen(server);
+  try {
+    const response = await fetch(`${base}/music`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("X-Provider-Not-Submitted"), "true");
+    assert.deepEqual(await response.json(), {
+      error: "provider_not_configured",
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("media service marks busy paid requests as not submitted", async () => {
+  const server = createMediaServer({
+    token,
+    origin: "https://yoin.test",
+    apiKey: "test",
+    providerFetch: () => new Promise(() => {}),
+  });
+  const base = await listen(server);
+  const active = await holdRequest(server, base, "/probe", {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  });
+  try {
+    const response = await fetch(`${base}/music`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "X-Provider-Attempt": "music-job",
+      },
+      body: JSON.stringify({}),
+    });
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("X-Provider-Not-Submitted"), "true");
+    assert.deepEqual(await response.json(), { error: "media_service_busy" });
+    active.request.end("{}");
+    const firstResponse = await active.response;
+    assert.equal(firstResponse.statusCode, 422);
+    firstResponse.resume();
+  } finally {
+    if (!active.request.writableEnded) active.request.end("{}");
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("media service does not mark a concurrent request for the active attempt as unsubmitted", async () => {
+  const server = createMediaServer({
+    token,
+    origin: "https://yoin.test",
+    apiKey: "test",
+  });
+  const base = await listen(server);
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+    "X-Provider-Attempt": "music-job",
+  };
+  const active = await holdRequest(server, base, "/music", headers);
+  try {
+    const response = await fetch(`${base}/music`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({}),
+    });
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("X-Provider-Not-Submitted"), null);
+    await response.body?.cancel();
+    active.request.end("{}");
+    const firstResponse = await active.response;
+    assert.equal(firstResponse.statusCode, 503);
+    firstResponse.resume();
+  } finally {
+    if (!active.request.writableEnded) active.request.end("{}");
+    server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
 });
@@ -117,8 +225,14 @@ for (const durationSeconds of [1560, 3600])
       assert.ok(
         result.chunks.every(
           (chunk) =>
-            chunk.durationMs <= 1501000 && chunk.mimeType === "audio/mp4",
+            chunk.durationMs <= 1501000 &&
+            chunk.mimeType === "audio/mp4" &&
+            Array.isArray(chunk.activityRanges),
         ),
+      );
+      assert.equal(
+        result.chunks.flatMap((chunk) => chunk.activityRanges).length,
+        0,
       );
       assert.equal(chunks.length, expectedCount);
       assert.ok(chunks.every((size) => size > 0 && size < 16 * 1024 * 1024));
@@ -128,3 +242,32 @@ for (const durationSeconds of [1560, 3600])
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+test("FFmpeg counts background noise above the configured activity threshold", {
+  skip: !process.env.FFMPEG_BIN,
+}, async () => {
+  const result = await execFile(
+    process.env.FFMPEG_BIN,
+    [
+      "-nostdin",
+      "-hide_banner",
+      "-loglevel",
+      "info",
+      "-f",
+      "lavfi",
+      "-i",
+      "sine=frequency=440:sample_rate=16000:duration=60",
+      "-af",
+      "volume=0:enable='between(t,0,30)',silencedetect=noise=-50dB:d=0.25",
+      "-f",
+      "null",
+      "-",
+    ],
+    { timeout: 30_000, maxBuffer: 1024 * 1024 },
+  );
+  const { activityRangesFromSilenceLog } = await import("./activity.mjs");
+  const ranges = activityRangesFromSilenceLog(result.stderr, 60_000);
+  assert.equal(ranges.length, 1);
+  assert.ok(ranges[0].startMs >= 29_000 && ranges[0].startMs <= 31_000);
+  assert.ok(ranges[0].endMs >= 59_000);
+});

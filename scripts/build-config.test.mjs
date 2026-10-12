@@ -47,3 +47,11 @@ test("distribution rejects Firebase files missing native app or API settings", (
   delete missingApp.client[0].client_info.mobilesdk_app_id;
   assert.throws(() => validateDistribution(env, missingApp));
 });
+
+test("Play builds accept the existing EAS project when no environment override is set", () => {
+  const { EAS_PROJECT_ID, ...withoutProject } = env;
+  assert.doesNotThrow(() =>
+    validateDistribution(withoutProject, services, EAS_PROJECT_ID),
+  );
+  assert.throws(() => validateDistribution(withoutProject, services));
+});

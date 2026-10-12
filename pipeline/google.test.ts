@@ -862,6 +862,8 @@ test("music still rejects malformed base64 characters and padding", async () => 
     "SUQzA===",
     "SUQzAA=",
     "SUQz\nYQ==",
+    "SUQzYQY\n",
+    "SUQzYQ\r\n",
   ]) {
     const raw = response([
       { type: "audio", mime_type: "audio/mpeg", data },

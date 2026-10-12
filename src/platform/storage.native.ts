@@ -194,7 +194,7 @@ export async function importAudio(
       directory,
       `${id}${source.extension || ".audio"}`,
     );
-    source.copy(destination);
+    await source.copy(destination);
     return importedClip(
       id,
       draftId,
@@ -274,7 +274,7 @@ export async function preserveRecording(
   const destination = new File(accountAudioDirectory(uid), `${clip.id}.m4a`);
   if (clip.localUri !== destination.uri) {
     const source = new File(clip.localUri);
-    if (!destination.exists) source.move(destination);
+    if (!destination.exists) await source.move(destination);
   }
   return { ...clip, localUri: destination.uri };
 }

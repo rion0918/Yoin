@@ -106,20 +106,20 @@ export async function runProvider(
     throw new Error("runtime_attempt_not_claimed");
   const options = { apiKey, fetch: providerFetch };
   let result, value;
-  if (stage === "transcribe") {
-    const audio = await fetch(sourceUrl, {
-      redirect: "error",
-      signal: AbortSignal.timeout(180_000),
-    });
-    if (
-      !audio.ok ||
-      Number(audio.headers.get("content-length")) > 16 * 1024 * 1024
-    )
-      throw new Error("runtime_source_download_failed");
-    const bytes = new Uint8Array(await audio.arrayBuffer());
-    if (bytes.byteLength < 1 || bytes.byteLength > 16 * 1024 * 1024)
-      throw new Error("invalid_runtime_audio_size");
-    try {
+  try {
+    if (stage === "transcribe") {
+      const audio = await fetch(sourceUrl, {
+        redirect: "error",
+        signal: AbortSignal.timeout(180_000),
+      });
+      if (
+        !audio.ok ||
+        Number(audio.headers.get("content-length")) > 16 * 1024 * 1024
+      )
+        throw new Error("runtime_source_download_failed");
+      const bytes = new Uint8Array(await audio.arrayBuffer());
+      if (bytes.byteLength < 1 || bytes.byteLength > 16 * 1024 * 1024)
+        throw new Error("invalid_runtime_audio_size");
       result = await transcribeAudio({
         ...options,
         bytes,
@@ -127,29 +127,30 @@ export async function runProvider(
         clipId: body.clipId,
         offsetMs: body.offsetMs,
       });
-    } catch (error) {
-      if (error instanceof GoogleProviderError && error.response !== null) {
-        const raw = Buffer.from(JSON.stringify(error.response));
-        if (raw.byteLength <= 100 * 1024 * 1024)
-          await upload(rawUrl, raw, "application/json");
-      }
-      throw error;
+      value = result.utterances;
+    } else if (stage === "lyrics") {
+      result = await createLyrics({ ...options, utterances: body.utterances });
+      value = result.blocks;
+    } else {
+      result = await generateMusic({ ...options, blocks: body.blocks });
     }
-    value = result.utterances;
-  } else if (stage === "lyrics") {
-    result = await createLyrics({ ...options, utterances: body.utterances });
-    value = result.blocks;
-  } else {
-    result = await generateMusic({ ...options, blocks: body.blocks });
-    value = {
-      ...(await upload(songUrl, result.bytes, result.mimeType)),
-      returnedLyrics: result.returnedLyrics,
-    };
+  } catch (error) {
+    if (error instanceof GoogleProviderError && error.response !== null) {
+      const raw = Buffer.from(JSON.stringify(error.response));
+      if (raw.byteLength <= 100 * 1024 * 1024)
+        await upload(rawUrl, raw, "application/json");
+    }
+    throw error;
   }
   const raw = Buffer.from(JSON.stringify(result.usage?.raw));
   if (raw.byteLength > 100 * 1024 * 1024)
     throw new Error("runtime_raw_result_too_large");
   const storedRaw = await upload(rawUrl, raw, "application/json");
+  if (stage === "music")
+    value = {
+      ...(await upload(songUrl, result.bytes, result.mimeType)),
+      returnedLyrics: result.returnedLyrics,
+    };
   const output = {
     value,
     costUsd: result.costUsd,

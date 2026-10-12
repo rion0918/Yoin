@@ -186,6 +186,29 @@ async function approveAndGenerate() {
   await generateSong(bindings, "generate-job", step);
 }
 
+it("uses the lyric-review song title without renaming its source memory", async () => {
+  await prepareDraft(bindings, "prepare-job", step);
+  await bindings.DB.prepare(
+    "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, song_title, created_at) VALUES ('generate-job', 'private-tester', 'draft', 'generate', 'generate-key', 'approved', 1, ?, '夜明け前', '2026-10-04')",
+  )
+    .bind(JSON.stringify(blocks))
+    .run();
+  await bindings.DB.prepare(
+    "UPDATE drafts SET status = 'generating', job_id = 'generate-job' WHERE id = 'draft'",
+  ).run();
+  await generateSong(bindings, "generate-job", step);
+  expect(
+    await bindings.DB.prepare(
+      "SELECT title FROM drafts WHERE id = 'draft'",
+    ).first(),
+  ).toEqual({ title: "秋の京都" });
+  expect(
+    await bindings.DB.prepare(
+      "SELECT title FROM songs WHERE id = 'song-generate-job'",
+    ).first(),
+  ).toEqual({ title: "夜明け前" });
+});
+
 it("preserves original chunk offsets and source IDs through lyric review", async () => {
   await prepareDraft(bindings, "prepare-job", step);
   const draft = await draftDocument(bindings, "draft", "private-tester");
@@ -201,6 +224,210 @@ it("preserves original chunk offsets and source IDs through lyric review", async
   expect(draft.lyrics).toEqual({ revision: 1, blocks });
   expect(transcribeAudio).toHaveBeenCalledTimes(2);
   expect(generateMusic).not.toHaveBeenCalled();
+});
+
+it("pauses before lyrics when a three-minute recording has a long active transcription gap", async () => {
+  await bindings.DB.prepare(
+    "UPDATE clips SET duration_ms = 180000, client_duration_ms = 180000 WHERE id = 'clip'",
+  ).run();
+  const chunks = [
+    {
+      key: "processed/clip/0.m4a",
+      offsetMs: 0,
+      durationMs: 180000,
+      mimeType: "audio/mp4",
+      activityRanges: [
+        { startMs: 0, endMs: 3000 },
+        { startMs: 30000, endMs: 50000 },
+        { startMs: 175000, endMs: 180000 },
+      ],
+    },
+  ];
+  vi.mocked(inspectClip).mockResolvedValue({
+    durationMs: 180000,
+    sizeBytes: 10,
+    chunks,
+    sourceEtag: "source-etag",
+    transformVersion: 1,
+  });
+  const transcript = [
+    {
+      id: "clip:u:100:1",
+      clipId: "clip",
+      startMs: 100,
+      endMs: 2500,
+      speaker: "話者 1",
+      text: "朝の出発",
+    },
+  ];
+  vi.mocked(transcribeAudio).mockResolvedValue({
+    value: transcript,
+    costUsd: 0.1,
+    usage: { model: "gemini-test" },
+  });
+  vi.mocked(createLyrics).mockResolvedValue({
+    value: [
+      { id: "verse", text: "朝の出発", sourceUtteranceIds: [transcript[0].id] },
+    ],
+    costUsd: 0.02,
+    usage: { model: "gemini-test" },
+  });
+  let signalWait!: () => void;
+  let resumeWorkflow!: (event: {
+    payload: { transcriptFingerprint: string };
+  }) => void;
+  const waiting = new Promise<void>((resolve) => {
+    signalWait = resolve;
+  });
+  const workflowStep = {
+    do: step.do,
+    waitForEvent: () => {
+      signalWait();
+      return new Promise((resolve) => {
+        resumeWorkflow = resolve;
+      });
+    },
+  } as unknown as WorkflowStep;
+
+  const running = prepareDraft(bindings, "prepare-job", workflowStep);
+  await waiting;
+  const pending = await ownedJob(bindings, "prepare-job", "private-tester");
+  expect(pending).toMatchObject({
+    status: "needs_audio_review",
+    stage: "review_audio",
+  });
+  expect(pending.completed_chunks).toBe(1);
+  expect(createLyrics).not.toHaveBeenCalled();
+  expect(
+    (await draftDocument(bindings, "draft", "private-tester")).utterances,
+  ).toEqual(transcript);
+  const clip = await bindings.DB.prepare(
+    "SELECT processing_json FROM clips WHERE id = 'clip'",
+  ).first<{ processing_json: string }>();
+  expect(JSON.parse(clip?.processing_json ?? "{}")).toMatchObject({
+    status: "needs_review",
+    speechActivityMs: 28000,
+    transcribedMs: 2400,
+    unrecognizedActivityMs: 25000,
+  });
+
+  resumeWorkflow({
+    payload: { transcriptFingerprint: pending.transcript_fingerprint ?? "" },
+  });
+  await running;
+  expect(createLyrics).toHaveBeenCalledOnce();
+  expect(
+    (await ownedJob(bindings, "prepare-job", "private-tester")).status,
+  ).toBe("waiting_review");
+  expect(transcribeAudio).toHaveBeenCalledOnce();
+});
+
+it("keeps opening, middle and ending utterances attached to their lyric sources", async () => {
+  await bindings.DB.prepare(
+    "UPDATE clips SET duration_ms = 180000, client_duration_ms = 180000 WHERE id = 'clip'",
+  ).run();
+  const chunks = [
+    {
+      key: "processed/clip/0.m4a",
+      offsetMs: 0,
+      durationMs: 180000,
+      mimeType: "audio/mp4",
+      activityRanges: [
+        { startMs: 0, endMs: 2500 },
+        { startMs: 89000, endMs: 92000 },
+        { startMs: 176000, endMs: 180000 },
+      ],
+    },
+  ];
+  vi.mocked(inspectClip).mockResolvedValue({
+    durationMs: 180000,
+    sizeBytes: 10,
+    chunks,
+    sourceEtag: "source-etag",
+    transformVersion: 1,
+  });
+  const transcript = [
+    {
+      id: "clip:u:100:1",
+      clipId: "clip",
+      startMs: 100,
+      endMs: 2000,
+      speaker: "話者 1",
+      text: "朝に出発",
+    },
+    {
+      id: "clip:u:90000:1",
+      clipId: "clip",
+      startMs: 90000,
+      endMs: 91000,
+      speaker: "話者 1",
+      text: "川辺で休憩",
+    },
+    {
+      id: "clip:u:177000:1",
+      clipId: "clip",
+      startMs: 177000,
+      endMs: 179000,
+      speaker: "話者 1",
+      text: "また来よう",
+    },
+  ];
+  vi.mocked(transcribeAudio).mockResolvedValue({
+    value: transcript,
+    costUsd: 0.1,
+    usage: { model: "gemini-test" },
+  });
+  const lyric = {
+    id: "story",
+    text: "朝に出発 川辺で休憩 また来よう",
+    sourceUtteranceIds: transcript.map((item) => item.id),
+  };
+  vi.mocked(createLyrics).mockResolvedValue({
+    value: [lyric],
+    costUsd: 0.02,
+    usage: { model: "gemini-test" },
+  });
+
+  await prepareDraft(bindings, "prepare-job", step);
+
+  const saved = await draftDocument(bindings, "draft", "private-tester");
+  expect(saved.utterances.map((item) => item.text)).toEqual([
+    "朝に出発",
+    "川辺で休憩",
+    "また来よう",
+  ]);
+  expect(saved.lyrics?.blocks[0]?.sourceUtteranceIds).toEqual(
+    transcript.map((item) => item.id),
+  );
+  expect(saved.status).toBe("waiting_review");
+});
+
+it("reuses the same completed transcription and lyrics in a new preparation job", async () => {
+  await prepareDraft(bindings, "prepare-job", step);
+  const attemptsBefore = await bindings.DB.prepare(
+    "SELECT COUNT(*) AS count FROM provider_attempts WHERE owner_id = 'private-tester'",
+  ).first<{ count: number }>();
+  expect(transcribeAudio).toHaveBeenCalledTimes(2);
+  expect(createLyrics).toHaveBeenCalledOnce();
+
+  await bindings.DB.prepare(
+    "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, created_at) VALUES ('prepare-job-retry', 'private-tester', 'draft', 'prepare', 'prepare-retry', 'same-input', '2026-10-04')",
+  ).run();
+  await bindings.DB.prepare(
+    "UPDATE drafts SET status = 'failed', job_id = 'prepare-job-retry' WHERE id = 'draft'",
+  ).run();
+
+  await prepareDraft(bindings, "prepare-job-retry", step);
+
+  const attemptsAfter = await bindings.DB.prepare(
+    "SELECT COUNT(*) AS count FROM provider_attempts WHERE owner_id = 'private-tester'",
+  ).first<{ count: number }>();
+  expect(attemptsAfter?.count).toBe(attemptsBefore?.count);
+  expect(transcribeAudio).toHaveBeenCalledTimes(2);
+  expect(createLyrics).toHaveBeenCalledOnce();
+  expect(
+    (await ownedJob(bindings, "prepare-job-retry", "private-tester")).status,
+  ).toBe("waiting_review");
 });
 
 it("matches temporary speaker labels independently within each chunk and passes names to lyrics", async () => {

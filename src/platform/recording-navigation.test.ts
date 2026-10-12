@@ -3,18 +3,12 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import {
-  type Context,
-  createElement,
-  type FunctionComponent,
-  type ReactElement,
-} from "react";
+import { createElement, type FunctionComponent } from "react";
 import { JsxEmit, ModuleKind, transpileModule } from "typescript";
+import { figmaColors } from "../design/figma.ts";
+import { colors, radii } from "../design/tokens.ts";
 
 const require = createRequire(import.meta.url);
-const { renderToStaticMarkup } = require("react-dom/server") as {
-  renderToStaticMarkup: (element: ReactElement) => string;
-};
 const routeCode = transpileModule(
   `${readFileSync(new URL("../../App.tsx", import.meta.url), "utf8")}\nexport { RecordingRoute, SessionContext };`,
   {
@@ -35,6 +29,10 @@ function recordingHarness({ clips = 0, saveSucceeds = true } = {}) {
     enabled: boolean;
     callback: (event: { data: { action: object } }) => void;
   };
+  let contextValue: unknown;
+  let currentHook = 0;
+  const refs: { current: unknown }[] = [];
+  let effect: (() => void) | undefined;
   let preventedAction: object | undefined;
   let releaseSave: () => void = () => {};
   const saving = new Promise<void>((resolve) => {
@@ -58,15 +56,29 @@ function recordingHarness({ clips = 0, saveSucceeds = true } = {}) {
       route: { params: { draftId: string } };
       navigation: typeof navigation;
     }>;
-    SessionContext?: Context<unknown>;
   } = {};
   runInNewContext(routeCode, {
     exports,
     require(name: string) {
-      if (name === "react" || name === "react/jsx-runtime")
-        return require(name);
+      if (name === "react")
+        return {
+          ...require(name),
+          useCallback: (callback: (...args: never[]) => unknown) => callback,
+          useContext: () => contextValue,
+          useEffect: (callback: () => void) => {
+            effect = callback;
+          },
+          useRef: (initial: unknown) => {
+            const index = currentHook++;
+            refs[index] ??= { current: initial };
+            return refs[index];
+          },
+        };
+      if (name === "react/jsx-runtime") return require(name);
       if (name === "react-native")
         return { StyleSheet: { create: (styles: object) => styles } };
+      if (name === "./src/design/tokens") return { colors, radii };
+      if (name === "./src/design/figma") return { figmaColors };
       if (name === "@react-navigation/native")
         return {
           DefaultTheme: { colors: {} },
@@ -90,10 +102,9 @@ function recordingHarness({ clips = 0, saveSucceeds = true } = {}) {
       return {};
     },
   });
-  const { RecordingRoute, SessionContext } = exports;
-  assert.ok(RecordingRoute && SessionContext);
+  const { RecordingRoute } = exports;
+  assert.ok(RecordingRoute);
   const Recording = RecordingRoute;
-  const ControllerProvider = SessionContext.Provider;
   async function leave() {
     leaveCalls++;
     busy = true;
@@ -105,28 +116,29 @@ function recordingHarness({ clips = 0, saveSucceeds = true } = {}) {
     return saveSucceeds;
   }
   function render() {
-    return renderToStaticMarkup(
-      createElement(
-        ControllerProvider,
-        {
-          value: {
-            state: { drafts, pendingRecording: null },
-            recorder: { recorderState: "off", elapsedMs: 0 },
-            busy,
-            leave,
-          },
-        },
-        createElement(Recording, {
-          route: { params: { draftId: "draft-a" } },
-          navigation,
-        }),
-      ),
-    );
+    currentHook = 0;
+    contextValue = {
+      state: { drafts, pendingRecording: null },
+      recorder: { recorderState: "off", elapsedMs: 0 },
+      busy,
+      leave,
+    };
+    const screen = Recording({
+      route: { params: { draftId: "draft-a" } },
+      navigation,
+    }) as { type?: unknown; props?: { onBack: () => void } };
+    if (typeof screen?.type === "function" && screen.props)
+      (screen.type as (props: { onBack: () => void }) => unknown)(screen.props);
   }
   render();
   return {
     toolbarBack: () => onBack(),
     systemBack: () => navigation.goBack(),
+    flushEffect: () => effect?.(),
+    setBusy(value: boolean) {
+      busy = value;
+      render();
+    },
     releaseSave,
     get removed() {
       return removed;
@@ -159,6 +171,24 @@ test("system back cleans up an idle recording before removing its route", async 
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(app.removed, true);
   assert.equal(app.leaveCalls, 1);
+  assert.equal(app.drafts.length, 0);
+});
+
+test("system back pressed while busy is replayed after the operation finishes", async () => {
+  const app = recordingHarness();
+  app.setBusy(true);
+  app.systemBack();
+  assert.equal(app.removed, false);
+  assert.equal(app.leaveCalls, 0);
+
+  app.setBusy(false);
+  app.flushEffect();
+  assert.equal(app.removed, false);
+  assert.equal(app.leaveCalls, 1);
+
+  app.releaseSave();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(app.removed, true);
   assert.equal(app.drafts.length, 0);
 });
 

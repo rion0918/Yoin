@@ -106,6 +106,9 @@ export function clipFromRecording(
     id: pending.clipId,
     draftId: pending.draftId,
     localUri: pending.localUri,
+    ...(pending.capturedDurationMs
+      ? { captureDurationMs: pending.capturedDurationMs }
+      : {}),
     recordedAt: pending.recordedAt,
     importedAt: null,
     timezone: pending.timezone,

@@ -24,19 +24,25 @@ test("song at 40 seconds survives a conversation, closing it, and opening a diff
   });
 });
 
-test("opening and closing a lyrics sheet while the song plays does not stop song time updates", () => {
+test("opening the source sheet pauses the song until the listener explicitly resumes it", () => {
   let state = playbackTransition(initPlayback(), {
     type: "selectSong",
     durationMs: 180000,
   });
   state = playbackTransition(state, { type: "playSong" });
   state = playbackTransition(state, { type: "time", positionMs: 40000 });
-  const beforeClosing = state;
+  state = playbackTransition(state, {
+    type: "pauseSong",
+    currentMs: 41000,
+  });
+  assert.equal(state.target, "none");
+  assert.equal(state.positionMs, 41000);
   state = playbackTransition(state, { type: "closeSource" });
-  assert.equal(state, beforeClosing);
   state = playbackTransition(state, { type: "time", positionMs: 45000 });
+  assert.equal(state.positionMs, 41000);
+  state = playbackTransition(state, { type: "playSong" });
   assert.equal(state.target, "song");
-  assert.equal(state.positionMs, 45000);
+  assert.equal(state.positionMs, 41000);
 });
 
 test("switching directly between two source clips never replaces the saved song position with source time", () => {

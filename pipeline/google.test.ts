@@ -292,6 +292,11 @@ test("lyric generation validates source IDs with a JSON schema request", async (
     JSON.parse(String(calls[0]?.body)).response_format.mime_type,
     "application/json",
   );
+  const lyricsRequest = JSON.parse(String(calls[0]?.body));
+  assert.equal(lyricsRequest.generation_config.max_output_tokens, 3072);
+  assert.match(lyricsRequest.system_instruction, /冒頭・中盤・終盤/);
+  assert.match(lyricsRequest.system_instruction, /8〜12/);
+  assert.match(lyricsRequest.system_instruction, /約3分/);
   await assert.rejects(
     createLyrics({
       utterances,
@@ -424,6 +429,7 @@ test("music sends only approved lyrics and returns validated MP3 and provider ly
   const request = JSON.parse(String(calls[0]?.body));
   assert.equal(request.model, "lyria-3.5");
   assert.ok(request.input.includes("また京都で会おう"));
+  assert.match(request.input, /about 3 minutes/);
   assert.ok(!request.input.includes("sourceUtteranceIds"));
 });
 test("provider rejection and ambiguous network error never trigger a second paid request", async () => {

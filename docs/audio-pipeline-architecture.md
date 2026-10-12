@@ -36,12 +36,13 @@ flowchart TD
 1. 端末で録音・取り込みを行い、音声と下書きを先に保存する。
 2. Workersへ下書きと音声を送る。音声は8MiB単位のmultipartでR2へ保存する。
 3. 準備WorkflowがCloud Runへ元音声の署名URLと分割音声の保存URLを渡す。
-4. Cloud RunがFFmpeg / ffprobeで実時間・形式を検査し、モノラル16kHz・AACへ変換して25分単位に分割する。区間のoffsetを保持してR2へ保存する。
-5. WorkflowがD1で予算を予約し、Cloud Runが分割音声をGoogleへ送る。元音声内の時刻を持つ発話をD1へ保存し、元発話IDを持つ歌詞案を作る。
-6. 文字起こしを保存した後、ジョブ開始時に固定した話者プロフィールでチャンク内の非重複発話を照合する。一致が曖昧な仮話者は元ラベルのまま残し、識別名はD1と歌詞作成へ渡す。
-7. アプリで歌詞を確認・編集し、リビジョンを確定する。
-8. 生成Workflowがそのリビジョンから曲を生成する。Cloud RunがMP3・生応答・回復用結果をR2へ保存する。Workflowが歌詞照合・実時間検査を行い、完成曲を登録する。
-9. アプリがジョブと曲を取得し、期限付きURLで曲と元会話を再生する。
+4. Cloud RunがFFmpeg / ffprobeで実時間・形式を検査し、−50dBのsilencedetectで有音区間を記録する。モノラル16kHz・AACへ変換して25分単位に分割し、manifestの連続性と終端を検証してR2へ保存する。
+5. WorkflowがD1で予算を予約し、Cloud Runが分割音声をGoogleへ送る。各完了応答と発話区間を保存し、録音器・端末・サーバー実時間および有音区間と照合する。長い未認識区間に有音が残れば、歌詞案の前に全文・原音の確認を待つ。
+6. 確認後は指紋が一致する保存済み全文から、元発話IDを持つ歌詞案を作る。分割音声と認識結果は、入力・変換版・モデル・設定が一致する場合に再利用する。
+7. 文字起こしを保存した後、ジョブ開始時に固定した話者プロフィールでチャンク内の非重複発話を照合する。一致が曖昧な仮話者は元ラベルのまま残し、識別名はD1と歌詞作成へ渡す。
+8. アプリで歌詞を確認・編集し、リビジョンを確定する。
+9. 生成Workflowがそのリビジョンから約3分を目標に曲を生成する。Cloud RunがMP3・生応答・回復用結果をR2へ保存する。Workflowが歌詞照合・実時間検査を行い、完成曲を登録する。
+10. アプリがジョブと曲を取得し、期限付きURLで曲と元会話を再生する。クリップから開く再生は全区間、歌詞の出典から開く再生は出典区間とする。
 
 大きなGoogle応答のJSON解析・Base64復号と音源の展開はCloud Runで行います。Workerに返すのは発話・歌詞・音源メタデータ・料金です。長い発話一覧の検証や保存はWorker側に残るため、無料枠への適合は[実測の範囲](audio-pipeline-verification.md#実クラウドへの配置と接続確認)と区別します。
 
@@ -51,12 +52,12 @@ flowchart TD
 
 | データ | 主な関係・意味 |
 | :--- | :--- |
-| AudioClip / LocalClip | 下書きに属する音声。録音日時・取り込み日時・タイムゾーン・場所を保持。端末側はURIと送信進行も保持 |
+| AudioClip / LocalClip | 下書きに属する音声。録音日時・取り込み日時・録音器・端末・サーバー実時間と処理範囲を保持。端末側はURIと送信進行も保持 |
 | Utterance | 音声ID、仮の話者、元ファイル内の開始・終了時刻、文字起こし |
 | SpeakerProfile | 所有者付きの名前、サーバー登録状態、モデル版。端末側は登録音声のDocuments参照を保持 |
 | LyricBlock / LyricRevision | 歌詞ブロックと元発話ID、編集ごとに増えるリビジョン |
 | DraftDocument / LocalDraft | 下書き、音声一覧、発話、歌詞、状態、ジョブID。端末側は冪等キーも保持 |
-| JobDocument | 準備または生成の種類、状態、処理段階、エラー、完成曲ID |
+| JobDocument | 準備または生成の種類、状態、処理段階、完了区間数、確認対象の文字起こし指紋、エラー、完成曲ID |
 | SongDocument | 完成曲、生成に使った歌詞版、元音声と発話、生成音源ID・実時間 |
 | LibraryDocument | 端末の下書き・曲・録音中メタデータ・復旧対象 |
 
@@ -68,6 +69,7 @@ flowchart TD
 flowchart LR
     local --> uploading --> preparing --> waiting_review --> generating --> ready
     preparing --> failed
+    preparing --> needs_audio_review --> preparing
     generating --> failed
     preparing --> needs_reconciliation
     generating --> needs_reconciliation
@@ -78,6 +80,7 @@ flowchart LR
 | local | 端末内の録音・取り込み・下書き編集 |
 | uploading | 元音声を送信中。進行を保存 |
 | preparing | サーバーで音声検査・文字起こし・歌詞案作成 |
+| needs_audio_review | 原音と全文を利用者が確認するまで歌詞作成を保留 |
 | waiting_review | 歌詞の確認・編集が必要 |
 | generating | 確認済み歌詞版から曲を生成中 |
 | ready | 完成曲を取得できる |
@@ -85,6 +88,8 @@ flowchart LR
 | needs_reconciliation | 有料処理の成否が不明。予約を保持して照合を待つ |
 
 ジョブは受付時に `queued`、実行時に `running` となり、処理段階を `stage` で示します。再起動時は端末のジョブID・冪等キーから状態を取得します。録音中の表示はそのまま復元せず、実ファイルを検査します。[状態統合](../src/pipeline/library.ts)・[録音と再生](../src/platform/useAudioEngine.native.ts)も参照してください。
+
+`needs_audio_review` はジョブが終わるまで30日待機します。利用者の続行操作は現在のジョブIDと保存済み文字起こしの指紋を照合し、同じWorkflowで歌詞作成へ進みます。期限後は音声・応答・発話を保持し、新しい準備ジョブから条件一致した有料結果を再利用します。[提案中の契約](adr/0018-verified-audio-coverage.md)を参照してください。
 
 ## 認証と保存先
 
@@ -115,6 +120,7 @@ MP3、生応答の `.raw.json`、小さい回復用 `.json` をR2へ保存して
 - [設定・デプロイ・運用](audio-pipeline-setup.md)
 - [内部テスト](internal-testing.md)
 - [現行構成のADR](adr/0011-cloudflare-free-audio-runtime.md)・[ADR一覧](adr/README.md)
+- [提案中の音声範囲・確認待ち契約](adr/0018-verified-audio-coverage.md)
 
 ## 本人データの削除
 

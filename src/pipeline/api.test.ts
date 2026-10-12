@@ -84,14 +84,12 @@ test("uploads and retrieves location routes with owner authentication", async ()
 
 test("a lost generation response is never automatically sent twice", async () => {
   let requests = 0;
+  let requestBody: BodyInit | null | undefined;
   const api = createApi(
     { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
     async (_url, options) => {
       requests++;
-      assert.equal(
-        options?.body,
-        JSON.stringify({ revision: 3, idempotencyKey: "same-operation" }),
-      );
+      requestBody = options?.body;
       assert.equal(
         new Headers(options?.headers).get("Authorization"),
         "Bearer tester",
@@ -100,10 +98,18 @@ test("a lost generation response is never automatically sent twice", async () =>
     },
   );
   await assert.rejects(
-    api.generate("draft", 3, "same-operation"),
+    api.generate("draft", 3, "same-operation", "夜明け前"),
     /音声と歌詞/,
   );
   assert.equal(requests, 1);
+  assert.equal(
+    requestBody,
+    JSON.stringify({
+      revision: 3,
+      idempotencyKey: "same-operation",
+      songTitle: "夜明け前",
+    }),
+  );
 });
 test("invalid auth and stale revisions are reported without starting another operation", async () => {
   const api = createApi(
@@ -112,7 +118,7 @@ test("invalid auth and stale revisions are reported without starting another ope
       Response.json({ error: "歌詞の版が古いです。" }, { status: 409 }),
   );
   await assert.rejects(
-    api.generate("draft", 1, "same-operation"),
+    api.generate("draft", 1, "same-operation", "夜明け前"),
     (error: unknown) => error instanceof ApiError && error.status === 409,
   );
 });
@@ -123,6 +129,26 @@ test("server authentication errors explain the next action in Japanese", async (
     async () => Response.json({ error: "unauthorized" }, { status: 401 }),
   );
   await assert.rejects(api.songs(), /ログイン/);
+});
+test("transcript approval sends the job and exact transcript fingerprint", async () => {
+  let request: { url: string; method: string; body: unknown } | undefined;
+  const api = createApi(
+    { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
+    async (url, options) => {
+      request = {
+        url: String(url),
+        method: options?.method ?? "GET",
+        body: options?.body ? JSON.parse(String(options.body)) : undefined,
+      };
+      return Response.json({ accepted: true }, { status: 202 });
+    },
+  );
+  await api.reviewTranscript("draft-a", "prepare-job", "a".repeat(64));
+  assert.deepEqual(request, {
+    url: "https://test.invalid/drafts/draft-a/transcript-review",
+    method: "POST",
+    body: { jobId: "prepare-job", transcriptFingerprint: "a".repeat(64) },
+  });
 });
 test("missing speaker API reports an unsupported server instead of invalid connection settings", async () => {
   const api = createApi(
@@ -270,7 +296,7 @@ test("logout aborts a request waiting for an ID token before it can submit", asy
       return Response.json({});
     },
   );
-  const pending = api.generate("draft", 1, "operation");
+  const pending = api.generate("draft", 1, "operation", "夜明け前");
   controller.abort();
   release("old-token");
   await assert.rejects(pending);
@@ -285,6 +311,9 @@ test("a paid POST rejected by authentication is not retried", async () => {
       return Response.json({ error: "unauthorized" }, { status: 401 });
     },
   );
-  await assert.rejects(api.generate("draft", 1, "operation"), ApiError);
+  await assert.rejects(
+    api.generate("draft", 1, "operation", "夜明け前"),
+    ApiError,
+  );
   assert.equal(submissions, 1);
 });

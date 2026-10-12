@@ -31,6 +31,7 @@ import {
   serveMediaChunk,
   uploadMediaChunk,
 } from "./media-api.ts";
+import { privacyPolicyHtml } from "./privacy-policy.ts";
 import { runtimeCallback } from "./runtime-api.ts";
 import { authenticate, sha256, signedUrl } from "./security.ts";
 import {
@@ -156,6 +157,8 @@ async function createClip(
   if (clip) {
     const storedMetadata = audioClip(clip);
     delete storedMetadata.locationSummary;
+    delete storedMetadata.processing;
+    storedMetadata.durationMs = clip.client_duration_ms || clip.duration_ms;
     if (JSON.stringify(storedMetadata) !== JSON.stringify(metadata))
       throw new HttpError(409, "clip_metadata_conflict");
   } else {
@@ -163,7 +166,7 @@ async function createClip(
       throw new HttpError(409, "draft_sources_frozen");
     const key = `originals/${owner}/${metadata.id}`;
     const inserted = await env.DB.prepare(
-      "INSERT OR IGNORE INTO clips (id, draft_id, owner_id, mime_type, size_bytes, duration_ms, recorded_at, imported_at, timezone, place, object_key) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COALESCE(SUM(duration_ms), 0) FROM clips WHERE draft_id = ? AND owner_id = ?) + ? <= ? AND (SELECT status FROM drafts WHERE id = ? AND owner_id = ?) = 'uploading' AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
+      "INSERT OR IGNORE INTO clips (id, draft_id, owner_id, mime_type, size_bytes, duration_ms, client_duration_ms, capture_duration_ms, recorded_at, imported_at, timezone, place, object_key) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COALESCE(SUM(duration_ms), 0) FROM clips WHERE draft_id = ? AND owner_id = ?) + ? <= ? AND (SELECT status FROM drafts WHERE id = ? AND owner_id = ?) = 'uploading' AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
     )
       .bind(
         metadata.id,
@@ -172,6 +175,8 @@ async function createClip(
         metadata.mimeType,
         metadata.sizeBytes,
         metadata.durationMs,
+        metadata.durationMs,
+        metadata.captureDurationMs ?? null,
         metadata.recordedAt,
         metadata.importedAt,
         metadata.timezone,
@@ -501,6 +506,19 @@ async function generate(
     JSON.parse(row.blocks_json),
     await utterances(env, draftId, owner),
   );
+  const songTitle =
+    body.songTitle === undefined ? draft.title : text(body.songTitle, 80);
+  const fingerprint = await sha256(
+    JSON.stringify({
+      draftId,
+      revision,
+      blocks: row.blocks_json,
+      songTitle,
+    }),
+  );
+  const legacyFingerprint = await sha256(
+    JSON.stringify({ draftId, revision, blocks: row.blocks_json }),
+  );
   return submitJob(
     env,
     owner,
@@ -509,9 +527,52 @@ async function generate(
     text(body.idempotencyKey, 128),
     revision,
     row.blocks_json,
-    await sha256(
-      JSON.stringify({ draftId, revision, blocks: row.blocks_json }),
-    ),
+    fingerprint,
+    songTitle,
+    legacyFingerprint,
+  );
+}
+
+async function reviewTranscript(
+  request: Request,
+  env: Env,
+  owner: string,
+  draftId: string,
+) {
+  const body = await json(request);
+  const jobId = id(body.jobId);
+  const fingerprint = text(body.transcriptFingerprint, 64);
+  if (!/^[a-f0-9]{64}$/.test(fingerprint))
+    throw new HttpError(422, "invalid_transcript_fingerprint");
+  const draft = await ownedDraft(env, draftId, owner);
+  const job = await ownedJob(env, jobId, owner);
+  if (job.kind !== "prepare" || job.draft_id !== draftId)
+    throw new HttpError(409, "draft_job_conflict");
+  if (draft.job_id !== job.id || job.transcript_fingerprint !== fingerprint)
+    throw new HttpError(409, "transcript_review_conflict");
+  const alreadyReviewed = Boolean(job.transcript_reviewed_at);
+  if (alreadyReviewed && job.status !== "needs_audio_review")
+    return Response.json({ accepted: true });
+  if (job.status !== "needs_audio_review")
+    throw new HttpError(409, "transcript_review_conflict");
+  const currentFingerprint = await sha256(
+    JSON.stringify(await utterances(env, draftId, owner)),
+  );
+  if (currentFingerprint !== fingerprint)
+    throw new HttpError(409, "transcript_review_conflict");
+  await env.DB.prepare(
+    "UPDATE jobs SET transcript_reviewed_at = COALESCE(transcript_reviewed_at, ?) WHERE id = ? AND owner_id = ? AND transcript_fingerprint = ?",
+  )
+    .bind(new Date().toISOString(), job.id, owner, fingerprint)
+    .run();
+  const workflow = await env.PREPARE.get(job.id);
+  await workflow.sendEvent({
+    type: "audio-transcript-review",
+    payload: { transcriptFingerprint: fingerprint },
+  });
+  return Response.json(
+    { accepted: true },
+    { status: alreadyReviewed ? 200 : 202 },
   );
 }
 
@@ -524,6 +585,8 @@ async function submitJob(
   revision: number | null,
   blocks: string | null,
   fingerprint: string,
+  songTitle?: string,
+  legacyFingerprint?: string,
 ) {
   const previous = await env.DB.prepare(
     "SELECT * FROM jobs WHERE owner_id = ? AND kind = ? AND idempotency_key = ?",
@@ -531,7 +594,14 @@ async function submitJob(
     .bind(owner, kind, key)
     .first<JobRow>();
   if (previous) {
-    if (previous.fingerprint !== fingerprint)
+    if (
+      previous.fingerprint !== fingerprint &&
+      !(
+        kind === "generate" &&
+        previous.song_title == null &&
+        previous.fingerprint === legacyFingerprint
+      )
+    )
       throw new HttpError(409, "idempotency_key_conflict");
     if (previous.status === "queued") await launch(env, previous);
     return Response.json({ jobId: previous.id }, { status: 202 });
@@ -557,7 +627,7 @@ async function submitJob(
   }
   const result = await env.DB.batch([
     env.DB.prepare(
-      "INSERT OR IGNORE INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, created_at, speaker_snapshot_json) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND owner_id = ? AND status = ? AND job_id IS ? AND lyric_revision = ?) AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
+      "INSERT OR IGNORE INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, song_title, created_at, speaker_snapshot_json) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND owner_id = ? AND status = ? AND job_id IS ? AND lyric_revision = ?) AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
     ).bind(
       jobId,
       owner,
@@ -567,6 +637,7 @@ async function submitJob(
       fingerprint,
       revision,
       blocks,
+      songTitle ?? null,
       created,
       speakerSnapshot,
       draftId,
@@ -586,7 +657,15 @@ async function submitJob(
     )
       .bind(owner, kind, key)
       .first<JobRow>();
-    if (!duplicate || duplicate.fingerprint !== fingerprint)
+    if (
+      !duplicate ||
+      (duplicate.fingerprint !== fingerprint &&
+        !(
+          kind === "generate" &&
+          duplicate.song_title == null &&
+          duplicate.fingerprint === legacyFingerprint
+        ))
+    )
       throw new HttpError(409, "draft_or_idempotency_conflict");
     return Response.json({ jobId: duplicate.id }, { status: 202 });
   }
@@ -599,6 +678,20 @@ export async function handleRequest(request: Request, env: Env) {
   try {
     const url = new URL(request.url);
     const path = url.pathname;
+    if (path === "/privacy" && ["GET", "HEAD"].includes(request.method))
+      return new Response(
+        request.method === "HEAD" ? null : privacyPolicyHtml,
+        {
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "public, max-age=300",
+            "Content-Security-Policy":
+              "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+          },
+        },
+      );
     const speakerSample =
       /^\/internal\/speakers\/([a-zA-Z0-9_-]+)\/samples\/([a-zA-Z0-9_-]+)$/.exec(
         path,
@@ -651,7 +744,7 @@ export async function handleRequest(request: Request, env: Env) {
     if (path === "/drafts" && request.method === "POST")
       return await createDraft(request, env, owner);
     const draft =
-      /^\/drafts\/([a-zA-Z0-9_-]+)(?:\/(clips|prepare|lyrics|generate))?$/.exec(
+      /^\/drafts\/([a-zA-Z0-9_-]+)(?:\/(clips|prepare|lyrics|generate|transcript-review))?$/.exec(
         path,
       );
     if (draft) {
@@ -667,6 +760,8 @@ export async function handleRequest(request: Request, env: Env) {
         return await reviseLyrics(request, env, owner, draftId);
       if (draft[2] === "generate" && request.method === "POST")
         return await generate(request, env, owner, draftId);
+      if (draft[2] === "transcript-review" && request.method === "POST")
+        return await reviewTranscript(request, env, owner, draftId);
     }
     const part = /^\/clips\/([a-zA-Z0-9_-]+)\/parts\/(\d+)$/.exec(path);
     if (part && request.method === "PUT")

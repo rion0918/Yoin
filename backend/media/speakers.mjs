@@ -405,11 +405,16 @@ export async function identifySpeakers(body, options) {
           segmentDirectory,
           options,
         );
-        const value = await waveData(waveform, {
-          ...options,
-          directory: segmentDirectory,
-        });
-        speakerProfileId = chooseSpeaker(value.embedding, body.profiles);
+        try {
+          const value = await waveData(waveform, {
+            ...options,
+            directory: segmentDirectory,
+          });
+          speakerProfileId = chooseSpeaker(value.embedding, body.profiles);
+        } catch (error) {
+          // An insufficient matching excerpt does not invalidate the recording.
+          if (error.message !== "speaker_sample_too_short") throw error;
+        }
       }
       matches.push({ speaker, speakerProfileId });
     }

@@ -1,14 +1,5 @@
-import { Feather } from "@expo/vector-icons";
 import { useState } from "react";
-import {
-  Image,
-  ImageBackground,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -16,15 +7,11 @@ import {
 import type { LyricBlock, SongDocument } from "../../shared/contracts";
 import { ActionButton } from "../components/ActionButton";
 import { SeekSlider } from "../components/SeekSlider";
-import { formatTime } from "../domain/session";
+import { figmaColors as c, formatFigmaTime } from "../design/figma";
 import { blockContext, songDate } from "../pipeline/library";
-
-const artwork = require("../../assets/season-background.png");
-const background = require("../../assets/season-background.png");
 
 type MusicScreenProps = {
   song: SongDocument;
-  speakerNames: string[];
   playing: boolean;
   position: number;
   onBack: () => void;
@@ -36,7 +23,6 @@ type MusicScreenProps = {
 
 export function MusicScreen({
   song,
-  speakerNames,
   playing,
   position,
   onBack,
@@ -46,311 +32,201 @@ export function MusicScreen({
   onMemory,
 }: MusicScreenProps) {
   const insets = useSafeAreaInsets();
-  const { height, width } = useWindowDimensions();
-  const [playerHeight, setPlayerHeight] = useState(78);
-  const artworkHeight = Math.max(
-    160,
-    height - insets.top - insets.bottom - 610,
-  );
-  const currentPosition = Math.min(
-    song.durationMs / 1000,
-    Math.max(0, position),
-  );
-
+  const [playerHeight, setPlayerHeight] = useState(170);
+  const songPosition = Math.min(song.durationMs / 1000, Math.max(0, position));
   return (
-    <ImageBackground
-      source={background}
-      resizeMode="cover"
-      style={[styles.screen, { height, width }]}
+    <SafeAreaView
+      edges={["top", "left", "right"]}
+      style={styles.screen}
       testID="music-screen"
     >
-      <SafeAreaView edges={["top", "left", "right"]} style={styles.safeArea}>
-        <View style={styles.header}>
-          <ActionButton
-            label="ホームに戻る"
-            onPress={onBack}
-            style={styles.back}
-            testID="back-music"
-          >
-            <Feather name="chevron-left" size={24} color="#332317" />
-            <Text style={styles.backLabel}>ホーム</Text>
-          </ActionButton>
-        </View>
-
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={[
-            styles.content,
-            { paddingBottom: insets.bottom + playerHeight + 50 },
-          ]}
-          showsVerticalScrollIndicator={false}
-        >
-          <Text accessibilityRole="header" style={styles.tripTitle}>
-            {song.title}
-          </Text>
-          <Text style={styles.tripDate}>{songDate(song)}</Text>
-          {!!speakerNames.length && (
-            <Text style={styles.members}>
-              参加した人 · {speakerNames.join("、")}
-            </Text>
-          )}
-          <Image
-            source={artwork}
-            resizeMode="cover"
-            style={[styles.artwork, { height: artworkHeight }]}
-            accessibilityLabel={`${song.title}のジャケット`}
-          />
-          <Text accessibilityRole="header" style={styles.trackTitle}>
-            {song.title}
-          </Text>
-
-          <View style={styles.lyricSection}>
-            <Text accessibilityRole="header" style={styles.sectionTitle}>
-              歌詞の思い出
-            </Text>
-            <View style={styles.verses}>
-              {song.lyrics.blocks.map((memory) => {
-                const context = blockContext(song, memory);
-                return (
-                  <View key={memory.id} style={styles.memory}>
-                    <View style={styles.lyricCopy}>
-                      <Text style={styles.lyrics}>{memory.text}</Text>
-                      <Text
-                        style={styles.context}
-                        accessibilityLabel={`${context.date} ${context.time} ${context.place}`}
-                      >
-                        {context.date} {context.time} · {context.place}
-                      </Text>
-                    </View>
-                    <ActionButton
-                      label={`${context.place}、${context.date} ${context.time}の元の会話を開く`}
-                      onPress={() => onMemory(memory)}
-                      style={styles.sourceButton}
-                      testID={`memory-${memory.id}`}
-                    >
-                      <Feather
-                        name="message-circle"
-                        size={26}
-                        color="#332317"
-                      />
-                    </ActionButton>
-                  </View>
-                );
-              })}
+      <ActionButton
+        label="ライブラリに戻る"
+        onPress={onBack}
+        style={styles.back}
+        testID="back-music"
+      >
+        <Text style={styles.backText}>‹ ライブラリ</Text>
+      </ActionButton>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={[
+          styles.content,
+          { paddingBottom: playerHeight + insets.bottom + 38 },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text accessibilityRole="header" style={styles.title}>
+          {song.title}
+        </Text>
+        <Text style={styles.date}>{songDate(song)} · あの日の記録</Text>
+        <Text style={styles.lyricsHeading}>LYRICS / 歌詞の思い出</Text>
+        {song.lyrics.blocks.map((block, index) => {
+          const context = blockContext(song, block);
+          const sourceAvailable = block.sourceUtteranceIds.length > 0;
+          return (
+            <View
+              key={block.id}
+              style={[
+                styles.verse,
+                sourceAvailable ? styles.verseSource : styles.versePlain,
+              ]}
+              testID={`lyric-block-${block.id}`}
+            >
+              <View style={styles.verseHeader}>
+                <Text style={styles.verseNumber}>
+                  VERSE / {String(index + 1).padStart(2, "0")}
+                </Text>
+                {sourceAvailable && (
+                  <Text style={styles.sourceAvailable}>元の会話あり</Text>
+                )}
+              </View>
+              <Text style={styles.lyrics}>{block.text}</Text>
+              <Text style={styles.context}>
+                {context.date.replaceAll("-", ".")} · {context.place}
+              </Text>
+              {sourceAvailable && (
+                <ActionButton
+                  label={`${block.text}の元の会話を聴く`}
+                  onPress={() => onMemory(block)}
+                  style={styles.sourceAction}
+                  testID={`memory-${block.id}`}
+                >
+                  <Text style={styles.sourceActionText}>
+                    ◉ 元の会話を聴く ↗
+                  </Text>
+                </ActionButton>
+              )}
             </View>
-          </View>
-        </ScrollView>
-      </SafeAreaView>
-
-      <View style={[styles.playerDock, { bottom: insets.bottom + 26 }]}>
-        <View
-          style={styles.player}
-          onLayout={(event) => setPlayerHeight(event.nativeEvent.layout.height)}
-        >
-          <Image
-            source={artwork}
-            resizeMode="cover"
-            style={styles.playerArtwork}
-            accessible={false}
-          />
+          );
+        })}
+      </ScrollView>
+      <View
+        style={[styles.playerDock, { bottom: Math.max(insets.bottom, 14) }]}
+        onLayout={(event) => setPlayerHeight(event.nativeEvent.layout.height)}
+      >
+        <View style={styles.playerHeader}>
           <View style={styles.playerInformation}>
             <Text style={styles.playerTitle} numberOfLines={1}>
               {song.title}
             </Text>
-            <Text style={styles.playerTime}>
-              {formatTime(currentPosition)} /{" "}
-              {formatTime(song.durationMs / 1000)}
-            </Text>
-            <SeekSlider
-              duration={song.durationMs / 1000}
-              position={currentPosition}
-              onSeek={onSeek}
-              onScrub={onScrub}
-            />
+            <Text style={styles.playerDescription}>会話から生まれた曲</Text>
           </View>
           <ActionButton
-            label={playing ? "一時停止" : "曲を再生"}
+            label={playing ? "曲を一時停止" : "曲を再生"}
             onPress={onToggle}
             style={styles.playerToggle}
             testID="player-toggle"
           >
-            <Feather
-              name={playing ? "pause" : "play"}
-              size={24}
-              color="#fff8f0"
-            />
+            <Text style={styles.playerToggleText}>{playing ? "Ⅱ" : "▶"}</Text>
           </ActionButton>
         </View>
+        <SeekSlider
+          dark
+          duration={song.durationMs / 1000}
+          position={songPosition}
+          onSeek={onSeek}
+          onScrub={onScrub}
+        />
+        <View style={styles.timing}>
+          <Text style={styles.time}>{formatFigmaTime(songPosition)}</Text>
+          <Text style={styles.time}>
+            {formatFigmaTime(song.durationMs / 1000)}
+          </Text>
+        </View>
       </View>
-    </ImageBackground>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#e6d4bf", overflow: "hidden" },
-  safeArea: { flex: 1 },
-  header: {
-    width: "100%",
-    maxWidth: 390,
-    height: 80,
-    alignSelf: "center",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 14,
-    paddingTop: 12,
-  },
+  screen: { flex: 1, backgroundColor: c.canvas },
   back: {
-    minHeight: 44,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 2,
-    backgroundColor: "transparent",
-  },
-  backLabel: { color: "#332317", fontSize: 15, fontWeight: "600" },
-  share: {
-    width: 44,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 22,
-    backgroundColor: "transparent",
-  },
-  scroll: { flex: 1 },
-  content: {
-    width: "100%",
-    maxWidth: 390,
-    alignSelf: "center",
-    paddingTop: 24,
-    paddingHorizontal: 16,
-  },
-  tripTitle: {
-    color: "#332317",
-    fontSize: 32,
-    lineHeight: 40,
-    fontWeight: "700",
-    letterSpacing: -1.15,
-  },
-  tripDate: {
-    marginTop: 6,
-    color: "#544033",
-    fontSize: 14,
-    lineHeight: 20,
-    fontVariant: ["tabular-nums"],
-  },
-  members: {
     marginTop: 4,
-    color: "#332317",
+    marginLeft: 16,
+    height: 44,
+    width: 170,
+    justifyContent: "center",
+  },
+  backText: { color: c.secondary, fontSize: 15, lineHeight: 25 },
+  scroll: { flex: 1 },
+  content: { paddingHorizontal: 24, paddingTop: 9, gap: 16 },
+  title: { color: c.primary, fontSize: 28, lineHeight: 39, fontWeight: "700" },
+  date: { color: c.gold, fontSize: 13, lineHeight: 21 },
+  lyricsHeading: {
+    color: c.secondary,
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: "500",
+    marginTop: 4,
+  },
+  verse: { borderRadius: 20, padding: 16, gap: 12 },
+  verseSource: { backgroundColor: c.raised },
+  versePlain: { backgroundColor: c.surface },
+  verseHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  verseNumber: {
+    color: c.gold,
     fontSize: 13,
     lineHeight: 19,
     fontWeight: "500",
   },
-  artwork: { width: "100%", marginTop: 10, borderRadius: 16 },
-  trackTitle: {
-    marginTop: 16,
-    color: "#332317",
-    fontSize: 26,
-    lineHeight: 35,
-    fontWeight: "700",
-    letterSpacing: -0.9,
-  },
-  lyricSection: { marginTop: 26 },
-  sectionTitle: {
-    color: "#544033",
-    fontSize: 14,
-    lineHeight: 21,
-    fontWeight: "500",
-  },
-  verses: { marginTop: 22, gap: 24 },
-  memory: {
-    marginLeft: 6,
-    flexDirection: "row",
-    alignItems: "flex-start",
-    paddingLeft: 22,
-    gap: 16,
-  },
-  activeBar: {
-    position: "absolute",
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 3,
-    borderRadius: 3,
-    backgroundColor: "#9c5d2e",
-  },
-  lyricCopy: { flex: 1, minWidth: 0 },
-  lyrics: {
-    color: "#332317",
-    fontSize: 22,
-    lineHeight: 30,
-    fontWeight: "700",
-    letterSpacing: -0.7,
-  },
-  context: {
-    marginTop: 5,
-    color: "#544033",
-    fontSize: 13,
-    lineHeight: 20,
-    fontVariant: ["tabular-nums"],
-  },
-  sourceButton: {
-    width: 52,
-    height: 52,
-    alignItems: "center",
+  sourceAvailable: { color: c.secondary, fontSize: 11, lineHeight: 17 },
+  lyrics: { color: c.primary, fontSize: 22, lineHeight: 32, fontWeight: "700" },
+  context: { color: c.secondary, fontSize: 13, lineHeight: 21 },
+  sourceAction: {
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: c.inset,
+    paddingHorizontal: 12,
     justifyContent: "center",
-    marginTop: 4,
-    borderRadius: 26,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.24)",
-    backgroundColor: "rgba(255, 255, 255, 0.28)",
+  },
+  sourceActionText: {
+    color: c.rose,
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: "500",
   },
   playerDock: {
     position: "absolute",
     left: 16,
     right: 16,
-    alignItems: "center",
-  },
-  player: {
-    width: "100%",
-    maxWidth: 358,
-    minHeight: 78,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.48)",
     borderRadius: 20,
-    backgroundColor: "rgba(249, 242, 234, 0.88)",
-    shadowColor: "#392211",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 13,
-    elevation: 3,
+    backgroundColor: c.raised,
+    padding: 16,
+    gap: 10,
   },
-  playerArtwork: { width: 52, height: 52, borderRadius: 9 },
-  playerInformation: { flex: 1, minWidth: 0 },
-  playerTitle: {
-    color: "#332317",
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: "600",
+  playerHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    minHeight: 56,
   },
-  playerTime: {
-    marginTop: 3,
-    color: "#544033",
-    fontSize: 12,
+  playerInformation: { flex: 1, gap: 4 },
+  playerTitle: { color: c.primary, fontSize: 17, lineHeight: 27 },
+  playerDescription: {
+    color: c.secondary,
+    fontSize: 11,
     lineHeight: 17,
-    fontVariant: ["tabular-nums"],
+    fontWeight: "500",
   },
   playerToggle: {
-    width: 48,
-    height: 48,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: c.rose,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 24,
-    backgroundColor: "#493020",
   },
+  playerToggleText: {
+    color: c.onRose,
+    fontSize: 22,
+    lineHeight: 32,
+    fontWeight: "700",
+  },
+  timing: { flexDirection: "row", justifyContent: "space-between" },
+  time: { color: c.secondary, fontSize: 11, lineHeight: 17, fontWeight: "500" },
 });

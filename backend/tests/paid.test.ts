@@ -9,7 +9,7 @@ import { applyAccountSchema } from "./schema.ts";
 const schema = `${initialSchema}\n${runtimeSchema}`;
 
 import { paidCall } from "../paid.ts";
-import { type Env, ReconciliationError } from "../types.ts";
+import { type Env, HttpError, ReconciliationError } from "../types.ts";
 
 let bindings: Env;
 let job: JobRow;
@@ -260,6 +260,69 @@ it("allows an explicit retry only when validation failed before submission", asy
   );
   expect(result).toEqual({ text: "旅の会話" });
   expect(submissions).toBe(1);
+});
+
+it("releases an explicitly unsubmitted reservation only before the runtime claim", async () => {
+  await expect(
+    paidCall(bindings, job, "busy-music", "music", 0.08, async () => {
+      throw new GoogleProviderError(
+        "music",
+        "not_submitted",
+        503,
+        "media_service_busy",
+      );
+    }),
+  ).rejects.toMatchObject({ status: 503, code: "media_service_busy" });
+
+  expect(
+    await bindings.DB.prepare(
+      "SELECT status, amount_micros FROM provider_attempts WHERE id = 'busy-music'",
+    ).first(),
+  ).toEqual({ status: "failed_before_submission", amount_micros: 0 });
+  expect(
+    await bindings.DB.prepare(
+      "SELECT status, amount_micros FROM budget_ledger WHERE id = (SELECT ledger_id FROM provider_attempts WHERE id = 'busy-music')",
+    ).first(),
+  ).toEqual({ status: "failed_before_submission", amount_micros: 0 });
+});
+
+it("releases the reservation when signing configuration fails before the runtime call", async () => {
+  await expect(
+    paidCall(bindings, job, "unsigned-music", "music", 0.08, async () => {
+      throw new HttpError(503, "media_signing_not_configured");
+    }),
+  ).rejects.toMatchObject({
+    status: 503,
+    code: "media_signing_not_configured",
+  });
+
+  expect(
+    await bindings.DB.prepare(
+      "SELECT status, amount_micros FROM provider_attempts WHERE id = 'unsigned-music'",
+    ).first(),
+  ).toEqual({ status: "failed_before_submission", amount_micros: 0 });
+});
+
+it("keeps an explicitly unsubmitted result ambiguous after the runtime claim", async () => {
+  await expect(
+    paidCall(bindings, job, "claimed-music", "music", 0.08, async () => {
+      await bindings.DB.prepare(
+        "UPDATE provider_attempts SET runtime_claimed_at = '2026-10-07T01:00:00Z' WHERE id = 'claimed-music'",
+      ).run();
+      throw new GoogleProviderError(
+        "music",
+        "not_submitted",
+        503,
+        "media_service_busy",
+      );
+    }),
+  ).rejects.toBeInstanceOf(ReconciliationError);
+
+  expect(
+    await bindings.DB.prepare(
+      "SELECT status, amount_micros FROM provider_attempts WHERE id = 'claimed-music'",
+    ).first(),
+  ).toEqual({ status: "needs_reconciliation", amount_micros: 80000 });
 });
 
 it("retains actual cost if deletion finishes while a provider response is in flight", async () => {

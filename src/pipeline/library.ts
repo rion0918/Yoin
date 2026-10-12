@@ -7,6 +7,7 @@ import type {
   LyricBlock,
   SavedRecording,
   SongDocument,
+  Utterance,
 } from "../../shared/contracts.ts";
 import { createLocalLocationSummary } from "./location.ts";
 
@@ -250,6 +251,22 @@ export function sourceContext(
     date: `${get("year")}-${get("month")}-${get("day")}`,
     time: `${get("hour")}:${get("minute")}`,
     place,
+  };
+}
+
+export function sourcePlaybackRange(
+  clip: AudioClip,
+  utterances: Pick<Utterance, "startMs" | "endMs">[],
+  fullClip = false,
+) {
+  if (fullClip) return { startMs: 0, endMs: undefined };
+  return {
+    startMs: utterances.length
+      ? Math.min(...utterances.map((item) => item.startMs))
+      : 0,
+    endMs: utterances.length
+      ? Math.max(...utterances.map((item) => item.endMs))
+      : clip.durationMs,
   };
 }
 

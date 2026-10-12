@@ -3,12 +3,14 @@ import {
   type WorkflowEvent,
   type WorkflowStep,
 } from "cloudflare:workers";
+import { GOOGLE_MODELS } from "../pipeline/google.ts";
 import {
   type LyricBlock,
   MAX_AUDIO_MS,
   type RegisteredSpeaker,
 } from "../shared/contracts.ts";
 import { resourceOwner } from "./accounts.ts";
+import { analyzeTranscriptCoverage } from "./audio-coverage.ts";
 import {
   clips,
   type JobRow,
@@ -44,6 +46,11 @@ const knownStepErrors = new Set([
   "invalid_ai_budget",
   "provider_cost_exceeded_reservation",
   "provider_input_rejected",
+  "provider_not_configured",
+  "provider_not_submitted",
+  "media_service_not_configured",
+  "media_signing_not_configured",
+  "media_service_busy",
   "media_inspection_failed",
   "invalid_media_inspection",
   "invalid_media_chunk",
@@ -58,6 +65,9 @@ const knownStepErrors = new Set([
   "speaker_audio_invalid",
   "speaker_sample_too_short",
   "speaker_sample_silent",
+  "media_source_missing",
+  "invalid_media_activity",
+  "audio_review_expired",
   "invalid_speaker_embedding",
 ]);
 
@@ -130,7 +140,14 @@ export async function prepareDraft(
     await resourceOwner(env, "jobs", jobId),
   );
   if (job.kind !== "prepare") throw new HttpError(409, "wrong_workflow_kind");
-  if (["waiting_review", "ready", "needs_reconciliation"].includes(job.status))
+  if (
+    [
+      "waiting_review",
+      "ready",
+      "needs_audio_review",
+      "needs_reconciliation",
+    ].includes(job.status)
+  )
     return;
   try {
     await step.do("start", () => setJob(env, job, "running", "inspect_audio"));
@@ -149,9 +166,36 @@ export async function prepareDraft(
       inspected.push({ clip, inspection });
     }
     if (!inspected.length) throw new HttpError(422, "empty_audio");
+    const expectedChunks = inspected.reduce(
+      (sum, item) => sum + item.inspection.chunks.length,
+      0,
+    );
+    await env.DB.prepare(
+      "UPDATE jobs SET expected_chunks = ?, completed_chunks = 0 WHERE id = ? AND owner_id = ?",
+    )
+      .bind(expectedChunks, job.id, job.owner_id)
+      .run();
     await setJob(env, job, "running", "transcribing");
+    let completedChunks = 0;
     for (const { clip, inspection } of inspected) {
       for (const [index, chunk] of inspection.chunks.entries()) {
+        const chunkObject = await env.AUDIO.head(chunk.key);
+        if (!chunkObject) throw new HttpError(422, "media_chunk_missing");
+        const inputFingerprint = await sha256(
+          JSON.stringify({
+            sourceEtag: inspection.sourceEtag,
+            sourceSizeBytes: clip.size_bytes,
+            transformVersion: inspection.transformVersion,
+            chunkEtag: chunkObject.etag,
+            chunkSizeBytes: chunkObject.size,
+            offsetMs: chunk.offsetMs,
+            durationMs: chunk.durationMs,
+            model: GOOGLE_MODELS.transcribe,
+            language: "ja-JP",
+            timestampGranularities: ["WORD"],
+          }),
+        );
+        const attemptId = `stt-${clip.id}-${chunk.offsetMs}-${inputFingerprint.slice(0, 24)}`;
         await step.do(
           `transcribe-${clip.id}-${chunk.offsetMs}`,
           paidStep,
@@ -159,20 +203,15 @@ export async function prepareDraft(
             const transcript = await paidCall(
               env,
               job,
-              `stt-${clip.id}-${chunk.offsetMs}`,
+              attemptId,
               "transcribe",
               RESERVATION_USD.transcribe,
               async () => {
-                const result = await transcribeAudio(
-                  env,
-                  job,
-                  `stt-${clip.id}-${chunk.offsetMs}`,
-                  {
-                    clipId: clip.id,
-                    index,
-                    offsetMs: chunk.offsetMs,
-                  },
-                );
+                const result = await transcribeAudio(env, job, attemptId, {
+                  clipId: clip.id,
+                  index,
+                  offsetMs: chunk.offsetMs,
+                });
                 const values = validateUtterances(
                   result.value,
                   clip.id,
@@ -211,17 +250,27 @@ export async function prepareDraft(
             return true;
           },
         );
+        completedChunks++;
+        await env.DB.prepare(
+          "UPDATE jobs SET completed_chunks = ? WHERE id = ? AND owner_id = ?",
+        )
+          .bind(completedChunks, job.id, job.owner_id)
+          .run();
+        await env.DB.prepare(
+          "UPDATE clips SET processing_json = json_set(COALESCE(processing_json, '{}'), '$.completedChunks', ?) WHERE id = ? AND owner_id = ?",
+        )
+          .bind(index + 1, clip.id, job.owner_id)
+          .run();
       }
     }
     const snapshot = job.speaker_snapshot_json
       ? (JSON.parse(job.speaker_snapshot_json) as RegisteredSpeaker[])
       : [];
+    let source = await utterances(env, job.draft_id, job.owner_id);
     if (snapshot.length) {
       for (const { clip, inspection } of inspected) {
         for (const [index, chunk] of inspection.chunks.entries()) {
-          const candidates = (
-            await utterances(env, job.draft_id, job.owner_id)
-          ).filter(
+          const candidates = source.filter(
             (item) =>
               item.clipId === clip.id &&
               item.startMs >= chunk.offsetMs &&
@@ -265,11 +314,98 @@ export async function prepareDraft(
           }
         }
       }
+      source = await utterances(env, job.draft_id, job.owner_id);
     }
-    const source = await utterances(env, job.draft_id, job.owner_id);
     if (!source.length) throw new HttpError(422, "no_speech_detected");
+    let needsAudioReview = false;
+    for (const { clip, inspection } of inspected) {
+      const activityRanges = inspection.chunks.flatMap(
+        (chunk) => chunk.activityRanges ?? [],
+      );
+      const hasActivityInspection = inspection.chunks.every((chunk) =>
+        Array.isArray(chunk.activityRanges),
+      );
+      const coverage = analyzeTranscriptCoverage({
+        durationMs: inspection.durationMs,
+        activityRanges,
+        utterances: source.filter((item) => item.clipId === clip.id),
+      });
+      const durations = [
+        clip.capture_duration_ms,
+        clip.client_duration_ms || clip.duration_ms,
+        inspection.durationMs,
+      ].filter((value): value is number => value !== null && value > 0);
+      const durationMismatch = durations.some((duration, index) =>
+        durations
+          .slice(index + 1)
+          .some(
+            (other) =>
+              Math.abs(duration - other) >
+              Math.max(1000, Math.max(duration, other) * 0.01),
+          ),
+      );
+      const requiresReview = coverage.needsReview || durationMismatch;
+      needsAudioReview ||= requiresReview;
+      const summary = {
+        status: requiresReview
+          ? "needs_review"
+          : hasActivityInspection
+            ? "verified"
+            : "unverified",
+        recordedDurationMs: clip.capture_duration_ms,
+        clientDurationMs: clip.client_duration_ms || clip.duration_ms,
+        serverDurationMs: inspection.durationMs,
+        processedMs: inspection.durationMs,
+        speechActivityMs: coverage.speechActivityMs,
+        transcribedMs: coverage.transcribedMs,
+        unrecognizedActivityMs: coverage.unrecognizedActivityMs,
+        expectedChunks: inspection.chunks.length,
+        completedChunks: inspection.chunks.length,
+        unrecognizedRanges: coverage.unrecognizedRanges,
+      } as const;
+      await env.DB.prepare(
+        "UPDATE clips SET processing_json = ? WHERE id = ? AND owner_id = ?",
+      )
+        .bind(JSON.stringify(summary), clip.id, job.owner_id)
+        .run();
+    }
+    const transcriptFingerprint = await sha256(JSON.stringify(source));
+    await env.DB.prepare(
+      "UPDATE jobs SET transcript_fingerprint = ? WHERE id = ? AND owner_id = ?",
+    )
+      .bind(transcriptFingerprint, job.id, job.owner_id)
+      .run();
+    if (needsAudioReview) {
+      await setJob(env, job, "needs_audio_review", "review_audio");
+      try {
+        const review = await step.waitForEvent<{
+          transcriptFingerprint: string;
+        }>("transcript-review", {
+          type: "audio-transcript-review",
+          timeout: "30 days",
+        });
+        if (review.payload.transcriptFingerprint !== transcriptFingerprint)
+          return;
+      } catch {
+        await setJob(
+          env,
+          job,
+          "failed",
+          "review_expired",
+          "audio_review_expired",
+        );
+        return;
+      }
+      const currentFingerprint = await sha256(
+        JSON.stringify(await utterances(env, job.draft_id, job.owner_id)),
+      );
+      if (currentFingerprint !== transcriptFingerprint) {
+        await setJob(env, job, "needs_audio_review", "review_audio");
+        return;
+      }
+    }
     await setJob(env, job, "running", "creating_lyrics");
-    const sourceHash = await sha256(JSON.stringify(source));
+    const sourceHash = transcriptFingerprint;
     const blocks = await step.do("create_lyrics", paidStep, () =>
       paidCall(
         env,
@@ -374,7 +510,7 @@ export async function generateSong(
           songId,
           job.owner_id,
           job.draft_id,
-          draft.title,
+          job.song_title ?? draft.title,
           new Date().toISOString(),
           job.lyric_revision,
           saved.audioId,

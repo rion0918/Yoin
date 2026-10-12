@@ -9,6 +9,8 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { figmaColors as c } from "../design/figma";
+import { radii } from "../design/tokens";
 import { formatTime } from "../domain/session";
 import { speakerSampleState } from "../pipeline/speakers";
 import type { useSession } from "../useSession";
@@ -166,7 +168,7 @@ export function SpeakerEnrollmentSheet({
     }
   }
 
-  let primaryLabel = "話者を追加";
+  let primaryLabel = "友達を追加";
   let primaryAction: () => void = add;
   let primaryDisabled = blocked;
   if (screen === "name") {
@@ -233,9 +235,9 @@ export function SpeakerEnrollmentSheet({
 
   const title =
     screen === "list"
-      ? "登録した話者"
+      ? "登録した友達"
       : screen === "name"
-        ? "名前を入力"
+        ? "友達の声を登録"
         : screen === "edit"
           ? "登録内容を変更"
           : screen === "complete"
@@ -247,11 +249,11 @@ export function SpeakerEnrollmentSheet({
     screen === "list"
       ? "会話で使う名前と声を管理できます。"
       : screen === "name"
-        ? "会話に表示する名前を教えてください。"
+        ? "友達の名前を入力してください。"
         : screen === "edit"
           ? "名前の変更や声の録り直しができます。"
           : screen === "complete"
-            ? "声が一致した発話に、この名前を表示します。"
+            ? "この声の人が話した部分に、登録した名前を表示します。"
             : voice.phase === "review" || voice.phase === "invalid"
               ? "自分の声がはっきり聞こえるか確かめましょう。"
               : "いつもの話し方で、20秒ほど録音します。";
@@ -271,7 +273,7 @@ export function SpeakerEnrollmentSheet({
         }
       >
         {voice.phase === "recording" && (
-          <Feather name="square" size={18} color="#fffaf5" />
+          <Feather name="square" size={18} color={c.onRose} />
         )}
         <Text style={styles.primaryText}>{primaryLabel}</Text>
       </ActionButton>
@@ -300,14 +302,14 @@ export function SpeakerEnrollmentSheet({
       )}
       {(screen === "name" || screen === "edit") && profiles.length > 0 && (
         <ActionButton
-          label="話者一覧に戻る"
+          label="友達一覧に戻る"
           onPress={() => {
             void back();
           }}
           disabled={blocked}
           style={styles.secondary}
         >
-          <Text style={styles.secondaryText}>話者一覧に戻る</Text>
+          <Text style={styles.secondaryText}>友達一覧に戻る</Text>
         </ActionButton>
       )}
     </View>
@@ -325,11 +327,12 @@ export function SpeakerEnrollmentSheet({
       snap={0.92}
       avoidKeyboard
       footer={footer}
+      appearance="dark"
     >
       <View style={styles.body} testID="speaker-settings-sheet">
         {!!error && (
           <View style={styles.error} accessibilityLiveRegion="polite">
-            <Feather name="alert-circle" size={20} color="#8a3e26" />
+            <Feather name="alert-circle" size={20} color={c.rose} />
             <Text style={styles.errorText}>{error}</Text>
           </View>
         )}
@@ -359,7 +362,7 @@ export function SpeakerEnrollmentSheet({
                   {label}
                 </Text>
                 {index < 2 && (
-                  <Feather name="chevron-right" size={14} color="#8a7b70" />
+                  <Feather name="chevron-right" size={14} color={c.secondary} />
                 )}
               </View>
             ))}
@@ -387,7 +390,7 @@ export function SpeakerEnrollmentSheet({
                   <Feather
                     name={item.status === "ready" ? "check" : "mic"}
                     size={22}
-                    color="#493020"
+                    color={c.primary}
                   />
                 </View>
                 <View style={styles.profileCopy}>
@@ -404,12 +407,12 @@ export function SpeakerEnrollmentSheet({
                         : "声の登録を続ける"}
                   </Text>
                 </View>
-                <Feather name="chevron-right" size={20} color="#726050" />
+                <Feather name="chevron-right" size={20} color={c.secondary} />
               </ActionButton>
             ))}
             {!profiles.length && (
               <Text style={styles.copy}>
-                名前と声を登録すると、会話を話者の名前で振り返れます。
+                友達の名前と声を登録すると、会話を友達ごとに振り返れます。
               </Text>
             )}
           </>
@@ -429,8 +432,8 @@ export function SpeakerEnrollmentSheet({
               }}
               autoCorrect={false}
               placeholder="例：りおん"
-              placeholderTextColor="#726050"
-              accessibilityLabel="登録する話者名"
+              placeholderTextColor={c.secondary}
+              accessibilityLabel="友達の名前"
               style={styles.input}
               testID={
                 screen === "name"
@@ -464,7 +467,7 @@ export function SpeakerEnrollmentSheet({
                 style={styles.editName}
                 testID="edit-speaker-details"
               >
-                <Feather name="edit-2" size={18} color="#493020" />
+                <Feather name="edit-2" size={18} color={c.primary} />
               </ActionButton>
             </View>
             {(voice.phase === "empty" ||
@@ -473,7 +476,7 @@ export function SpeakerEnrollmentSheet({
               <>
                 <View style={styles.recorder}>
                   <View style={styles.mic}>
-                    <Feather name="mic" size={30} color="#493020" />
+                    <Feather name="mic" size={30} color={c.primary} />
                   </View>
                   {voice.phase === "recording" ? (
                     <>
@@ -535,7 +538,7 @@ export function SpeakerEnrollmentSheet({
             )}
             {voice.phase === "saving" && (
               <View style={styles.recorder}>
-                <Feather name="save" size={30} color="#493020" />
+                <Feather name="save" size={30} color={c.primary} />
                 <Text style={styles.duration}>録音を保存中</Text>
                 <Text style={styles.note}>このままお待ちください。</Text>
               </View>
@@ -553,7 +556,7 @@ export function SpeakerEnrollmentSheet({
                   )}
                   <View style={styles.preview}>
                     <View style={styles.previewHeader}>
-                      <Feather name="headphones" size={22} color="#493020" />
+                      <Feather name="headphones" size={22} color={c.primary} />
                       <Text style={styles.previewTitle}>録音した声</Text>
                       <Text style={styles.sampleTime}>
                         {formatTime(sample.durationMs / 1000)}
@@ -575,7 +578,7 @@ export function SpeakerEnrollmentSheet({
                       <Feather
                         name={previewPlaying ? "square" : "play"}
                         size={20}
-                        color="#493020"
+                        color={c.primary}
                       />
                       <Text style={styles.secondaryText}>
                         {previewPlaying ? "再生を止める" : "録音を聴く"}
@@ -597,7 +600,7 @@ export function SpeakerEnrollmentSheet({
               )}
             {operation === "register" && (
               <View style={styles.status} accessibilityLiveRegion="polite">
-                <ActivityIndicator color="#493020" />
+                <ActivityIndicator color={c.rose} />
                 <Text style={styles.copy}>声を確認して登録しています。</Text>
               </View>
             )}
@@ -620,13 +623,13 @@ export function SpeakerEnrollmentSheet({
               style={styles.editAction}
               testID={`record-speaker-${profile.id}`}
             >
-              <Feather name="mic" size={21} color="#493020" />
+              <Feather name="mic" size={21} color={c.primary} />
               <Text style={styles.secondaryText}>
                 {profile.status === "ready"
                   ? "声を録り直す"
                   : "声の登録を続ける"}
               </Text>
-              <Feather name="chevron-right" size={19} color="#726050" />
+              <Feather name="chevron-right" size={19} color={c.secondary} />
             </ActionButton>
             {profile.status === "ready" && (
               <Text style={styles.note}>
@@ -637,7 +640,7 @@ export function SpeakerEnrollmentSheet({
               label={`${profile.name}を削除`}
               onPress={() =>
                 Alert.alert(
-                  "話者を削除",
+                  "友達を削除",
                   `${profile.name}の名前と登録した声を削除します。`,
                   [
                     { text: "キャンセル", style: "cancel" },
@@ -659,15 +662,15 @@ export function SpeakerEnrollmentSheet({
               style={styles.delete}
               testID={`delete-speaker-${profile.id}`}
             >
-              <Feather name="trash-2" size={18} color="#8a3e26" />
-              <Text style={styles.errorText}>話者を削除</Text>
+              <Feather name="trash-2" size={18} color={c.rose} />
+              <Text style={styles.errorText}>友達を削除</Text>
             </ActionButton>
           </>
         )}
         {screen === "complete" && (
           <View style={styles.success}>
             <View style={styles.successMark}>
-              <Feather name="check" size={34} color="#493020" />
+              <Feather name="check" size={34} color={c.gold} />
             </View>
             <Text style={styles.person} numberOfLines={2}>
               {profile?.name}
@@ -687,29 +690,34 @@ const styles = StyleSheet.create({
   body: { gap: 20 },
   steps: { flexDirection: "row", gap: 18, paddingTop: 4, paddingBottom: 4 },
   step: { flexDirection: "row", alignItems: "center", gap: 18 },
-  stepText: { fontSize: 13, lineHeight: 20, color: "#726050" },
-  currentStep: { color: "#332317", fontWeight: "700" },
+  stepText: { fontSize: 13, lineHeight: 20, color: c.secondary },
+  currentStep: { color: c.primary, fontWeight: "700" },
   field: { gap: 10, paddingTop: 8 },
   fieldLabel: {
     fontSize: 14,
     lineHeight: 20,
     fontWeight: "600",
-    color: "#332317",
+    color: c.primary,
   },
   input: {
     minHeight: 56,
-    borderRadius: 12,
+    borderRadius: radii.surface,
     borderWidth: 1,
-    borderColor: "#a89584",
-    backgroundColor: "#fff",
+    borderColor: c.border,
+    backgroundColor: c.raised,
     paddingHorizontal: 16,
     paddingVertical: 14,
-    color: "#332317",
+    color: c.primary,
     fontSize: 17,
   },
-  copy: { color: "#544033", fontSize: 14, lineHeight: 23 },
-  note: { color: "#726050", fontSize: 13, lineHeight: 21 },
-  person: { color: "#332317", fontSize: 22, lineHeight: 30, fontWeight: "600" },
+  copy: { color: c.secondary, fontSize: 14, lineHeight: 23 },
+  note: { color: c.secondary, fontSize: 13, lineHeight: 21 },
+  person: {
+    color: c.primary,
+    fontSize: 22,
+    lineHeight: 30,
+    fontWeight: "600",
+  },
   personHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
   editName: {
     width: 44,
@@ -722,25 +730,25 @@ const styles = StyleSheet.create({
     width: 68,
     height: 68,
     borderRadius: 34,
-    backgroundColor: "#ede5dd",
+    backgroundColor: c.raised,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 4,
   },
   duration: {
-    color: "#332317",
+    color: c.primary,
     fontSize: 28,
     lineHeight: 38,
     fontWeight: "600",
   },
   recordingLabel: {
-    color: "#493020",
+    color: c.primary,
     fontSize: 14,
     lineHeight: 22,
     fontWeight: "600",
   },
   timer: {
-    color: "#332317",
+    color: c.primary,
     fontSize: 56,
     lineHeight: 68,
     fontWeight: "600",
@@ -750,30 +758,30 @@ const styles = StyleSheet.create({
   track: {
     height: 4,
     borderRadius: 2,
-    backgroundColor: "#e1d6cc",
+    backgroundColor: c.border,
     overflow: "hidden",
     width: "100%",
     marginTop: 12,
   },
-  fill: { height: 4, backgroundColor: "#493020", borderRadius: 2 },
+  fill: { height: 4, backgroundColor: c.rose, borderRadius: 2 },
   prompt: {
-    backgroundColor: "#f2ece6",
-    borderRadius: 16,
+    backgroundColor: c.surface,
+    borderRadius: radii.surface,
     padding: 18,
     gap: 10,
   },
   promptLabel: {
-    color: "#544033",
+    color: c.secondary,
     fontSize: 13,
     lineHeight: 20,
     fontWeight: "600",
   },
-  promptText: { color: "#332317", fontSize: 16, lineHeight: 28 },
+  promptText: { color: c.primary, fontSize: 16, lineHeight: 28 },
   actions: { gap: 4 },
   primary: {
     minHeight: 54,
-    borderRadius: 14,
-    backgroundColor: "#493020",
+    borderRadius: radii.control,
+    backgroundColor: c.rose,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -782,7 +790,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   primaryText: {
-    color: "#fffaf5",
+    color: c.onRose,
     fontSize: 16,
     lineHeight: 24,
     fontWeight: "600",
@@ -796,7 +804,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   secondaryText: {
-    color: "#493020",
+    color: c.primary,
     fontSize: 15,
     lineHeight: 23,
     fontWeight: "600",
@@ -808,38 +816,42 @@ const styles = StyleSheet.create({
     minHeight: 76,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#ddcfc1",
+    borderBottomColor: c.border,
   },
   profileMark: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: "#ede5dd",
+    backgroundColor: c.raised,
     alignItems: "center",
     justifyContent: "center",
   },
   profileCopy: { flex: 1, gap: 4 },
   profileName: {
-    color: "#332317",
+    color: c.primary,
     fontSize: 17,
     lineHeight: 25,
     fontWeight: "600",
   },
   preview: {
     padding: 18,
-    borderRadius: 16,
-    backgroundColor: "#f2ece6",
+    borderRadius: radii.surface,
+    backgroundColor: c.surface,
     gap: 14,
   },
   previewHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
   previewTitle: {
     flex: 1,
-    color: "#332317",
+    color: c.primary,
     fontSize: 16,
     lineHeight: 24,
     fontWeight: "600",
   },
-  sampleTime: { color: "#544033", fontSize: 14, fontVariant: ["tabular-nums"] },
+  sampleTime: {
+    color: c.secondary,
+    fontSize: 14,
+    fontVariant: ["tabular-nums"],
+  },
   play: {
     flexDirection: "row",
     justifyContent: "center",
@@ -847,9 +859,9 @@ const styles = StyleSheet.create({
     gap: 12,
     minHeight: 52,
     borderWidth: 1,
-    borderColor: "#a89584",
+    borderColor: c.border,
     borderRadius: 12,
-    backgroundColor: "#fffaf5",
+    backgroundColor: c.raised,
   },
   status: { flexDirection: "row", alignItems: "center", gap: 12 },
   editAction: {
@@ -873,9 +885,9 @@ const styles = StyleSheet.create({
     gap: 10,
     borderRadius: 12,
     padding: 14,
-    backgroundColor: "#f6e8df",
+    backgroundColor: "rgba(238,145,163,0.12)",
   },
-  errorText: { flexShrink: 1, color: "#8a3e26", fontSize: 14, lineHeight: 22 },
+  errorText: { flexShrink: 1, color: c.rose, fontSize: 14, lineHeight: 22 },
   success: { alignItems: "center", gap: 14, paddingVertical: 30 },
   successMark: {
     width: 76,
@@ -883,7 +895,7 @@ const styles = StyleSheet.create({
     borderRadius: 38,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#ede5dd",
+    backgroundColor: c.raised,
     marginBottom: 8,
   },
 });

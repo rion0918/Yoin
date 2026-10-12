@@ -32,7 +32,7 @@ const explanations: Record<string, string> = {
   speaker_sample_metadata_mismatch:
     "登録音声の情報を確認できません。もう一度録音してください。",
   speaker_identification_failed:
-    "話者の識別に失敗しました。音声は残っています。準備をもう一度実行してください。",
+    "友達の声を判別できませんでした。音声は残っています。準備をもう一度実行してください。",
   invalid_speaker_embedding:
     "声の特徴を保存できませんでした。もう一度録音してください。",
   empty_audio:
@@ -47,11 +47,26 @@ const explanations: Record<string, string> = {
     "曲の歌詞が確認した内容と異なるため、完成できませんでした。音声と歌詞は保存されています。",
   provider_outcome_unconfirmed:
     "曲の受付を確認できませんでした。音声と歌詞は保存されています。この状態では作り直せません。時間をおいて状況を確認してください。",
+  media_service_busy:
+    "曲の生成サービスが混み合っています。Googleへの送信は始まっていません。少し時間をおいて、もう一度お試しください。",
+  provider_not_configured:
+    "曲の生成サービスを準備できませんでした。Googleへの送信は始まっていません。時間をおいてもう一度お試しください。",
+  media_service_not_configured:
+    "曲の生成サービスへ接続できませんでした。Googleへの送信は始まっていません。時間をおいてもう一度お試しください。",
+  media_signing_not_configured:
+    "曲の生成サービスの接続を準備できませんでした。Googleへの送信は始まっていません。設定を確認してください。",
+  provider_not_submitted:
+    "曲の生成を開始できませんでした。Googleへの送信は始まっていません。時間をおいてもう一度お試しください。",
+  transcript_review_conflict:
+    "文字起こしの確認状態が更新されています。記録を開き直してください。",
+  invalid_transcript_fingerprint: "文字起こしの確認情報を読み取れません。",
+  audio_review_expired:
+    "音声と文字起こしは保存されています。確認期限が過ぎました。もう一度処理を始めると、保存済みの文字起こしを使います。",
   draft_not_ready: "この記録は処理中です。保存した生成状況を確認してください。",
   invalid_speaker_selection:
-    "選んだ話者を確認できません。話者設定を確認して、もう一度選んでください。",
+    "選んだ友達を確認できません。友達の声の登録を確認して、もう一度選んでください。",
   speaker_selection_unavailable:
-    "この記録に選んだ話者が見つかりません。話者設定を確認して、新しい記録を作成してください。",
+    "この記録に選んだ友達が見つかりません。友達の声の登録を確認して、新しい記録を作成してください。",
   draft_speaker_selection_conflict:
     "この記録の参加者を確認できません。新しい記録を作成してください。",
   expired_or_invalid_media_url:

@@ -48,12 +48,16 @@ test("recording anchors after preparation, persists before capture, and keeps th
   assert.deepEqual(order, ["prepared", "persisted", "capture"]);
   assert.equal(savedAt, "2026-10-04T02:00:15.000Z");
   assert.equal(prepared.recordedAt, savedAt);
-  const clip = clipFromRecording(prepared, {
-    durationMs: 1400,
-    sizeBytes: 2400,
-    mimeType: "audio/mp4",
-  });
+  const clip = clipFromRecording(
+    { ...prepared, capturedDurationMs: 1420 },
+    {
+      durationMs: 1400,
+      sizeBytes: 2400,
+      mimeType: "audio/mp4",
+    },
+  );
   assert.equal(clip.recordedAt, savedAt);
+  assert.equal(clip.captureDurationMs, 1420);
 });
 
 test("a failed pending-recording write prevents audio capture", async () => {

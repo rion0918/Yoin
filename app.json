@@ -37,6 +37,12 @@
       ],
       "expo-sqlite",
       "expo-secure-store"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "0a037905-c629-4edb-aaac-ef7a96b8bd5c"
+      }
+    },
+    "owner": "rion0918"
   }
 }

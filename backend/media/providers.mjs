@@ -136,9 +136,13 @@ export async function runProvider(
     }
   } catch (error) {
     if (error instanceof GoogleProviderError && error.response !== null) {
-      const raw = Buffer.from(JSON.stringify(error.response));
-      if (raw.byteLength <= 100 * 1024 * 1024)
-        await upload(rawUrl, raw, "application/json");
+      try {
+        const raw = Buffer.from(JSON.stringify(error.response));
+        if (raw.byteLength <= 100 * 1024 * 1024)
+          await upload(rawUrl, raw, "application/json");
+      } catch {
+        // Preserve the provider outcome when diagnostic storage is unavailable.
+      }
     }
     throw error;
   }

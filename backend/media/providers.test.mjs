@@ -1,7 +1,54 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
+import { GoogleProviderError } from "../../pipeline/google.ts";
+import { runProvider } from "./providers.mjs";
 import { createMediaServer } from "./server.mjs";
+
+test("failed diagnostic storage preserves the original provider error", async () => {
+  const storage = createServer(async (request, response) => {
+    for await (const _ of request) {
+      /* Drain the request body. */
+    }
+    response.writeHead(request.url.includes("/raw?") ? 503 : 200, {
+      "Content-Type": "application/json",
+    });
+    response.end(JSON.stringify({ stage: "music" }));
+  });
+  await new Promise((resolve) => storage.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${storage.address().port}`;
+  const target = `${origin}/internal/attempts/music-job`;
+  const raw = { error: { code: 429, message: "Provider quota unavailable" } };
+  try {
+    await assert.rejects(
+      runProvider(
+        "music",
+        {
+          claimUrl: `${target}/claim?signature=test`,
+          resultUrl: `${target}/result?signature=test`,
+          rawUrl: `${target}/raw?signature=test`,
+          songUploadUrl: `${target}/song?signature=test`,
+          blocks: [
+            { id: "verse", text: "また歩こう", sourceUtteranceIds: ["u1"] },
+          ],
+        },
+        {
+          origin,
+          apiKey: "test",
+          providerFetch: async () => Response.json(raw, { status: 429 }),
+        },
+      ),
+      (error) => {
+        assert.ok(error instanceof GoogleProviderError);
+        assert.equal(error.status, 429);
+        assert.deepEqual(error.response, raw);
+        return true;
+      },
+    );
+  } finally {
+    await new Promise((resolve) => storage.close(resolve));
+  }
+});
 
 test("remote music is claimed once, streamed to storage, and cached before responding", async () => {
   const events = [];

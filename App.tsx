@@ -38,6 +38,7 @@ import type {
   LocalDraft,
   LyricBlock,
   SongDocument,
+  TranscriptSpeakerAssignment,
   Utterance,
 } from "./shared/contracts";
 import type { SessionIdentity } from "./src/auth/types";
@@ -49,6 +50,7 @@ import { LyricReview } from "./src/components/LyricReview";
 import { NativeSheet } from "./src/components/NativeSheet";
 import { SongSourceContent } from "./src/components/SongSourceContent";
 import { SpeakerEnrollmentSheet } from "./src/components/SpeakerEnrollmentSheet";
+import { TranscriptSpeakerReview } from "./src/components/TranscriptSpeakerReview";
 import { TranscriptTimingNotice } from "./src/components/TranscriptTimingNotice";
 import { figmaColors } from "./src/design/figma";
 import { colors, radii } from "./src/design/tokens";
@@ -376,6 +378,10 @@ function SessionApp({
     null,
   );
   const [editedBlocks, setEditedBlocks] = useState<LyricBlock[]>([]);
+  const [speakerAssignmentState, setSpeakerAssignmentState] = useState<{
+    key: string;
+    assignments: TranscriptSpeakerAssignment[];
+  }>({ key: "", assignments: [] });
   const close = () => {
     Keyboard.dismiss();
     void app.closeSource();
@@ -407,6 +413,13 @@ function SessionApp({
     overlay && "draftId" in overlay
       ? app.state.drafts.find((value) => value.id === overlay.draftId)
       : undefined;
+  const transcriptAssignmentKey = draft
+    ? `${draft.id}:${draft.jobId ?? ""}`
+    : "";
+  const transcriptAssignments =
+    speakerAssignmentState.key === transcriptAssignmentKey
+      ? speakerAssignmentState.assignments
+      : [];
   const deletionExit = useRef(false);
   useEffect(() => {
     if (app.accountDeleted && !deletionExit.current) {
@@ -487,9 +500,12 @@ function SessionApp({
           ? "あのときの会話"
           : overlayKind === "review"
             ? "この歌詞で、残そう。"
-            : overlayKind === "progress"
-              ? "思い出の仕上げ"
-              : "この一日を、仕上げよう。";
+            : overlayKind === "progress" &&
+                draft?.status === "needs_audio_review"
+              ? "音声と発話を確認"
+              : overlayKind === "progress"
+                ? "思い出の仕上げ"
+                : "この一日を、仕上げよう。";
   const description =
     overlayKind === "settings"
       ? "アカウントと、登録した声を管理できます。"
@@ -497,11 +513,13 @@ function SessionApp({
         ? "友達の名前と声を登録すると、会話を友達ごとに振り返れます。"
         : overlayKind === "review"
           ? "会話を確かめながら、言葉を整えられます。"
-          : overlayKind === "source"
-            ? "歌詞の元になった音声を聴き返せます。"
-            : overlayKind === "progress"
-              ? "この画面を閉じても、記録は残ります。"
-              : "残した音声を確かめて、歌詞にしよう。";
+          : overlayKind === "progress" && draft?.status === "needs_audio_review"
+            ? "原音を聴いて発話を確認します。話者を割り当てるか、未特定のまま歌詞を作れます。"
+            : overlayKind === "source"
+              ? "歌詞の元になった音声を聴き返せます。"
+              : overlayKind === "progress"
+                ? "この画面を閉じても、記録は残ります。"
+                : "残した音声を確かめて、歌詞にしよう。";
   let sourceUtterances: Utterance[] = [];
   let sourceClips: AudioClip[] = [];
   if (overlay?.kind === "source") {
@@ -780,13 +798,6 @@ function SessionApp({
             <View testID="generation-progress">
               {draft.status === "needs_audio_review" ? (
                 <>
-                  <Text style={styles.story}>
-                    {draft.utterances.some(
-                      (utterance) => utterance.speaker === "unknown",
-                    )
-                      ? "話者ラベルのない発話があります。登録した声と照合できた発話は名前で表示します。原音と全文を確認してください。確認した内容から歌詞を作ります。"
-                      : "認識できていない発話が残っている可能性があります。原音と全文を確認してください。確認した内容から歌詞を作ります。"}
-                  </Text>
                   <ScrollView style={{ maxHeight: 310 }}>
                     {draft.clips.map((clip) => (
                       <View key={clip.id} style={{ marginBottom: 18 }}>
@@ -863,42 +874,34 @@ function SessionApp({
                         </ActionButton>
                       </View>
                     ))}
-                    {draft.utterances.map((utterance) => (
-                      <View
-                        key={utterance.id}
-                        style={{
-                          flexDirection: "row",
-                          gap: 12,
-                          marginBottom: 12,
-                        }}
-                      >
-                        <Text
-                          style={{
-                            width: 74,
-                            color: colors.muted,
-                            fontSize: 12,
-                          }}
-                        >
-                          {utterance.timingIssues?.length
-                            ? "区間全体"
-                            : formatTime(utterance.startMs / 1000)}
-                        </Text>
-                        <Text
-                          style={[styles.story, { flex: 1, marginBottom: 0 }]}
-                        >
-                          {speakerLabel(utterance)} · 「{utterance.text}」
-                        </Text>
-                      </View>
-                    ))}
+                    <TranscriptSpeakerReview
+                      draft={draft}
+                      speakers={app.state.speakerProfiles ?? []}
+                      assignments={transcriptAssignments}
+                      onAssignmentsChange={(assignments) =>
+                        setSpeakerAssignmentState({
+                          key: transcriptAssignmentKey,
+                          assignments,
+                        })
+                      }
+                    />
                   </ScrollView>
+                  <Text style={styles.summary}>
+                    割り当てない発話は話者名なしで歌詞に含めます。
+                  </Text>
                   <ActionButton
-                    label="この内容で歌詞を作る"
-                    onPress={() => void app.approveTranscript(draft.id)}
+                    label="確認して歌詞を作る"
+                    onPress={() =>
+                      void app.approveTranscript(
+                        draft.id,
+                        transcriptAssignments,
+                      )
+                    }
                     disabled={app.busy || !draft.jobId}
                     style={styles.primary}
                     testID="approve-transcript"
                   >
-                    <Text style={styles.primaryText}>この内容で歌詞を作る</Text>
+                    <Text style={styles.primaryText}>確認して歌詞を作る</Text>
                     <Feather
                       name="chevron-right"
                       size={20}

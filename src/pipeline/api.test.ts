@@ -130,7 +130,7 @@ test("server authentication errors explain the next action in Japanese", async (
   );
   await assert.rejects(api.songs(), /ログイン/);
 });
-test("transcript approval sends the job and exact transcript fingerprint", async () => {
+test("transcript approval sends speaker assignments with the transcript fingerprint", async () => {
   let request: { url: string; method: string; body: unknown } | undefined;
   const api = createApi(
     { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
@@ -143,11 +143,23 @@ test("transcript approval sends the job and exact transcript fingerprint", async
       return Response.json({ accepted: true }, { status: 202 });
     },
   );
-  await api.reviewTranscript("draft-a", "prepare-job", "a".repeat(64));
+  const assignments = [
+    { utteranceId: "clip:u:100:1", speakerProfileId: "speaker-a" },
+  ];
+  await api.reviewTranscript(
+    "draft-a",
+    "prepare-job",
+    "a".repeat(64),
+    assignments,
+  );
   assert.deepEqual(request, {
     url: "https://test.invalid/drafts/draft-a/transcript-review",
     method: "POST",
-    body: { jobId: "prepare-job", transcriptFingerprint: "a".repeat(64) },
+    body: {
+      jobId: "prepare-job",
+      transcriptFingerprint: "a".repeat(64),
+      assignments,
+    },
   });
 });
 test("missing speaker API reports an unsupported server instead of invalid connection settings", async () => {

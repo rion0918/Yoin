@@ -223,6 +223,260 @@ describe("private API", () => {
     });
   });
 
+  it("saves selected speaker assignments before approving the transcript", async () => {
+    const profiles = [
+      { id: "speaker-a", name: "あおい" },
+      { id: "speaker-b", name: "れん" },
+      { id: "speaker-c", name: "みな" },
+    ];
+    for (const profile of profiles)
+      await bindings.DB.prepare(
+        "INSERT INTO speaker_profiles (id, owner_id, name, sample_id, model_version, embedding_json, created_at) VALUES (?, 'private-tester', ?, ?, 'model-v1', ?, '2026-10-13')",
+      )
+        .bind(
+          profile.id,
+          profile.name,
+          `${profile.id}-sample`,
+          JSON.stringify([1]),
+        )
+        .run();
+    await request("/drafts", "POST", {
+      id: draftId,
+      title: "旅",
+      createdAt: "2026-10-04T01:00:00Z",
+      speakerProfileIds: ["speaker-a", "speaker-b"],
+    });
+    await bindings.DB.prepare(
+      "INSERT INTO clips (id, draft_id, owner_id, mime_type, size_bytes, duration_ms, recorded_at, timezone, object_key, status) VALUES ('clip-review', ?, 'private-tester', 'audio/mp4', 10, 180000, '2026-10-04T01:00:00Z', 'Asia/Tokyo', 'originals/private-tester/clip-review', 'uploaded')",
+    )
+      .bind(draftId)
+      .run();
+    const transcript = Array.from({ length: 60 }, (_, index) => {
+      const startMs = 100 + index * 2000;
+      return {
+        id: `clip-review:u:${startMs}:1`,
+        clipId: "clip-review",
+        startMs,
+        endMs: startMs + 1000,
+        speaker: index % 2 ? "unknown" : "話者 1",
+        text: `発話${index + 1}`,
+      };
+    });
+    for (const item of transcript)
+      await bindings.DB.prepare(
+        "INSERT INTO utterances (id, clip_id, start_ms, end_ms, speaker, text) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+        .bind(
+          item.id,
+          item.clipId,
+          item.startMs,
+          item.endMs,
+          item.speaker,
+          item.text,
+        )
+        .run();
+    const originalFingerprint = await sha256(JSON.stringify(transcript));
+    const snapshot = profiles.slice(0, 2).map((profile) => ({
+      ...profile,
+      modelVersion: "model-v1",
+      embedding: [1],
+    }));
+    await bindings.DB.prepare(
+      "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, status, stage, transcript_fingerprint, speaker_snapshot_json, created_at) VALUES ('prepare-review', 'private-tester', ?, 'prepare', 'review-key', 'input', 'needs_audio_review', 'review_audio', ?, ?, '2026-10-04')",
+    )
+      .bind(draftId, originalFingerprint, JSON.stringify(snapshot))
+      .run();
+    await bindings.DB.prepare(
+      "UPDATE drafts SET status = 'needs_audio_review', job_id = 'prepare-review' WHERE id = ?",
+    )
+      .bind(draftId)
+      .run();
+    const sendEvent = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("temporary workflow dispatch failure"))
+      .mockResolvedValue(undefined);
+    bindings.PREPARE = {
+      get: vi.fn(async () => ({ sendEvent })),
+    } as unknown as Env["PREPARE"];
+    const assignments = transcript.map((item, index) => ({
+      utteranceId: item.id,
+      speakerProfileId: index % 2 ? "speaker-b" : "speaker-a",
+    }));
+    const batch = vi.spyOn(bindings.DB, "batch");
+
+    const response = await request(
+      `/drafts/${draftId}/transcript-review`,
+      "POST",
+      {
+        jobId: "prepare-review",
+        transcriptFingerprint: originalFingerprint,
+        assignments,
+      },
+    );
+    expect(response.status).toBe(500);
+    const reviewed = await (await request(`/drafts/${draftId}`)).json<{
+      utterances: Array<Record<string, unknown>>;
+    }>();
+    const reviewedFingerprint = await sha256(
+      JSON.stringify(reviewed.utterances),
+    );
+    const savedJob = await bindings.DB.prepare(
+      "SELECT transcript_fingerprint AS fingerprint FROM jobs WHERE id = 'prepare-review'",
+    ).first<{ fingerprint: string }>();
+
+    expect(reviewed.utterances).toEqual(
+      transcript.map((item, index) => ({
+        ...item,
+        speakerProfileId: index % 2 ? "speaker-b" : "speaker-a",
+        speakerName: index % 2 ? "れん" : "あおい",
+      })),
+    );
+    expect(savedJob?.fingerprint).toBe(reviewedFingerprint);
+
+    const retry = await request(
+      `/drafts/${draftId}/transcript-review`,
+      "POST",
+      {
+        jobId: "prepare-review",
+        transcriptFingerprint: reviewedFingerprint,
+        assignments,
+      },
+    );
+    expect(retry.status).toBe(200);
+    expect(sendEvent).toHaveBeenCalledTimes(2);
+    expect(sendEvent).toHaveBeenLastCalledWith({
+      type: "audio-transcript-review",
+      payload: { transcriptFingerprint: reviewedFingerprint },
+    });
+    expect(batch).toHaveBeenCalledOnce();
+    expect(batch.mock.calls[0]?.[0]).toHaveLength(2);
+
+    await bindings.DB.prepare(
+      "UPDATE jobs SET status = 'running' WHERE id = 'prepare-review'",
+    ).run();
+    const duplicate = await request(
+      `/drafts/${draftId}/transcript-review`,
+      "POST",
+      {
+        jobId: "prepare-review",
+        transcriptFingerprint: originalFingerprint,
+        assignments,
+      },
+    );
+    expect(duplicate.status).toBe(200);
+    expect(sendEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects stale transcript review and assignments outside the selected participants", async () => {
+    for (const [id, name] of [
+      ["speaker-a", "あおい"],
+      ["speaker-b", "れん"],
+    ])
+      await bindings.DB.prepare(
+        "INSERT INTO speaker_profiles (id, owner_id, name, sample_id, model_version, embedding_json, created_at) VALUES (?, 'private-tester', ?, ?, 'model-v1', ?, '2026-10-13')",
+      )
+        .bind(id, name, `${id}-sample`, JSON.stringify([1]))
+        .run();
+    await request("/drafts", "POST", {
+      id: draftId,
+      title: "旅",
+      createdAt: "2026-10-04T01:00:00Z",
+      speakerProfileIds: ["speaker-a"],
+    });
+    await bindings.DB.prepare(
+      "INSERT INTO clips (id, draft_id, owner_id, mime_type, size_bytes, duration_ms, recorded_at, timezone, object_key, status) VALUES ('clip-review', ?, 'private-tester', 'audio/mp4', 10, 180000, '2026-10-04T01:00:00Z', 'Asia/Tokyo', 'originals/private-tester/clip-review', 'uploaded')",
+    )
+      .bind(draftId)
+      .run();
+    const transcript = [
+      {
+        id: "clip-review:u:100:1",
+        clipId: "clip-review",
+        startMs: 100,
+        endMs: 1200,
+        speaker: "unknown",
+        text: "駅に着いたよ",
+      },
+    ];
+    await bindings.DB.prepare(
+      "INSERT INTO utterances (id, clip_id, start_ms, end_ms, speaker, text) VALUES (?, ?, ?, ?, ?, ?)",
+    )
+      .bind(
+        transcript[0].id,
+        transcript[0].clipId,
+        transcript[0].startMs,
+        transcript[0].endMs,
+        transcript[0].speaker,
+        transcript[0].text,
+      )
+      .run();
+    const fingerprint = await sha256(JSON.stringify(transcript));
+    await bindings.DB.prepare(
+      "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, status, stage, transcript_fingerprint, speaker_snapshot_json, created_at) VALUES ('prepare-review', 'private-tester', ?, 'prepare', 'review-key', 'input', 'needs_audio_review', 'review_audio', ?, ?, '2026-10-04')",
+    )
+      .bind(
+        draftId,
+        fingerprint,
+        JSON.stringify([
+          {
+            id: "speaker-a",
+            name: "あおい",
+            modelVersion: "model-v1",
+            embedding: [1],
+          },
+        ]),
+      )
+      .run();
+    await bindings.DB.prepare(
+      "UPDATE drafts SET status = 'needs_audio_review', job_id = 'prepare-review' WHERE id = ?",
+    )
+      .bind(draftId)
+      .run();
+    const sendEvent = vi.fn(async () => {});
+    bindings.PREPARE = {
+      get: vi.fn(async () => ({ sendEvent })),
+    } as unknown as Env["PREPARE"];
+
+    const unselected = await request(
+      `/drafts/${draftId}/transcript-review`,
+      "POST",
+      {
+        jobId: "prepare-review",
+        transcriptFingerprint: fingerprint,
+        assignments: [
+          { utteranceId: transcript[0].id, speakerProfileId: "speaker-b" },
+        ],
+      },
+    );
+    expect(unselected.status).toBe(422);
+    await bindings.DB.prepare(
+      "UPDATE utterances SET text = '時刻のあとで変更された発話' WHERE id = ?",
+    )
+      .bind(transcript[0].id)
+      .run();
+    const stale = await request(
+      `/drafts/${draftId}/transcript-review`,
+      "POST",
+      {
+        jobId: "prepare-review",
+        transcriptFingerprint: fingerprint,
+        assignments: [
+          { utteranceId: transcript[0].id, speakerProfileId: "speaker-a" },
+        ],
+      },
+    );
+
+    expect(stale.status).toBe(409);
+    expect(sendEvent).not.toHaveBeenCalled();
+    expect(
+      await bindings.DB.prepare(
+        "SELECT speaker_profile_id AS profileId, speaker_name AS name FROM utterances WHERE id = ?",
+      )
+        .bind(transcript[0].id)
+        .first(),
+    ).toEqual({ profileId: null, name: null });
+  });
+
   it("stores a bounded owner-scoped location route once and returns its summary", async () => {
     await request("/drafts", "POST", {
       id: draftId,

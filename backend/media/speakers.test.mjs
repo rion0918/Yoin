@@ -10,6 +10,7 @@ import {
   enrollSpeaker,
   identifySpeakers,
   speakerIntervals,
+  speakerUtteranceIntervals,
 } from "./speakers.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -75,6 +76,23 @@ test("unlabelled speech cannot be matched as a diarized speaker by default", () 
   );
 
   assert.equal(intervals.has("unknown"), false);
+});
+
+test("unlabelled speech keeps separate utterance intervals for voice matching", () => {
+  assert.deepEqual(
+    speakerUtteranceIntervals(
+      [
+        { id: "u1", speaker: "unknown", startMs: 1000, endMs: 5000 },
+        { id: "u2", speaker: "unknown", startMs: 6000, endMs: 10000 },
+      ],
+      0,
+      12000,
+    ),
+    [
+      { utteranceId: "u1", ranges: [[1000, 5000]] },
+      { utteranceId: "u2", ranges: [[6000, 10000]] },
+    ],
+  );
 });
 
 test("unlabelled speech does not remove labelled speech from matching", () => {
@@ -160,6 +178,12 @@ test("a three-minute recording keeps temporary labels when the extracted voice i
         // Simulate a reported chunk end slightly beyond the decoded samples.
         { speaker: "spk_1", startMs: durationMs - 10_000, endMs: durationMs },
         { speaker: "spk_2", startMs: 1_000, endMs: 5_000 },
+        {
+          id: "unlabelled-1",
+          speaker: "unknown",
+          startMs: 10_000,
+          endMs: 15_000,
+        },
       ],
       profiles: [
         {
@@ -180,6 +204,11 @@ test("a three-minute recording keeps temporary labels when the extracted voice i
     assert.deepEqual(result.matches, [
       { speaker: "spk_1", speakerProfileId: null },
       { speaker: "spk_2", speakerProfileId: null },
+      {
+        speaker: "unknown",
+        utteranceId: "unlabelled-1",
+        speakerProfileId: null,
+      },
     ]);
     await assert.rejects(
       identifySpeakers(body, {

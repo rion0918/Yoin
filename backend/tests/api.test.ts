@@ -251,24 +251,17 @@ describe("private API", () => {
     )
       .bind(draftId)
       .run();
-    const transcript = [
-      {
-        id: "clip-review:u:100:1",
+    const transcript = Array.from({ length: 60 }, (_, index) => {
+      const startMs = 100 + index * 2000;
+      return {
+        id: `clip-review:u:${startMs}:1`,
         clipId: "clip-review",
-        startMs: 100,
-        endMs: 1200,
-        speaker: "話者 1",
-        text: "駅に着いたよ",
-      },
-      {
-        id: "clip-review:u:1300:1",
-        clipId: "clip-review",
-        startMs: 1300,
-        endMs: 2500,
-        speaker: "unknown",
-        text: "桜が咲いてるね",
-      },
-    ];
+        startMs,
+        endMs: startMs + 1000,
+        speaker: index % 2 ? "unknown" : "話者 1",
+        text: `発話${index + 1}`,
+      };
+    });
     for (const item of transcript)
       await bindings.DB.prepare(
         "INSERT INTO utterances (id, clip_id, start_ms, end_ms, speaker, text) VALUES (?, ?, ?, ?, ?, ?)",
@@ -298,14 +291,18 @@ describe("private API", () => {
     )
       .bind(draftId)
       .run();
-    const sendEvent = vi.fn(async () => {});
+    const sendEvent = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("temporary workflow dispatch failure"))
+      .mockResolvedValue(undefined);
     bindings.PREPARE = {
       get: vi.fn(async () => ({ sendEvent })),
     } as unknown as Env["PREPARE"];
-    const assignments = [
-      { utteranceId: transcript[0].id, speakerProfileId: "speaker-a" },
-      { utteranceId: transcript[1].id, speakerProfileId: "speaker-b" },
-    ];
+    const assignments = transcript.map((item, index) => ({
+      utteranceId: item.id,
+      speakerProfileId: index % 2 ? "speaker-b" : "speaker-a",
+    }));
+    const batch = vi.spyOn(bindings.DB, "batch");
 
     const response = await request(
       `/drafts/${draftId}/transcript-review`,
@@ -316,8 +313,9 @@ describe("private API", () => {
         assignments,
       },
     );
+    expect(response.status).toBe(500);
     const reviewed = await (await request(`/drafts/${draftId}`)).json<{
-      utterances: unknown[];
+      utterances: Array<Record<string, unknown>>;
     }>();
     const reviewedFingerprint = await sha256(
       JSON.stringify(reviewed.utterances),
@@ -326,21 +324,32 @@ describe("private API", () => {
       "SELECT transcript_fingerprint AS fingerprint FROM jobs WHERE id = 'prepare-review'",
     ).first<{ fingerprint: string }>();
 
-    expect(response.status).toBe(202);
-    expect(reviewed.utterances).toEqual([
-      {
-        ...transcript[0],
-        speakerProfileId: "speaker-a",
-        speakerName: "あおい",
-      },
-      { ...transcript[1], speakerProfileId: "speaker-b", speakerName: "れん" },
-    ]);
+    expect(reviewed.utterances).toEqual(
+      transcript.map((item, index) => ({
+        ...item,
+        speakerProfileId: index % 2 ? "speaker-b" : "speaker-a",
+        speakerName: index % 2 ? "れん" : "あおい",
+      })),
+    );
     expect(savedJob?.fingerprint).toBe(reviewedFingerprint);
-    expect(sendEvent).toHaveBeenCalledOnce();
-    expect(sendEvent).toHaveBeenCalledWith({
+
+    const retry = await request(
+      `/drafts/${draftId}/transcript-review`,
+      "POST",
+      {
+        jobId: "prepare-review",
+        transcriptFingerprint: reviewedFingerprint,
+        assignments,
+      },
+    );
+    expect(retry.status).toBe(200);
+    expect(sendEvent).toHaveBeenCalledTimes(2);
+    expect(sendEvent).toHaveBeenLastCalledWith({
       type: "audio-transcript-review",
       payload: { transcriptFingerprint: reviewedFingerprint },
     });
+    expect(batch).toHaveBeenCalledOnce();
+    expect(batch.mock.calls[0]?.[0]).toHaveLength(2);
 
     await bindings.DB.prepare(
       "UPDATE jobs SET status = 'running' WHERE id = 'prepare-review'",
@@ -355,7 +364,7 @@ describe("private API", () => {
       },
     );
     expect(duplicate.status).toBe(200);
-    expect(sendEvent).toHaveBeenCalledOnce();
+    expect(sendEvent).toHaveBeenCalledTimes(2);
   });
 
   it("rejects stale transcript review and assignments outside the selected participants", async () => {

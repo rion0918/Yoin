@@ -281,3 +281,14 @@ test("changing a transcript speaker assignment replaces only that utterance", ()
     ],
   );
 });
+
+test("clearing a transcript speaker assignment leaves other choices untouched", () => {
+  const assignments = [
+    { utteranceId: "clip:u:100:1", speakerProfileId: "speaker-a" },
+    { utteranceId: "clip:u:200:1", speakerProfileId: "speaker-b" },
+  ];
+  assert.deepEqual(
+    speakerUi.removeTranscriptSpeakerAssignment(assignments, "clip:u:100:1"),
+    [{ utteranceId: "clip:u:200:1", speakerProfileId: "speaker-b" }],
+  );
+});

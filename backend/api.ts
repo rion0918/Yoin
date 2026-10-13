@@ -661,29 +661,28 @@ async function reviewTranscript(
   const current = await utterances(env, draftId, owner);
   const currentFingerprint = await sha256(JSON.stringify(current));
   const alreadyReviewed = Boolean(job.transcript_reviewed_at);
-  if (job.transcript_fingerprint !== fingerprint) {
-    if (
-      !alreadyReviewed ||
-      currentFingerprint !== job.transcript_fingerprint ||
-      !matchesSavedTranscriptAssignments(
-        assignments,
-        current,
-        job.speaker_snapshot_json,
-      )
-    )
+  if (alreadyReviewed) {
+    if (currentFingerprint !== job.transcript_fingerprint)
       throw new HttpError(409, "transcript_review_conflict");
     if (job.status === "needs_audio_review") {
+      if (
+        !matchesSavedTranscriptAssignments(
+          assignments,
+          current,
+          job.speaker_snapshot_json,
+        )
+      )
+        throw new HttpError(409, "transcript_review_conflict");
       const workflow = await env.PREPARE.get(job.id);
       await workflow.sendEvent({
         type: "audio-transcript-review",
         payload: { transcriptFingerprint: currentFingerprint },
       });
-      return Response.json({ accepted: true });
     }
     return Response.json({ accepted: true });
   }
-  if (alreadyReviewed && job.status !== "needs_audio_review")
-    return Response.json({ accepted: true });
+  if (job.transcript_fingerprint !== fingerprint)
+    throw new HttpError(409, "transcript_review_conflict");
   if (job.status !== "needs_audio_review")
     throw new HttpError(409, "transcript_review_conflict");
   if (currentFingerprint !== fingerprint)
@@ -721,31 +720,49 @@ async function reviewTranscript(
       : item;
   });
   const reviewedFingerprint = await sha256(JSON.stringify(reviewed));
-  const statements = assignments.map((assignment) => {
-    const profile = assignmentsByUtterance.get(assignment.utteranceId);
-    if (!profile) throw new HttpError(422, "invalid_speaker_assignment");
-    return env.DB.prepare(
-      "UPDATE utterances SET speaker_profile_id = ?, speaker_name = ? WHERE id = ? AND speaker_profile_id IS NULL AND speaker_name IS NULL AND clip_id IN (SELECT id FROM clips WHERE draft_id = ? AND owner_id = ?) AND EXISTS (SELECT 1 FROM jobs WHERE id = ? AND owner_id = ? AND status = 'needs_audio_review' AND transcript_fingerprint = ?)",
-    ).bind(
-      profile.id,
-      profile.name,
-      assignment.utteranceId,
-      draftId,
-      owner,
-      job.id,
-      owner,
-      fingerprint,
-    );
-  });
+  const assignmentsJson = JSON.stringify(
+    Object.fromEntries(
+      assignments.map((assignment) => {
+        const profile = assignmentsByUtterance.get(assignment.utteranceId);
+        if (!profile) throw new HttpError(422, "invalid_speaker_assignment");
+        return [
+          assignment.utteranceId,
+          { speakerProfileId: profile.id, speakerName: profile.name },
+        ];
+      }),
+    ),
+  );
+  const statements = assignments.length
+    ? [
+        env.DB.prepare(
+          "UPDATE utterances AS target SET speaker_profile_id = json_extract(assignment.value, '$.speakerProfileId'), speaker_name = json_extract(assignment.value, '$.speakerName') FROM json_each(?) AS assignment WHERE assignment.key = target.id AND target.speaker_profile_id IS NULL AND target.speaker_name IS NULL AND target.clip_id IN (SELECT id FROM clips WHERE draft_id = ? AND owner_id = ?) AND EXISTS (SELECT 1 FROM jobs WHERE id = ? AND owner_id = ? AND status = 'needs_audio_review' AND transcript_fingerprint = ?) AND (SELECT COUNT(*) FROM json_each(?) AS requested JOIN utterances AS eligible ON eligible.id = requested.key WHERE eligible.speaker_profile_id IS NULL AND eligible.speaker_name IS NULL AND eligible.clip_id IN (SELECT id FROM clips WHERE draft_id = ? AND owner_id = ?)) = ?",
+        ).bind(
+          assignmentsJson,
+          draftId,
+          owner,
+          job.id,
+          owner,
+          fingerprint,
+          assignmentsJson,
+          draftId,
+          owner,
+          assignments.length,
+        ),
+      ]
+    : [];
   statements.push(
     env.DB.prepare(
-      "UPDATE jobs SET transcript_fingerprint = ?, transcript_reviewed_at = COALESCE(transcript_reviewed_at, ?) WHERE id = ? AND owner_id = ? AND status = 'needs_audio_review' AND transcript_fingerprint = ?",
+      "UPDATE jobs SET transcript_fingerprint = ?, transcript_reviewed_at = COALESCE(transcript_reviewed_at, ?) WHERE id = ? AND owner_id = ? AND status = 'needs_audio_review' AND transcript_fingerprint = ? AND (SELECT COUNT(*) FROM json_each(?) AS assignment JOIN utterances AS target ON target.id = assignment.key WHERE target.speaker_profile_id = json_extract(assignment.value, '$.speakerProfileId') AND target.speaker_name = json_extract(assignment.value, '$.speakerName') AND target.clip_id IN (SELECT id FROM clips WHERE draft_id = ? AND owner_id = ?)) = ?",
     ).bind(
       reviewedFingerprint,
       new Date().toISOString(),
       job.id,
       owner,
       fingerprint,
+      assignmentsJson,
+      draftId,
+      owner,
+      assignments.length,
     ),
   );
   const result = await env.DB.batch(statements);

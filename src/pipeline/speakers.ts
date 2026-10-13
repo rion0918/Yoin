@@ -134,3 +134,10 @@ export function updateTranscriptSpeakerAssignment(
     { utteranceId, speakerProfileId },
   ];
 }
+
+export function removeTranscriptSpeakerAssignment(
+  assignments: TranscriptSpeakerAssignment[],
+  utteranceId: string,
+): TranscriptSpeakerAssignment[] {
+  return assignments.filter((item) => item.utteranceId !== utteranceId);
+}

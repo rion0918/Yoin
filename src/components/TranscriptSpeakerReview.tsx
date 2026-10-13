@@ -10,6 +10,7 @@ import { colors } from "../design/tokens";
 import { formatTime } from "../domain/session";
 import {
   canAssignTranscriptSpeaker,
+  removeTranscriptSpeakerAssignment,
   speakerLabel,
   transcriptReviewSpeakers,
   updateTranscriptSpeakerAssignment,
@@ -94,6 +95,25 @@ export function TranscriptSpeakerReview({
                   </ActionButton>
                   {selecting && (
                     <View style={styles.options}>
+                      {assignmentsByUtterance.has(utterance.id) && (
+                        <ActionButton
+                          label="話者の割り当てを解除して未特定に戻す"
+                          onPress={() => {
+                            onAssignmentsChange(
+                              removeTranscriptSpeakerAssignment(
+                                assignments,
+                                utterance.id,
+                              ),
+                            );
+                            setActiveUtteranceId(null);
+                          }}
+                          style={styles.option}
+                        >
+                          <Text style={styles.optionLabel}>
+                            未特定のままに戻す
+                          </Text>
+                        </ActionButton>
+                      )}
                       {options.map((profile) => (
                         <ActionButton
                           key={profile.id}

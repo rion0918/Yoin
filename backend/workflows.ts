@@ -391,7 +391,7 @@ export async function prepareDraft(
         .bind(JSON.stringify(summary), clip.id, job.owner_id)
         .run();
     }
-    const transcriptFingerprint = await sha256(JSON.stringify(source));
+    let transcriptFingerprint = await sha256(JSON.stringify(source));
     await env.DB.prepare(
       "UPDATE jobs SET transcript_fingerprint = ? WHERE id = ? AND owner_id = ?",
     )
@@ -399,6 +399,7 @@ export async function prepareDraft(
       .run();
     if (needsAudioReview) {
       await setJob(env, job, "needs_audio_review", "review_audio");
+      let approvedFingerprint: string;
       try {
         const review = await step.waitForEvent<{
           transcriptFingerprint: string;
@@ -406,8 +407,7 @@ export async function prepareDraft(
           type: "audio-transcript-review",
           timeout: "30 days",
         });
-        if (review.payload.transcriptFingerprint !== transcriptFingerprint)
-          return;
+        approvedFingerprint = review.payload.transcriptFingerprint;
       } catch {
         await setJob(
           env,
@@ -418,13 +418,14 @@ export async function prepareDraft(
         );
         return;
       }
-      const currentFingerprint = await sha256(
-        JSON.stringify(await utterances(env, job.draft_id, job.owner_id)),
-      );
-      if (currentFingerprint !== transcriptFingerprint) {
+      const reviewedSource = await utterances(env, job.draft_id, job.owner_id);
+      const reviewedFingerprint = await sha256(JSON.stringify(reviewedSource));
+      if (reviewedFingerprint !== approvedFingerprint) {
         await setJob(env, job, "needs_audio_review", "review_audio");
         return;
       }
+      source = reviewedSource;
+      transcriptFingerprint = reviewedFingerprint;
     }
     await setJob(env, job, "running", "creating_lyrics");
     const settings =

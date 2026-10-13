@@ -6,6 +6,7 @@ import {
   MIN_SPEAKER_SAMPLE_MS,
   SPEAKER_SAMPLE_MS,
   type SpeakerProfile,
+  type TranscriptSpeakerAssignment,
   type Utterance,
 } from "../../shared/contracts.ts";
 import type { RecorderPhase } from "../platform/types.ts";
@@ -105,4 +106,31 @@ export function speakerLabel(utterance: Utterance) {
     utterance.speakerName ||
     (utterance.speaker === "unknown" ? "話者未特定" : utterance.speaker)
   );
+}
+
+export function canAssignTranscriptSpeaker(utterance: Utterance) {
+  return !utterance.speakerProfileId && !utterance.speakerName;
+}
+
+export function transcriptReviewSpeakers(
+  speakers: SpeakerProfile[],
+  selectedIds: string[] | undefined,
+) {
+  const selected = new Set(selectedIds ?? []);
+  return speakers.filter(
+    (profile) =>
+      profile.status === "ready" &&
+      (!selected.size || selected.has(profile.id)),
+  );
+}
+
+export function updateTranscriptSpeakerAssignment(
+  assignments: TranscriptSpeakerAssignment[],
+  utteranceId: string,
+  speakerProfileId: string,
+): TranscriptSpeakerAssignment[] {
+  return [
+    ...assignments.filter((item) => item.utteranceId !== utteranceId),
+    { utteranceId, speakerProfileId },
+  ];
 }

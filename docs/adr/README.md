@@ -33,10 +33,11 @@ ADR（Architecture Decision Record）は、1つの重要な判断について、
 | [0023: 不正な認識時刻は全文と元音声を保持して確認を待つ](0023-transcript-timing-review.md) | Accepted | 2026-10-12 |
 | [0024: Lyriaへ確認済みの読みと曲構成を渡す](0024-lyria-singing-readings.md) | Proposed | 2026-10-12 |
 | [0025: 話者ラベルのない文字起こしを未特定のまま確認する](0025-unlabelled-transcript-review.md) | Proposed | 2026-10-13 |
+| [0026: 確認画面で未特定の発話へ話者を割り当てる](0026-manual-transcript-speaker-review.md) | Proposed | 2026-10-13 |
 
 Accepted の記録が現在の採用済み判断です。Proposed は提案段階であり、採用済みとして扱いません。記録の追加・状態変更時には、この一覧も更新します。
 
-番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0025-<short-title>.md` です。
+番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0027-<short-title>.md` です。
 
 ## 作業前に読む
 

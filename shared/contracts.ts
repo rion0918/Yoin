@@ -180,6 +180,10 @@ export type Utterance = {
   text: string;
   timingIssues?: TranscriptTimingIssue[];
 };
+export type TranscriptSpeakerAssignment = {
+  utteranceId: string;
+  speakerProfileId: string;
+};
 
 export type MusicPreferences = {
   genre: "acoustic" | "jpop" | "piano" | "rock" | "rnb" | "bossa";

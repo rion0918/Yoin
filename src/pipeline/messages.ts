@@ -83,6 +83,10 @@ const explanations: Record<string, string> = {
     "この記録に選んだ友達が見つかりません。友達の声の登録を確認して、新しい記録を作成してください。",
   draft_speaker_selection_conflict:
     "この記録の参加者を確認できません。新しい記録を作成してください。",
+  invalid_speaker_assignment:
+    "この発話と参加者を確認できません。文字起こしを開き直してください。",
+  invalid_speaker_assignments:
+    "話者の割り当てを確認できません。文字起こしを開き直してください。",
   expired_or_invalid_media_url:
     "再生リンクの期限が切れました。もう一度再生を押してください。",
 };

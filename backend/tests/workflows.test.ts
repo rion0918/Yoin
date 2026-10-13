@@ -13,6 +13,7 @@ import {
   generateMusic,
   transcribeAudio,
 } from "../providers.ts";
+import { sha256 } from "../security.ts";
 import { applyAccountSchema } from "./schema.ts";
 
 const schema = `${initialSchema}\n${runtimeSchema}\n${speakerSchema}\n${draftSpeakersSchema}`;
@@ -783,6 +784,73 @@ it("pauses recovered transcripts for speaker and text review before creating lyr
   expect(
     await ownedJob(bindings, "prepare-job", "private-tester"),
   ).toMatchObject({ status: "waiting_review", stage: "review_lyrics" });
+});
+
+it("uses speaker assignments saved during transcript review for lyric creation", async () => {
+  await bindings.DB.prepare(
+    "UPDATE clips SET duration_ms = 90000, client_duration_ms = 90000 WHERE id = 'clip'",
+  ).run();
+  vi.mocked(inspectClip).mockResolvedValue({
+    durationMs: 90000,
+    sizeBytes: 10,
+    chunks: [
+      {
+        key: "processed/clip/0.m4a",
+        offsetMs: 0,
+        durationMs: 90000,
+        mimeType: "audio/mp4",
+      },
+    ],
+  });
+  vi.mocked(transcribeAudio).mockResolvedValue({
+    value: [
+      {
+        id: "clip:u:100:1",
+        clipId: "clip",
+        startMs: 100,
+        endMs: 1200,
+        speaker: "unknown",
+        text: "駅に着いたよ",
+      },
+    ],
+    costUsd: 0.1,
+    usage: { model: "gemini-test" },
+  });
+  const waitForEvent = vi.fn(async () => {
+    expect(createLyrics).not.toHaveBeenCalled();
+    await bindings.DB.prepare(
+      "UPDATE utterances SET speaker_profile_id = 'speaker-a', speaker_name = 'あおい' WHERE id = 'clip:u:100:1'",
+    ).run();
+    const reviewed = await draftDocument(bindings, "draft", "private-tester");
+    const reviewedFingerprint = await sha256(
+      JSON.stringify(reviewed.utterances),
+    );
+    await bindings.DB.prepare(
+      "UPDATE jobs SET transcript_fingerprint = ? WHERE id = 'prepare-job'",
+    )
+      .bind(reviewedFingerprint)
+      .run();
+    return {
+      payload: { transcriptFingerprint: reviewedFingerprint },
+    };
+  });
+
+  await prepareDraft(bindings, "prepare-job", {
+    ...step,
+    waitForEvent,
+  } as unknown as WorkflowStep);
+
+  expect(waitForEvent).toHaveBeenCalledOnce();
+  expect(createLyrics).toHaveBeenCalledOnce();
+  expect(vi.mocked(createLyrics).mock.calls[0]?.[3].utterances).toEqual([
+    expect.objectContaining({
+      id: "clip:u:100:1",
+      speaker: "unknown",
+      speakerProfileId: "speaker-a",
+      speakerName: "あおい",
+      text: "駅に着いたよ",
+    }),
+  ]);
 });
 
 it("checks unidentified speech against one selected voice but still requires review", async () => {

@@ -98,7 +98,7 @@ export function createApi(
     } catch (error) {
       if (error instanceof ApiError) throw error;
       throw new Error(
-        "通信を確認してください。音声と歌詞は保存されています。処理状況はアプリを開き直して確認できます。",
+        "通信を確認してください。保存済みの音声と処理状況は、アプリを開き直して確認できます。",
       );
     }
   }

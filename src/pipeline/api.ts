@@ -261,6 +261,12 @@ export function createApi(
         "POST",
         { idempotencyKey, ...(musicPreferences ? { musicPreferences } : {}) },
       ),
+    recoverMusic: (draftId: string, jobId: string) =>
+      request<{ jobId: string }>(
+        `/drafts/${encodeURIComponent(draftId)}/recover-music`,
+        "POST",
+        { jobId },
+      ),
     recoverTranscript: (draftId: string) =>
       request<{ accepted: true }>(
         `/drafts/${encodeURIComponent(draftId)}/recover-transcription`,

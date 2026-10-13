@@ -128,6 +128,7 @@ export type TranscriptTimingIssue = {
   startOffset: string | null;
   endOffset: string | null;
   chunkOffsetMs: number;
+  correction?: "clamped_end";
 };
 export type AudioProcessingSummary = {
   status: "verified" | "needs_review" | "unverified";
@@ -186,7 +187,7 @@ export type Utterance = {
 };
 export type TranscriptSpeakerAssignment = {
   utteranceId: string;
-  speakerProfileId: string;
+  speakerProfileId: string | null;
 };
 
 export type MusicPreferences = {
@@ -231,6 +232,9 @@ export type DraftDocument = {
   status: DraftStatus;
   jobId: string | null;
   transcriptRecoveryAvailable?: boolean;
+  musicRecoveryAvailable?: boolean;
+  jobKind?: JobDocument["kind"];
+  jobStage?: string;
   error: string | null;
 };
 

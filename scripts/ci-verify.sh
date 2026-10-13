@@ -19,6 +19,9 @@ docker buildx build --load --platform linux/amd64 --file backend/media/Dockerfil
 speaker_model_path="$RUNNER_TEMP/wespeaker_en_voxceleb_resnet34_LM.onnx"
 docker run --rm --entrypoint cat "$media_image" /app/backend/media/models/wespeaker_en_voxceleb_resnet34_LM.onnx > "$speaker_model_path"
 export SPEAKER_MODEL_PATH="$speaker_model_path"
+segmentation_model_path="$RUNNER_TEMP/pyannote-segmentation-3.0.int8.onnx"
+docker run --rm --entrypoint cat "$media_image" /app/backend/media/models/pyannote-segmentation-3.0.int8.onnx > "$segmentation_model_path"
+export SPEAKER_SEGMENTATION_MODEL_PATH="$segmentation_model_path"
 
 npm --prefix backend run test:media
 npm run export

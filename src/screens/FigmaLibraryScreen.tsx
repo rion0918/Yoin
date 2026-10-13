@@ -26,6 +26,7 @@ import { NativeSheet } from "../components/NativeSheet";
 import { YoinLogo } from "../components/YoinLogo";
 import { figmaColors as c, formatFigmaTime } from "../design/figma";
 import { searchCompletedSongs } from "../domain/librarySearch";
+import { draftProgress } from "../pipeline/draft-progress";
 import { songDate } from "../pipeline/library";
 
 const searchIcon = require("../../assets/figma/search-icon.png");
@@ -490,7 +491,7 @@ export function FigmaLibraryScreen({
                   <View style={styles.draftText}>
                     <Text style={styles.draftTitle}>{draft.title}</Text>
                     <Text style={styles.draftMeta}>
-                      保存した会話から、続きを。
+                      {draftProgress(draft).label}
                     </Text>
                   </View>
                   <Text style={styles.chevron}>›</Text>

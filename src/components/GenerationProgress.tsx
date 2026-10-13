@@ -2,6 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { StyleSheet, Text, View } from "react-native";
 import type { LocalDraft } from "../../shared/contracts";
 import { colors } from "../design/tokens";
+import { draftProgress } from "../pipeline/draft-progress";
 import { sourceContext } from "../pipeline/library";
 import { ActionButton } from "./ActionButton";
 import { MemoryReveal } from "./MemoryReveal";
@@ -22,36 +23,7 @@ export function GenerationProgress({
   ].includes(draft.status);
   const lyrics =
     draft.status === "generating" ? (draft.lyrics?.blocks ?? []) : [];
-  const heading =
-    draft.status === "needs_reconciliation"
-      ? draft.lyrics
-        ? "曲の処理結果を、確認しています。"
-        : draft.transcriptRecoveryAvailable
-          ? "文字起こしを、復旧できます。"
-          : "文字起こしの確認が必要です。"
-      : draft.status === "failed"
-        ? "ここまでの記録は、残っています。"
-        : draft.status === "generating"
-          ? "この一日が、\n一曲になる。"
-          : draft.status === "updating_readings"
-            ? "歌詞の読みを、\n整えています。"
-            : "あの日の会話を、\n言葉にしていく。";
-  const description =
-    draft.status === "needs_reconciliation"
-      ? draft.lyrics
-        ? "曲の受付を確認できませんでした。音声と歌詞は保存されています。この状態では作り直せません。時間をおいて状況を確認してください。"
-        : draft.transcriptRecoveryAvailable
-          ? "元音声と文字起こしの応答は保存されています。保存済みの応答から文字起こしを復旧し、内容を確認した後に歌詞を作ります。Googleへの再送はしません。"
-          : "元音声は保存されています。文字起こしの処理結果を確認できません。時間をおいて記録を開き直してください。"
-      : draft.status === "failed"
-        ? "保存済みの内容は残っています。ホームからこの記録を開き、もう一度仕上げられます。"
-        : draft.status === "generating"
-          ? "確かめた歌詞から、この日の曲を作っています。"
-          : draft.status === "uploading"
-            ? "残した会話を届けています。音声は端末にも残っています。"
-            : draft.status === "updating_readings"
-              ? "編集した歌詞の読みを更新しています。終わったら確認・修正できます。"
-              : "残した会話から、歌詞を準備しています。";
+  const { label: heading, description } = draftProgress(draft);
   return (
     <View testID="generation-content">
       <Text style={styles.day}>{draft.title}</Text>

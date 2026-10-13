@@ -1049,6 +1049,15 @@ export function useSession(identity: SessionIdentity) {
           }));
         }
         const job = await api.job(jobId);
+        if (draft.jobKind !== job.kind || draft.jobStage !== job.stage)
+          await commit((current) => ({
+            ...current,
+            drafts: current.drafts.map((value) =>
+              value.id === draft.id
+                ? { ...value, jobKind: job.kind, jobStage: job.stage }
+                : value,
+            ),
+          }));
         if (job.status === "ready" && job.songId) {
           const song = await api.song(job.songId);
           await commit((current) => completeSong(current, song));
@@ -1221,6 +1230,23 @@ export function useSession(identity: SessionIdentity) {
       await audioRef.current.play(uri, startMs, endMs);
     });
   }
+  async function recoverMusic(draftId: string) {
+    return run(async () => {
+      const draft = getDraft(draftId);
+      if (!draft.jobId || !draft.musicRecoveryAvailable)
+        throw new Error("復旧できる保存済みの曲が見つかりません。");
+      const api = createApi(connectionRef.current);
+      await api.recoverMusic(draftId, draft.jobId);
+      await updateDraft(draftId, (value) => ({
+        ...value,
+        status: "generating",
+        jobStage: "recovering_music",
+        musicRecoveryAvailable: false,
+        error: null,
+      }));
+      return true;
+    });
+  }
   async function recoverTranscript(draftId: string) {
     return run(async () => {
       const draft = getDraft(draftId);
@@ -1355,6 +1381,7 @@ export function useSession(identity: SessionIdentity) {
     prepare,
     approveTranscript,
     recoverTranscript,
+    recoverMusic,
     generate,
     refresh,
     openSong,

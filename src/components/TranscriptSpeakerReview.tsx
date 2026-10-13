@@ -11,7 +11,6 @@ import { colors } from "../design/tokens";
 import { formatTime } from "../domain/session";
 import {
   canAssignTranscriptSpeaker,
-  removeTranscriptSpeakerAssignment,
   speakerLabel,
   transcriptReviewSpeakers,
   transcriptReviewSummary,
@@ -57,12 +56,12 @@ export function TranscriptSpeakerReview({
       <View style={styles.guide}>
         <Text style={styles.guideHeading}>
           {summary.assignableCount
-            ? `話者を自動判定できなかった発話が${summary.assignableCount}件あります`
-            : "発話者を判定しました"}
+            ? `${summary.assignableCount}件の発話を確認してください`
+            : "発話内容と原音を確認してください"}
         </Text>
         <Text style={styles.instructions}>
           {summary.assignableCount
-            ? "下の発話を一つずつ再生し、声がわかる行だけ録音参加者を選んでください。わからない発話は未割当のまま歌詞に含められます。"
+            ? "自動判定した名前も、発話を聴いて確認・変更してください。わからない声や重なった声は未特定に戻せます。"
             : "発話内容を確認し、下のボタンから歌詞作成へ進んでください。"}
         </Text>
         {summary.assignableCount > 0 && (
@@ -73,26 +72,24 @@ export function TranscriptSpeakerReview({
         )}
       </View>
       {draft.utterances.map((utterance) => {
-        const assignedId =
-          assignmentsByUtterance.get(utterance.id) ??
-          utterance.speakerProfileId;
-        const assignedName =
-          profilesById.get(assignedId ?? "")?.name ?? utterance.speakerName;
+        const assignedId = assignmentsByUtterance.has(utterance.id)
+          ? assignmentsByUtterance.get(utterance.id)
+          : utterance.speakerProfileId;
+        const assignedName = assignedId
+          ? (profilesById.get(assignedId)?.name ?? utterance.speakerName)
+          : undefined;
         const canAssign = canAssignTranscriptSpeaker(utterance);
         const label =
-          assignedName ??
-          (canAssign
-            ? utterance.speaker === "unknown"
-              ? "話者未特定"
-              : "名前未設定"
-            : speakerLabel(utterance));
+          assignedName ?? (canAssign ? "話者未特定" : speakerLabel(utterance));
         const selecting = selectingUtteranceId === utterance.id;
         const playing =
           sourcePlaying && activePlaybackUtteranceId === utterance.id;
         return (
           <View key={utterance.id} style={styles.row}>
             <Text style={styles.time}>
-              {utterance.timingIssues?.length
+              {utterance.timingIssues?.some(
+                (issue) => issue.correction !== "clamped_end",
+              )
                 ? "区間全体"
                 : formatTime(utterance.startMs / 1000)}
             </Text>
@@ -100,113 +97,118 @@ export function TranscriptSpeakerReview({
               <Text style={styles.text}>
                 {label} · 「{utterance.text}」
               </Text>
-              {canAssign && (
+              {utterance.timingIssues?.some(
+                (issue) => issue.correction === "clamped_end",
+              ) && (
+                <Text style={styles.instructions}>
+                  末尾の認識時刻を原音の終端に合わせています。最後の言葉を聴いて確認してください。
+                </Text>
+              )}
+              <ActionButton
+                label={
+                  playing
+                    ? "この発話の再生を止める"
+                    : `${label}の発話を再生する`
+                }
+                onPress={() => {
+                  if (playing) onStopUtterance();
+                  else onPlayUtterance(utterance);
+                }}
+                disabled={busy}
+                style={styles.listenButton}
+                testID={`listen-utterance-${utterance.id}`}
+              >
+                <Feather
+                  name={playing ? "square" : "play"}
+                  size={14}
+                  color={colors.ink}
+                />
+                <Text style={styles.listenLabel}>
+                  {playing
+                    ? "この発話を停止"
+                    : utterance.timingIssues?.some(
+                          (issue) => issue.correction !== "clamped_end",
+                        )
+                      ? "録音全体を聴く"
+                      : `${formatTime(utterance.startMs / 1000)}から聴く`}
+                </Text>
+              </ActionButton>
+              {canAssign && options.length > 0 ? (
                 <>
                   <ActionButton
-                    label={
-                      playing
-                        ? "この発話の再生を止める"
-                        : `${label}の発話を再生する`
-                    }
-                    onPress={() => {
-                      if (playing) onStopUtterance();
-                      else onPlayUtterance(utterance);
-                    }}
                     disabled={busy}
-                    style={styles.listenButton}
-                    testID={`listen-utterance-${utterance.id}`}
+                    label={
+                      assignedName
+                        ? `話者を変更（現在 ${assignedName}）`
+                        : "この発話の話者を選ぶ"
+                    }
+                    onPress={() =>
+                      setSelectingUtteranceId(selecting ? null : utterance.id)
+                    }
+                    style={styles.assignButton}
+                    testID={`assign-speaker-${utterance.id}`}
                   >
+                    <Text style={styles.assignLabel}>
+                      {assignedName ? `${assignedName} · 変更` : "話者を選ぶ"}
+                    </Text>
                     <Feather
-                      name={playing ? "square" : "play"}
-                      size={14}
+                      name={selecting ? "chevron-up" : "user-plus"}
+                      size={16}
                       color={colors.ink}
                     />
-                    <Text style={styles.listenLabel}>
-                      {playing
-                        ? "この発話を停止"
-                        : utterance.timingIssues?.length
-                          ? "録音全体を聴く"
-                          : `${formatTime(utterance.startMs / 1000)}から聴く`}
-                    </Text>
                   </ActionButton>
-                  {options.length > 0 ? (
-                    <>
-                      <ActionButton
-                        label={
-                          assignedName
-                            ? `話者を変更（現在 ${assignedName}）`
-                            : "この発話の話者を選ぶ"
-                        }
-                        onPress={() =>
-                          setSelectingUtteranceId(
-                            selecting ? null : utterance.id,
-                          )
-                        }
-                        style={styles.assignButton}
-                        testID={`assign-speaker-${utterance.id}`}
-                      >
-                        <Text style={styles.assignLabel}>
-                          {assignedName
-                            ? `${assignedName} · 変更`
-                            : "話者を選ぶ"}
-                        </Text>
-                        <Feather
-                          name={selecting ? "chevron-up" : "user-plus"}
-                          size={16}
-                          color={colors.ink}
-                        />
-                      </ActionButton>
-                      {selecting && (
-                        <View style={styles.options}>
-                          {assignmentsByUtterance.has(utterance.id) && (
-                            <ActionButton
-                              label="話者の割り当てを解除して未特定に戻す"
-                              onPress={() => {
-                                onAssignmentsChange(
-                                  removeTranscriptSpeakerAssignment(
-                                    assignments,
-                                    utterance.id,
-                                  ),
-                                );
-                                setSelectingUtteranceId(null);
-                              }}
-                              style={styles.option}
-                            >
-                              <Text style={styles.optionLabel}>
-                                未特定のままに戻す
-                              </Text>
-                            </ActionButton>
-                          )}
-                          {options.map((profile) => (
-                            <ActionButton
-                              key={profile.id}
-                              label={`${profile.name}さんに割り当てる`}
-                              onPress={() => {
-                                onAssignmentsChange(
-                                  updateTranscriptSpeakerAssignment(
-                                    assignments,
-                                    utterance.id,
-                                    profile.id,
-                                  ),
-                                );
-                                setSelectingUtteranceId(null);
-                              }}
-                              style={styles.option}
-                            >
-                              <Text style={styles.optionLabel}>
-                                {profile.name}
-                              </Text>
-                            </ActionButton>
-                          ))}
-                        </View>
+                  {selecting && (
+                    <View style={styles.options}>
+                      {assignedId && (
+                        <ActionButton
+                          disabled={busy}
+                          label="話者の割り当てを解除して未特定に戻す"
+                          onPress={() => {
+                            onAssignmentsChange(
+                              updateTranscriptSpeakerAssignment(
+                                assignments,
+                                utterance.id,
+                                null,
+                              ),
+                            );
+                            setSelectingUtteranceId(null);
+                          }}
+                          style={styles.option}
+                        >
+                          <Text style={styles.optionLabel}>
+                            未特定のままに戻す
+                          </Text>
+                        </ActionButton>
                       )}
-                    </>
-                  ) : (
-                    <Text style={styles.instructions}>
-                      この記録で選んだ参加者の声が見つからないため、話者名を付けずに進めます。
-                    </Text>
+                      {options.map((profile) => (
+                        <ActionButton
+                          disabled={busy}
+                          key={profile.id}
+                          label={`${profile.name}さんに割り当てる`}
+                          onPress={() => {
+                            onAssignmentsChange(
+                              updateTranscriptSpeakerAssignment(
+                                assignments,
+                                utterance.id,
+                                profile.id,
+                              ),
+                            );
+                            setSelectingUtteranceId(null);
+                          }}
+                          style={styles.option}
+                        >
+                          <Text style={styles.optionLabel}>{profile.name}</Text>
+                        </ActionButton>
+                      ))}
+                    </View>
                   )}
                 </>
+              ) : (
+                <Text style={styles.instructions}>
+                  {canAssign
+                    ? "参加者の声が見つからないため、話者名を付けずに進めます。"
+                    : "発話時刻を確認できない全文区間です。原音を確認し、話者名を一括で割り当てずに進めます。"}
+                </Text>
               )}
             </View>
           </View>

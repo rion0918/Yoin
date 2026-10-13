@@ -9,6 +9,7 @@ import {
   type TranscriptSpeakerAssignment,
   type Utterance,
 } from "../../shared/contracts.ts";
+import { canAssignSpeaker } from "../../shared/speaker-matching.ts";
 import type { RecorderPhase } from "../platform/types.ts";
 
 export function speakerSampleState(
@@ -109,7 +110,7 @@ export function speakerLabel(utterance: Utterance) {
 }
 
 export function canAssignTranscriptSpeaker(utterance: Utterance) {
-  return !utterance.speakerProfileId && !utterance.speakerName;
+  return canAssignSpeaker(utterance);
 }
 
 export function transcriptReviewSummary(
@@ -117,9 +118,13 @@ export function transcriptReviewSummary(
   assignments: TranscriptSpeakerAssignment[],
 ) {
   const assignable = utterances.filter(canAssignTranscriptSpeaker);
-  const assignedIds = new Set(assignments.map((item) => item.utteranceId));
+  const overrides = new Map(
+    assignments.map((item) => [item.utteranceId, item.speakerProfileId]),
+  );
   const assignedCount = assignable.filter((item) =>
-    assignedIds.has(item.id),
+    overrides.has(item.id)
+      ? overrides.get(item.id) !== null
+      : !!item.speakerProfileId,
   ).length;
   return {
     assignableCount: assignable.length,
@@ -143,7 +148,7 @@ export function transcriptReviewSpeakers(
 export function updateTranscriptSpeakerAssignment(
   assignments: TranscriptSpeakerAssignment[],
   utteranceId: string,
-  speakerProfileId: string,
+  speakerProfileId: string | null,
 ): TranscriptSpeakerAssignment[] {
   return [
     ...assignments.filter((item) => item.utteranceId !== utteranceId),

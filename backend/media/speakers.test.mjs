@@ -261,3 +261,205 @@ test("voice enrollment still rejects a sample shorter than ten seconds", {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("insufficient voiced audio is an unmatched utterance rather than a fatal job error", {
+  skip:
+    !process.env.FFMPEG_BIN ||
+    !process.env.FFPROBE_BIN ||
+    !process.env.SPEAKER_MODEL_PATH,
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "yoin-silent-test-"));
+  try {
+    const file = join(directory, "silent.wav");
+    await execFile(process.env.FFMPEG_BIN, [
+      "-nostdin",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "anullsrc=r=16000:cl=mono",
+      "-t",
+      "4",
+      file,
+    ]);
+    const bytes = await readFile(file);
+    const result = await identifySpeakers(
+      {
+        chunkUrl: "https://yoin.test/internal/chunks/job/clip/0?signature=test",
+        offsetMs: 0,
+        durationMs: 4000,
+        utterances: [
+          { id: "silent", speaker: "unknown", startMs: 0, endMs: 4000 },
+        ],
+        profiles: [],
+      },
+      {
+        origin: "https://yoin.test",
+        ffmpeg: process.env.FFMPEG_BIN,
+        ffprobe: process.env.FFPROBE_BIN,
+        fetch: async () => new Response(bytes),
+      },
+    );
+    assert.deepEqual(result.matches, [
+      { speaker: "unknown", utteranceId: "silent", speakerProfileId: null },
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("diarization aggregates same-voice short intervals and rejects mixed or overlapping utterances", async () => {
+  const { diarizedSpeakerIntervals, utteranceCluster } = await import(
+    "./speakers.mjs"
+  );
+  const segments = [
+    { start: 0, end: 1, speaker: 0 },
+    { start: 2, end: 3, speaker: 1 },
+    { start: 4, end: 5, speaker: 0 },
+    { start: 6, end: 17, speaker: 0 },
+  ];
+  assert.deepEqual(diarizedSpeakerIntervals(segments, 20000).get(0), [
+    [0, 1000],
+    [4000, 5000],
+    [6000, 17000],
+  ]);
+  assert.equal(
+    utteranceCluster({ startMs: 0, endMs: 900 }, segments, 0, 0.9),
+    0,
+  );
+  assert.equal(
+    utteranceCluster({ startMs: 0, endMs: 3000 }, segments, 0, 0.9),
+    null,
+  );
+  assert.equal(
+    utteranceCluster({ startMs: 17000, endMs: 18000 }, segments, 0, 0.9),
+    null,
+  );
+  assert.equal(
+    utteranceCluster(
+      { startMs: 0, endMs: 900 },
+      [...segments, { start: 0.3, end: 0.4, speaker: 1 }],
+      0,
+      0.9,
+    ),
+    null,
+  );
+});
+
+test("the quantized diarization model processes a quiet chunk without forcing selected profile count", {
+  skip:
+    !process.env.FFMPEG_BIN ||
+    !process.env.FFPROBE_BIN ||
+    !process.env.SPEAKER_MODEL_PATH ||
+    !process.env.SPEAKER_SEGMENTATION_MODEL_PATH,
+}, async () => {
+  const { SPEAKER_MATCHING_CONFIG } = await import(
+    "../../shared/speaker-matching.ts"
+  );
+  const directory = await mkdtemp(join(tmpdir(), "yoin-diarization-test-"));
+  try {
+    const file = join(directory, "silent.wav");
+    await execFile(process.env.FFMPEG_BIN, [
+      "-nostdin",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "anullsrc=r=16000:cl=mono",
+      "-t",
+      "4",
+      file,
+    ]);
+    const bytes = await readFile(file);
+    const result = await identifySpeakers(
+      {
+        chunkUrl: "https://yoin.test/internal/chunks/job/clip/0?signature=test",
+        offsetMs: 0,
+        durationMs: 4000,
+        utterances: [{ id: "u", speaker: "unknown", startMs: 0, endMs: 300 }],
+        profiles: [],
+        matchingConfig: SPEAKER_MATCHING_CONFIG,
+      },
+      {
+        origin: "https://yoin.test",
+        ffmpeg: process.env.FFMPEG_BIN,
+        ffprobe: process.env.FFPROBE_BIN,
+        fetch: async () => new Response(bytes),
+      },
+    );
+    assert.deepEqual(result.matches, [
+      { speaker: "unknown", utteranceId: "u", speakerProfileId: null },
+    ]);
+    assert.deepEqual(result.matchingConfig, SPEAKER_MATCHING_CONFIG);
+    const changedConfig = {
+      ...SPEAKER_MATCHING_CONFIG,
+      clusteringThreshold: 0.4,
+    };
+    const again = await identifySpeakers(
+      {
+        chunkUrl: "https://yoin.test/internal/chunks/job/clip/0?signature=test",
+        offsetMs: 0,
+        durationMs: 4000,
+        utterances: [{ id: "u", speaker: "unknown", startMs: 0, endMs: 300 }],
+        profiles: [],
+        matchingConfig: changedConfig,
+      },
+      {
+        origin: "https://yoin.test",
+        ffmpeg: process.env.FFMPEG_BIN,
+        ffprobe: process.env.FFPROBE_BIN,
+        fetch: async () => new Response(bytes),
+      },
+    );
+    assert.deepEqual(again.matches, result.matches);
+    assert.deepEqual(again.matchingConfig, changedConfig);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("overlapping transcript intervals remain unidentified even when segmentation reports one voice", async () => {
+  const { utteranceCluster } = await import("./speakers.mjs");
+  const utterance = { id: "a", startMs: 0, endMs: 900 };
+  assert.equal(
+    utteranceCluster(utterance, [{ start: 0, end: 1, speaker: 0 }], 0, 0.9, [
+      utterance,
+      { id: "b", startMs: 400, endMs: 500 },
+    ]),
+    null,
+  );
+});
+
+test("new labelled-voice pools aggregate short intervals without adding excluded overlap back", () => {
+  const utterances = Array.from({ length: 6 }, (_, i) => ({
+    speaker: "spk_1",
+    startMs: i * 3000,
+    endMs: i * 3000 + 2000,
+  }));
+  const intervals = speakerIntervals(utterances, 0, 20000, {
+    minimumIntervalMs: 200,
+    maximumGapMs: 0,
+    excludeUnknownOverlap: true,
+  });
+  assert.equal(
+    intervals.get("spk_1").reduce((sum, [a, b]) => sum + b - a, 0),
+    12000,
+  );
+  assert.deepEqual(
+    speakerIntervals(
+      [
+        { speaker: "spk_1", startMs: 0, endMs: 1000 },
+        { speaker: "unknown", startMs: 400, endMs: 600 },
+      ],
+      0,
+      2000,
+      { minimumIntervalMs: 200, maximumGapMs: 0, excludeUnknownOverlap: true },
+    ).get("spk_1"),
+    [
+      [0, 400],
+      [600, 1000],
+    ],
+  );
+});

@@ -1150,3 +1150,345 @@ it("new songs compare sung readings while preserving display lyrics and settings
     blocks: modernBlocks,
   });
 });
+
+async function seedRecoverableMusic(
+  returnedLyrics = "[[A0]][Verse 1]アノサカミチヲ マタアルコウ",
+) {
+  await prepareDraft(bindings, "prepare-job", step);
+  const modernBlocks = [
+    {
+      ...blocks[0],
+      section: "verse" as const,
+      singingText: "あのさかみちを またあるこう",
+    },
+  ];
+  const preferences = JSON.stringify({ genre: "acoustic", vocal: "auto" });
+  await bindings.DB.prepare(
+    "UPDATE lyric_revisions SET blocks_json=?,generation_version=2,music_preferences_json=? WHERE draft_id='draft' AND revision=1",
+  )
+    .bind(JSON.stringify(modernBlocks), preferences)
+    .run();
+  await bindings.DB.prepare(
+    "INSERT INTO jobs (id,owner_id,draft_id,kind,idempotency_key,fingerprint,lyric_revision,blocks_json,created_at,generation_version,music_preferences_json,status,stage,error) VALUES ('recovery-song','private-tester','draft','generate','recovery-key','approved',1,?,'2026-10-13',2,?,'needs_reconciliation','check_generated_lyrics','generated_lyrics_differ')",
+  )
+    .bind(JSON.stringify(modernBlocks), preferences)
+    .run();
+  await bindings.DB.prepare(
+    "UPDATE drafts SET job_id='recovery-song',status='needs_reconciliation',error='generated_lyrics_differ' WHERE id='draft'",
+  ).run();
+  const saved = {
+    audioId: "song-audio-recovery-song",
+    key: "songs/private-tester/recovery-song.mp3",
+    sizeBytes: 5,
+    mimeType: "audio/mpeg",
+    returnedLyrics,
+  };
+  await bindings.AUDIO.put(saved.key, new Uint8Array([73, 68, 51, 1, 2]));
+  await bindings.DB.prepare(
+    "INSERT INTO audio_objects (id,owner_id,draft_id,object_key,mime_type,size_bytes,duration_ms,kind) VALUES (?,'private-tester','draft',?,'audio/mpeg',5,0,'song')",
+  )
+    .bind(saved.audioId, saved.key)
+    .run();
+  await bindings.DB.prepare(
+    "INSERT INTO provider_attempts (id,job_id,owner_id,stage,status,amount_micros,created_at,output_key) VALUES ('music-recovery-song','recovery-song','private-tester','music','succeeded',80000,'2026-10-13','results/private-tester/music-recovery-song.json')",
+  ).run();
+  await bindings.AUDIO.put(
+    "results/private-tester/music-recovery-song.json",
+    JSON.stringify({ version: 1, value: saved, costUsd: 0.08, usage: {} }),
+  );
+  return { saved, modernBlocks };
+}
+it("recovers settled music with zero provider calls, unchanged attempts/ledger/audio and one completed song", async () => {
+  const { recoverDraftMusic } = await import("../music-recovery.ts");
+  const { saved, modernBlocks } = await seedRecoverableMusic();
+  const attempts = (
+    await bindings.DB.prepare(
+      "SELECT * FROM provider_attempts ORDER BY id",
+    ).all()
+  ).results;
+  const ledger = (
+    await bindings.DB.prepare("SELECT * FROM budget_ledger ORDER BY id").all()
+  ).results;
+  const restart = vi.fn(async () => {});
+  bindings.GENERATE = {
+    get: vi.fn(async () => ({ restart })),
+  } as unknown as Env["GENERATE"];
+  expect(
+    (await draftDocument(bindings, "draft", "private-tester"))
+      .musicRecoveryAvailable,
+  ).toBe(true);
+  await Promise.all([
+    recoverDraftMusic(bindings, "private-tester", "draft", "recovery-song"),
+    recoverDraftMusic(bindings, "private-tester", "draft", "recovery-song"),
+  ]);
+  expect(restart).toHaveBeenCalledTimes(1);
+  await generateSong(bindings, "recovery-song", step);
+  await generateSong(bindings, "recovery-song", step);
+  expect(generateMusic).not.toHaveBeenCalled();
+  expect(
+    (await ownedJob(bindings, "recovery-song", "private-tester")).status,
+  ).toBe("ready");
+  expect(
+    (await songDocument(bindings, "song-recovery-song", "private-tester"))
+      .lyrics.blocks,
+  ).toEqual(modernBlocks);
+  expect(
+    (
+      await bindings.DB.prepare(
+        "SELECT * FROM provider_attempts ORDER BY id",
+      ).all()
+    ).results,
+  ).toEqual(attempts);
+  expect(
+    (await bindings.DB.prepare("SELECT * FROM budget_ledger ORDER BY id").all())
+      .results,
+  ).toEqual(ledger);
+  const storedAudio = await bindings.AUDIO.get(saved.key);
+  if (!storedAudio) throw new Error("missing saved audio");
+  expect(new Uint8Array(await storedAudio.arrayBuffer())).toEqual(
+    new Uint8Array([73, 68, 51, 1, 2]),
+  );
+  expect(
+    await bindings.DB.prepare("SELECT COUNT(*) AS n FROM songs").first(),
+  ).toEqual({ n: 1 });
+  expect(
+    (
+      await recoverDraftMusic(
+        bindings,
+        "private-tester",
+        "draft",
+        "recovery-song",
+      )
+    ).status,
+  ).toBe(200);
+});
+for (const problem of [
+  "addition",
+  "omission",
+  "unknown",
+  "missing_audio",
+  "changed_revision",
+  "wrong_job",
+])
+  it(`refuses saved-music recovery for ${problem} without a restart or paid call`, async () => {
+    const { recoverDraftMusic } = await import("../music-recovery.ts");
+    await seedRecoverableMusic(
+      problem === "addition"
+        ? "あのさかみちを またあるこうね"
+        : problem === "omission"
+          ? "あのさかみちを"
+          : undefined,
+    );
+    if (problem === "unknown")
+      await bindings.DB.prepare(
+        "UPDATE provider_attempts SET status='needs_reconciliation' WHERE id='music-recovery-song'",
+      ).run();
+    if (problem === "missing_audio")
+      await bindings.AUDIO.delete("songs/private-tester/recovery-song.mp3");
+    if (problem === "changed_revision")
+      await bindings.DB.prepare(
+        "UPDATE drafts SET lyric_revision=2 WHERE id='draft'",
+      ).run();
+    const restart = vi.fn(async () => {});
+    bindings.GENERATE = {
+      get: vi.fn(async () => ({ restart })),
+    } as unknown as Env["GENERATE"];
+    await expect(
+      recoverDraftMusic(
+        bindings,
+        "private-tester",
+        "draft",
+        problem === "wrong_job" ? "prepare-job" : "recovery-song",
+      ),
+    ).rejects.toThrow();
+    expect(restart).not.toHaveBeenCalled();
+    expect(generateMusic).not.toHaveBeenCalled();
+    expect(
+      (await draftDocument(bindings, "draft", "private-tester"))
+        .musicRecoveryAvailable,
+    ).toBe(problem === "wrong_job");
+  });
+it("new matching jobs require review and preserve transcripts when speaker infrastructure fails", async () => {
+  const { SPEAKER_MATCHING_CONFIG } = await import(
+    "../../shared/speaker-matching.ts"
+  );
+  await freezeSpeakerSnapshot();
+  await bindings.DB.prepare(
+    "UPDATE jobs SET speaker_matching_config_json=? WHERE id='prepare-job'",
+  )
+    .bind(JSON.stringify(SPEAKER_MATCHING_CONFIG))
+    .run();
+  vi.mocked(identifySpeakersInChunk).mockRejectedValue(
+    new Error("model unavailable"),
+  );
+  const reviewStep = {
+    ...step,
+    waitForEvent: async () => {
+      expect(createLyrics).not.toHaveBeenCalled();
+      expect(
+        (await draftDocument(bindings, "draft", "private-tester")).status,
+      ).toBe("needs_audio_review");
+      expect(
+        (await draftDocument(bindings, "draft", "private-tester")).utterances,
+      ).toHaveLength(2);
+      const job = await ownedJob(bindings, "prepare-job", "private-tester");
+      expect(job.error).toBe("speaker_identification_failed");
+      return { payload: { transcriptFingerprint: job.transcript_fingerprint } };
+    },
+  } as unknown as WorkflowStep;
+  await prepareDraft(bindings, "prepare-job", reviewStep);
+  expect(createLyrics).toHaveBeenCalledOnce();
+  expect(
+    (await draftDocument(bindings, "draft", "private-tester")).status,
+  ).toBe("waiting_review");
+});
+
+it("preserves reviewed speaker corrections when workflow steps replay", async () => {
+  const { SPEAKER_MATCHING_CONFIG } = await import(
+    "../../shared/speaker-matching.ts"
+  );
+  await freezeSpeakerSnapshot();
+  await bindings.DB.prepare(
+    "UPDATE jobs SET speaker_matching_config_json=? WHERE id='prepare-job'",
+  )
+    .bind(JSON.stringify(SPEAKER_MATCHING_CONFIG))
+    .run();
+  vi.mocked(identifySpeakersInChunk).mockResolvedValue([
+    { speaker: "話者 1", speakerProfileId: "speaker-a" },
+  ]);
+  const cached = new Map<string, unknown>();
+  const replayStep = {
+    do: async (
+      name: string,
+      options: unknown,
+      callback?: () => Promise<unknown>,
+    ) => {
+      if (cached.has(name)) return cached.get(name);
+      const value = await (typeof options === "function"
+        ? options()
+        : callback?.());
+      cached.set(name, value);
+      return value;
+    },
+    waitForEvent: async () => {
+      if (cached.has("review-event")) return cached.get("review-event");
+      await bindings.DB.prepare(
+        "UPDATE utterances SET speaker_profile_id='speaker-b',speaker_name='れん'",
+      ).run();
+      const fingerprint = await sha256(
+        JSON.stringify(
+          (await draftDocument(bindings, "draft", "private-tester")).utterances,
+        ),
+      );
+      await bindings.DB.prepare(
+        "UPDATE jobs SET transcript_reviewed_at='2026-10-13',transcript_fingerprint=? WHERE id='prepare-job'",
+      )
+        .bind(fingerprint)
+        .run();
+      const event = { payload: { transcriptFingerprint: fingerprint } };
+      cached.set("review-event", event);
+      return event;
+    },
+  } as unknown as WorkflowStep;
+  await prepareDraft(bindings, "prepare-job", replayStep);
+  expect(identifySpeakersInChunk).toHaveBeenCalledTimes(2);
+  await bindings.DB.prepare(
+    "UPDATE jobs SET status='running' WHERE id='prepare-job'",
+  ).run();
+  await prepareDraft(bindings, "prepare-job", replayStep);
+  expect(identifySpeakersInChunk).toHaveBeenCalledTimes(2);
+  expect(
+    (await draftDocument(bindings, "draft", "private-tester")).utterances.every(
+      (item) => item.speakerProfileId === "speaker-b",
+    ),
+  ).toBe(true);
+});
+
+it("does not attach automatic names to overlapping Google-labelled utterances", async () => {
+  const { SPEAKER_MATCHING_CONFIG } = await import(
+    "../../shared/speaker-matching.ts"
+  );
+  await freezeSpeakerSnapshot();
+  await bindings.DB.prepare(
+    "UPDATE jobs SET speaker_matching_config_json=? WHERE id='prepare-job'",
+  )
+    .bind(JSON.stringify(SPEAKER_MATCHING_CONFIG))
+    .run();
+  await bindings.DB.prepare(
+    "UPDATE clips SET duration_ms=10000,client_duration_ms=10000 WHERE id='clip'",
+  ).run();
+  vi.mocked(inspectClip).mockResolvedValue({
+    durationMs: 10000,
+    sizeBytes: 10,
+    chunks: [
+      {
+        key: "processed/clip/0.m4a",
+        offsetMs: 0,
+        durationMs: 10000,
+        mimeType: "audio/mp4",
+      },
+    ],
+  });
+  const source = [
+    {
+      id: "clip:u:100:1",
+      clipId: "clip",
+      startMs: 100,
+      endMs: 1000,
+      speaker: "spk_1",
+      text: "こんにちは",
+    },
+    {
+      id: "clip:u:500:2",
+      clipId: "clip",
+      startMs: 500,
+      endMs: 1400,
+      speaker: "spk_2",
+      text: "そうだね",
+    },
+    {
+      id: "clip:u:2000:3",
+      clipId: "clip",
+      startMs: 2000,
+      endMs: 4000,
+      speaker: "spk_1",
+      text: "また行こう",
+    },
+  ];
+  vi.mocked(transcribeAudio).mockResolvedValue({
+    value: source,
+    costUsd: 0.01,
+    usage: {},
+  });
+  vi.mocked(identifySpeakersInChunk).mockResolvedValue([
+    { speaker: "spk_1", speakerProfileId: "speaker-a" },
+    { speaker: "spk_2", speakerProfileId: "speaker-b" },
+  ]);
+  vi.mocked(createLyrics).mockResolvedValue({
+    value: [
+      {
+        id: "a",
+        text: "また行こう",
+        sourceUtteranceIds: source.map((item) => item.id),
+      },
+    ],
+    costUsd: 0.01,
+    usage: {},
+  });
+  const reviewStep = {
+    ...step,
+    waitForEvent: async () => ({
+      payload: {
+        transcriptFingerprint: (
+          await ownedJob(bindings, "prepare-job", "private-tester")
+        ).transcript_fingerprint,
+      },
+    }),
+  } as unknown as WorkflowStep;
+  await prepareDraft(bindings, "prepare-job", reviewStep);
+  const result = (await draftDocument(bindings, "draft", "private-tester"))
+    .utterances;
+  expect(result[0]?.speakerProfileId).toBeUndefined();
+  expect(result[1]?.speakerProfileId).toBeUndefined();
+  expect(result[2]?.speakerProfileId).toBe("speaker-a");
+});

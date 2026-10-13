@@ -149,3 +149,24 @@ it("accepts the provider's internal lyric IDs and a long block within its total 
   };
   expect(validateBlocks([block], source)).toEqual([block]);
 });
+
+it("preserves a bounded end correction whose chunk offset precedes the affected utterance", () => {
+  const utterance = {
+    id: "clip:u:1502800:1",
+    clipId: "clip",
+    startMs: 1502800,
+    endMs: 1503000,
+    speaker: "unknown",
+    text: "またね",
+    timingIssues: [
+      {
+        text: "またね",
+        startOffset: "2.800s",
+        endOffset: "3.063s",
+        chunkOffsetMs: 1500000,
+        correction: "clamped_end" as const,
+      },
+    ],
+  };
+  expect(validateUtterances([utterance], "clip", 1503000)).toEqual([utterance]);
+});

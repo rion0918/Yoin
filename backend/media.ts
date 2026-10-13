@@ -198,6 +198,9 @@ export async function identifySpeakersInChunk(
     durationMs: input.durationMs,
     utterances: input.utterances,
     profiles: input.profiles,
+    ...(job.speaker_matching_config_json
+      ? { matchingConfig: JSON.parse(job.speaker_matching_config_json) }
+      : {}),
   });
   const allowed = new Set(
     input.profiles
@@ -220,6 +223,12 @@ export async function identifySpeakersInChunk(
     !Array.isArray((result as { matches?: unknown }).matches) ||
     (result as { modelVersion?: unknown }).modelVersion !==
       SPEAKER_MODEL_VERSION
+  )
+    throw new HttpError(502, "invalid_speaker_matches");
+  if (
+    job.speaker_matching_config_json &&
+    JSON.stringify((result as { matchingConfig?: unknown }).matchingConfig) !==
+      JSON.stringify(JSON.parse(job.speaker_matching_config_json))
   )
     throw new HttpError(502, "invalid_speaker_matches");
   const matches = (result as { matches: unknown[] }).matches;

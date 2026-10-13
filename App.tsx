@@ -55,6 +55,7 @@ import { TranscriptTimingNotice } from "./src/components/TranscriptTimingNotice"
 import { figmaColors } from "./src/design/figma";
 import { colors, radii } from "./src/design/tokens";
 import { formatTime } from "./src/domain/session";
+import { draftProgress } from "./src/pipeline/draft-progress";
 import {
   editLyricText,
   sourceContext,
@@ -129,9 +130,22 @@ function LibraryRoute({
       return true;
     },
     onOpenDraft: (draft: LocalDraft) => {
-      void app
-        .pauseSong()
-        .then(() => navigation.navigate("Recording", { draftId: draft.id }));
+      void app.pauseSong().then(() => {
+        if (draft.status === "local" || draft.status === "uploading")
+          navigation.navigate("Recording", { draftId: draft.id });
+        else
+          app.show({
+            kind: draft.musicRecoveryAvailable
+              ? "progress"
+              : draft.status === "waiting_review" ||
+                  (draft.status === "failed" && draft.lyrics)
+                ? "review"
+                : draft.status === "failed"
+                  ? "finish"
+                  : "progress",
+            draftId: draft.id,
+          });
+      });
     },
     onOpenSong: (song: SongDocument) => {
       if (app.activeSongId === song.id) {
@@ -251,9 +265,10 @@ function RecordingRoute({
         void app.finishRecording(draftId).then((saved) => {
           if (saved?.clips.length)
             app.show({
-              kind:
-                saved.status === "waiting_review" ||
-                (saved.status === "failed" && saved.lyrics)
+              kind: saved.musicRecoveryAvailable
+                ? "progress"
+                : saved.status === "waiting_review" ||
+                    (saved.status === "failed" && saved.lyrics)
                   ? "review"
                   : saved.status === "local" ||
                       saved.status === "uploading" ||
@@ -661,10 +676,9 @@ function SessionApp({
           )}
           {!!draft?.error && (
             <Text accessibilityLiveRegion="polite" style={extra.errorCopy}>
-              {draft.error === "provider_outcome_unconfirmed" && !draft.lyrics
-                ? draft.transcriptRecoveryAvailable
-                  ? "文字起こしを復旧できます。元音声と保存済みの応答から復旧し、内容を確認してから歌詞を作ります。"
-                  : "文字起こしの結果を確認できませんでした。元音声は保存されています。時間をおいて記録を開き直してください。"
+              {draft.status === "needs_reconciliation" ||
+              draft.status === "needs_audio_review"
+                ? draftProgress(draft).description
                 : explainError(draft.error)}
             </Text>
           )}
@@ -891,10 +905,14 @@ function SessionApp({
                         setActiveTranscriptUtteranceId(utterance.id);
                         void app.playSource(
                           utterance.clipId,
-                          utterance.timingIssues?.length
+                          utterance.timingIssues?.some(
+                            (issue) => issue.correction !== "clamped_end",
+                          )
                             ? 0
                             : utterance.startMs,
-                          utterance.timingIssues?.length
+                          utterance.timingIssues?.some(
+                            (issue) => issue.correction !== "clamped_end",
+                          )
                             ? undefined
                             : utterance.endMs,
                           draft.id,
@@ -953,6 +971,18 @@ function SessionApp({
               ) : (
                 <>
                   <GenerationProgress draft={draft} onClose={close} />
+                  {draft.musicRecoveryAvailable && (
+                    <ActionButton
+                      label="保存済み曲を復旧"
+                      onPress={() => void app.recoverMusic(draft.id)}
+                      disabled={app.busy || !draft.jobId}
+                      style={styles.primary}
+                      testID="recover-music"
+                    >
+                      <Text style={styles.primaryText}>保存済み曲を復旧</Text>
+                    </ActionButton>
+                  )}
+
                   {draft.status === "needs_reconciliation" &&
                     draft.transcriptRecoveryAvailable && (
                       <ActionButton

@@ -36,9 +36,13 @@ ADR（Architecture Decision Record）は、1つの重要な判断について、
 | [0026: 確認画面で未特定の発話へ話者を割り当てる](0026-manual-transcript-speaker-review.md) | Proposed | 2026-10-13 |
 | [0027: 話者ラベルのない発話を登録音声と個別照合する](0027-match-unlabelled-utterances.md) | Proposed | 2026-10-13 |
 
+| [0028: 原音終端を100ミリ秒以内だけ超える認識時刻を限定補正する](0028-transcript-end-boundary.md) | Proposed | 2026-10-13 |
+| [0029: 一致する保存済み曲だけを同じジョブで完成処理へ戻す](0029-saved-music-recovery.md) | Proposed | 2026-10-13 |
+| [0030: 話者ラベルのない会話を声の区間で集約して候補を確認する](0030-diarized-speaker-review.md) | Proposed | 2026-10-13 |
+
 Accepted の記録が現在の採用済み判断です。Proposed は提案段階であり、採用済みとして扱いません。記録の追加・状態変更時には、この一覧も更新します。
 
-番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0027-<short-title>.md` です。
+番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0031-<short-title>.md` です。
 
 ## 作業前に読む
 

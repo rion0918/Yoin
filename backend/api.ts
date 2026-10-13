@@ -10,6 +10,10 @@ import {
 } from "../shared/contracts.ts";
 import { hasReadyReadings, isLyricSection } from "../shared/music.ts";
 import {
+  canAssignSpeaker,
+  SPEAKER_MATCHING_CONFIG,
+} from "../shared/speaker-matching.ts";
+import {
   assertAccountActive,
   finishOwnedUpload,
   getAccount,
@@ -36,6 +40,7 @@ import {
   serveMediaChunk,
   uploadMediaChunk,
 } from "./media-api.ts";
+import { recoverDraftMusic } from "./music-recovery.ts";
 import { privacyPolicyHtml } from "./privacy-policy.ts";
 import { runtimeCallback } from "./runtime-api.ts";
 import { authenticate, sha256, signedUrl } from "./security.ts";
@@ -432,6 +437,16 @@ async function prepare(
           musicPreferences: validateMusicPreferences(body.musicPreferences),
         };
   const sourceClips = await clips(env, draftId, owner);
+  const previous = await env.DB.prepare(
+    "SELECT speaker_matching_config_json FROM jobs WHERE owner_id = ? AND kind = 'prepare' AND idempotency_key = ?",
+  )
+    .bind(owner, text(body.idempotencyKey, 128))
+    .first<{ speaker_matching_config_json: string | null }>();
+  const matchingConfig = previous
+    ? previous.speaker_matching_config_json
+      ? JSON.parse(previous.speaker_matching_config_json)
+      : null
+    : SPEAKER_MATCHING_CONFIG;
   const draft = await ownedDraft(env, draftId, owner);
   const speakerProfileIds = JSON.parse(
     draft.speaker_profile_ids_json,
@@ -454,6 +469,7 @@ async function prepare(
         draftId,
         clips: sourceClips.map((clip) => clip.id),
         speakerProfileIds,
+        ...(matchingConfig ? { speakerMatchingConfig: matchingConfig } : {}),
         ...(settings
           ? {
               musicPreferences: settings.musicPreferences,
@@ -664,15 +680,15 @@ async function reviewTranscript(
   if (alreadyReviewed) {
     if (currentFingerprint !== job.transcript_fingerprint)
       throw new HttpError(409, "transcript_review_conflict");
-    if (job.status === "needs_audio_review") {
-      if (
-        !matchesSavedTranscriptAssignments(
-          assignments,
-          current,
-          job.speaker_snapshot_json,
-        )
+    if (
+      !matchesSavedTranscriptAssignments(
+        assignments,
+        current,
+        job.speaker_snapshot_json,
       )
-        throw new HttpError(409, "transcript_review_conflict");
+    )
+      throw new HttpError(409, "transcript_review_conflict");
+    if (job.status === "needs_audio_review") {
       const workflow = await env.PREPARE.get(job.id);
       await workflow.sendEvent({
         type: "audio-transcript-review",
@@ -695,39 +711,51 @@ async function reviewTranscript(
     selectedIds.length ? selectedIds : snapshot.map((profile) => profile.id),
   );
   const profileById = new Map(snapshot.map((profile) => [profile.id, profile]));
-  const assignmentsByUtterance = new Map<string, RegisteredSpeaker>();
+  const assignmentsByUtterance = new Map<string, RegisteredSpeaker | null>();
   for (const assignment of assignments) {
     const target = current.find((item) => item.id === assignment.utteranceId);
-    const profile = profileById.get(assignment.speakerProfileId);
+    const profile =
+      assignment.speakerProfileId === null
+        ? null
+        : profileById.get(assignment.speakerProfileId);
     if (
       !target ||
-      target.speakerProfileId ||
-      target.speakerName ||
-      !profile ||
-      !allowedIds.has(profile.id)
+      !canAssignSpeaker(target) ||
+      (assignment.speakerProfileId !== null &&
+        (!profile || !allowedIds.has(profile.id)))
     )
       throw new HttpError(422, "invalid_speaker_assignment");
-    assignmentsByUtterance.set(assignment.utteranceId, profile);
+    assignmentsByUtterance.set(assignment.utteranceId, profile ?? null);
   }
   const reviewed = current.map((item) => {
+    if (!assignmentsByUtterance.has(item.id)) return item;
     const profile = assignmentsByUtterance.get(item.id);
+    const { speakerProfileId: _id, speakerName: _name, ...unassigned } = item;
     return profile
       ? {
           ...item,
           speakerProfileId: profile.id,
           speakerName: profile.name,
         }
-      : item;
+      : unassigned;
   });
   const reviewedFingerprint = await sha256(JSON.stringify(reviewed));
   const assignmentsJson = JSON.stringify(
     Object.fromEntries(
       assignments.map((assignment) => {
         const profile = assignmentsByUtterance.get(assignment.utteranceId);
-        if (!profile) throw new HttpError(422, "invalid_speaker_assignment");
+        const target = current.find(
+          (item) => item.id === assignment.utteranceId,
+        );
+        if (!target) throw new HttpError(422, "invalid_speaker_assignment");
         return [
           assignment.utteranceId,
-          { speakerProfileId: profile.id, speakerName: profile.name },
+          {
+            speakerProfileId: profile?.id ?? null,
+            speakerName: profile?.name ?? null,
+            priorProfile: target.speakerProfileId ?? null,
+            priorName: target.speakerName ?? null,
+          },
         ];
       }),
     ),
@@ -735,7 +763,7 @@ async function reviewTranscript(
   const statements = assignments.length
     ? [
         env.DB.prepare(
-          "UPDATE utterances AS target SET speaker_profile_id = json_extract(assignment.value, '$.speakerProfileId'), speaker_name = json_extract(assignment.value, '$.speakerName') FROM json_each(?) AS assignment WHERE assignment.key = target.id AND target.speaker_profile_id IS NULL AND target.speaker_name IS NULL AND target.clip_id IN (SELECT id FROM clips WHERE draft_id = ? AND owner_id = ?) AND EXISTS (SELECT 1 FROM jobs WHERE id = ? AND owner_id = ? AND status = 'needs_audio_review' AND transcript_fingerprint = ?) AND (SELECT COUNT(*) FROM json_each(?) AS requested JOIN utterances AS eligible ON eligible.id = requested.key WHERE eligible.speaker_profile_id IS NULL AND eligible.speaker_name IS NULL AND eligible.clip_id IN (SELECT id FROM clips WHERE draft_id = ? AND owner_id = ?)) = ?",
+          "UPDATE utterances AS target SET speaker_profile_id = json_extract(assignment.value, '$.speakerProfileId'), speaker_name = json_extract(assignment.value, '$.speakerName') FROM json_each(?) AS assignment WHERE assignment.key = target.id AND target.speaker_profile_id IS json_extract(assignment.value, '$.priorProfile') AND target.speaker_name IS json_extract(assignment.value, '$.priorName') AND target.clip_id IN (SELECT id FROM clips WHERE draft_id = ? AND owner_id = ?) AND EXISTS (SELECT 1 FROM jobs WHERE id = ? AND owner_id = ? AND status = 'needs_audio_review' AND transcript_fingerprint = ? AND transcript_reviewed_at IS NULL AND EXISTS (SELECT 1 FROM drafts WHERE id = jobs.draft_id AND owner_id = jobs.owner_id AND job_id = jobs.id)) AND (SELECT COUNT(*) FROM json_each(?) AS requested JOIN utterances AS eligible ON eligible.id = requested.key WHERE eligible.speaker_profile_id IS json_extract(requested.value, '$.priorProfile') AND eligible.speaker_name IS json_extract(requested.value, '$.priorName') AND eligible.clip_id IN (SELECT id FROM clips WHERE draft_id = ? AND owner_id = ?)) = ?",
         ).bind(
           assignmentsJson,
           draftId,
@@ -752,7 +780,7 @@ async function reviewTranscript(
     : [];
   statements.push(
     env.DB.prepare(
-      "UPDATE jobs SET transcript_fingerprint = ?, transcript_reviewed_at = COALESCE(transcript_reviewed_at, ?) WHERE id = ? AND owner_id = ? AND status = 'needs_audio_review' AND transcript_fingerprint = ? AND (SELECT COUNT(*) FROM json_each(?) AS assignment JOIN utterances AS target ON target.id = assignment.key WHERE target.speaker_profile_id = json_extract(assignment.value, '$.speakerProfileId') AND target.speaker_name = json_extract(assignment.value, '$.speakerName') AND target.clip_id IN (SELECT id FROM clips WHERE draft_id = ? AND owner_id = ?)) = ?",
+      "UPDATE jobs SET transcript_fingerprint = ?, transcript_reviewed_at = COALESCE(transcript_reviewed_at, ?) WHERE id = ? AND owner_id = ? AND status = 'needs_audio_review' AND transcript_fingerprint = ? AND transcript_reviewed_at IS NULL AND EXISTS (SELECT 1 FROM drafts WHERE id = jobs.draft_id AND owner_id = jobs.owner_id AND job_id = jobs.id) AND (SELECT COUNT(*) FROM json_each(?) AS assignment JOIN utterances AS target ON target.id = assignment.key WHERE target.speaker_profile_id IS json_extract(assignment.value, '$.speakerProfileId') AND target.speaker_name IS json_extract(assignment.value, '$.speakerName') AND target.clip_id IN (SELECT id FROM clips WHERE draft_id = ? AND owner_id = ?)) = ?",
     ).bind(
       reviewedFingerprint,
       new Date().toISOString(),
@@ -791,7 +819,10 @@ function transcriptSpeakerAssignments(
     const assignment = item as Record<string, unknown>;
     return {
       utteranceId: text(assignment.utteranceId, 200),
-      speakerProfileId: id(assignment.speakerProfileId),
+      speakerProfileId:
+        assignment.speakerProfileId === null
+          ? null
+          : id(assignment.speakerProfileId),
     };
   });
   if (
@@ -813,6 +844,15 @@ function matchesSavedTranscriptAssignments(
   const profiles = new Map(snapshot.map((profile) => [profile.id, profile]));
   const currentById = new Map(current.map((item) => [item.id, item]));
   return assignments.every((assignment) => {
+    if (assignment.speakerProfileId === null) {
+      const utterance = currentById.get(assignment.utteranceId);
+      return (
+        !!utterance &&
+        !utterance.speakerProfileId &&
+        !utterance.speakerName &&
+        canAssignSpeaker(utterance)
+      );
+    }
     const profile = profiles.get(assignment.speakerProfileId);
     const utterance = currentById.get(assignment.utteranceId);
     return (
@@ -880,7 +920,7 @@ async function submitJob(
   }
   const result = await env.DB.batch([
     env.DB.prepare(
-      "INSERT OR IGNORE INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, song_title, created_at, speaker_snapshot_json, generation_version, music_preferences_json) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND owner_id = ? AND status = ? AND job_id IS ? AND lyric_revision = ?) AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
+      "INSERT OR IGNORE INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, lyric_revision, blocks_json, song_title, created_at, speaker_snapshot_json, generation_version, music_preferences_json, speaker_matching_config_json) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND owner_id = ? AND status = ? AND job_id IS ? AND lyric_revision = ?) AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
     ).bind(
       jobId,
       owner,
@@ -895,6 +935,7 @@ async function submitJob(
       speakerSnapshot,
       settings?.generationVersion ?? 1,
       settings ? JSON.stringify(settings.musicPreferences) : null,
+      kind === "prepare" ? JSON.stringify(SPEAKER_MATCHING_CONFIG) : null,
       draftId,
       owner,
       draft.status,
@@ -1003,7 +1044,7 @@ export async function handleRequest(request: Request, env: Env) {
     if (path === "/drafts" && request.method === "POST")
       return await createDraft(request, env, owner);
     const draft =
-      /^\/drafts\/([a-zA-Z0-9_-]+)(?:\/(clips|prepare|lyrics|generate|readings|transcript-review|recover-transcription))?$/.exec(
+      /^\/drafts\/([a-zA-Z0-9_-]+)(?:\/(clips|prepare|lyrics|generate|readings|transcript-review|recover-transcription|recover-music))?$/.exec(
         path,
       );
     if (draft) {
@@ -1021,6 +1062,10 @@ export async function handleRequest(request: Request, env: Env) {
         return await updateReadings(request, env, owner, draftId);
       if (draft[2] === "generate" && request.method === "POST")
         return await generate(request, env, owner, draftId);
+      if (draft[2] === "recover-music" && request.method === "POST") {
+        const body = await json(request);
+        return await recoverDraftMusic(env, owner, draftId, id(body.jobId));
+      }
       if (draft[2] === "recover-transcription" && request.method === "POST")
         return await recoverDraftTranscript(env, owner, draftId);
       if (draft[2] === "transcript-review" && request.method === "POST")

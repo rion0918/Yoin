@@ -134,6 +134,7 @@ export function singingLyricsMatch(
     value
       .normalize("NFKC")
       .replace(/^\s*Lyrics:\s*/im, "")
+      .replace(/\[\[[A-Z]\d+\]\]/g, "")
       .replace(
         /\[(?:Verse(?: \d+)?|Pre-Chorus|Chorus|Bridge|Intro|Outro)\]/g,
         "",
@@ -146,5 +147,21 @@ export function singingLyricsMatch(
     hasReadyReadings(blocks) &&
     clean(blocks.map((block) => block.singingText).join("\n")) ===
       clean(returned)
+  );
+}
+
+export function displayLyricsMatch(blocks: LyricBlock[], returned: string) {
+  const clean = (value: string) =>
+    value
+      .replace(/\[\[[A-Z]\d+\]\]/g, "")
+      .replace(
+        /\[(?:Verse(?: \d+)?|Pre-Chorus|Chorus|Bridge|Intro|Outro)\]/g,
+        "",
+      )
+      .replace(/^[\s#*>-]+/gm, "")
+      .replace(/[\p{P}\p{S}\s]/gu, "")
+      .normalize("NFKC");
+  return (
+    clean(blocks.map((block) => block.text).join("\n")) === clean(returned)
   );
 }

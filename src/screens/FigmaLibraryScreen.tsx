@@ -19,6 +19,7 @@ import {
 import type {
   LocalDraft,
   LocalSpeakerProfile,
+  PendingMemoryDeletion,
   SongDocument,
 } from "../../shared/contracts";
 import { ActionButton, useReducedMotion } from "../components/ActionButton";
@@ -40,6 +41,7 @@ type Props = {
   playing: boolean;
   position: number;
   busy: boolean;
+  pendingMemoryDeletions: PendingMemoryDeletion[];
   onNewRecording: (speakerProfileIds: string[]) => Promise<boolean>;
   onSettings: () => void;
   onSpeakerSettings: () => void;
@@ -47,6 +49,8 @@ type Props = {
   onOpenSong: (song: SongDocument) => void;
   onToggleSong: (song: SongDocument) => void;
   onSeek: (seconds: number) => void;
+  onDeleteMemory: (draftId: string, title: string) => void;
+  onRetryMemoryDeletion: (draftId: string) => void;
 };
 
 export function FigmaLibraryScreen({
@@ -57,6 +61,7 @@ export function FigmaLibraryScreen({
   playing,
   position,
   busy,
+  pendingMemoryDeletions,
   onNewRecording,
   onSettings,
   onSpeakerSettings,
@@ -64,6 +69,8 @@ export function FigmaLibraryScreen({
   onOpenSong,
   onToggleSong,
   onSeek,
+  onDeleteMemory,
+  onRetryMemoryDeletion,
 }: Props) {
   const insets = useSafeAreaInsets();
   const reduced = useReducedMotion();
@@ -81,6 +88,11 @@ export function FigmaLibraryScreen({
   const [startingRecording, setStartingRecording] = useState(false);
   const startingRecordingRef = useRef(false);
   const [selectionError, setSelectionError] = useState<string | null>(null);
+  const [memoryAction, setMemoryAction] = useState<{
+    draftId: string;
+    title: string;
+    stage: "menu" | "confirm";
+  } | null>(null);
   const [selectedSpeakerProfileIds, setSelectedSpeakerProfileIds] = useState<
     string[]
   >([]);
@@ -408,6 +420,24 @@ export function FigmaLibraryScreen({
                       <Image source={playControl} style={styles.playIcon} />
                     )}
                   </ActionButton>
+                  <ActionButton
+                    label={`${song.title}のメニュー`}
+                    onPress={() =>
+                      setMemoryAction({
+                        draftId: song.draftId,
+                        title: song.title,
+                        stage: "menu",
+                      })
+                    }
+                    style={styles.moreButton}
+                    testID={`song-actions-${song.id}`}
+                  >
+                    <Feather
+                      name="more-horizontal"
+                      size={20}
+                      color={c.secondary}
+                    />
+                  </ActionButton>
                 </View>
                 {isPlaying && (
                   <View style={styles.playingInformation}>
@@ -481,26 +511,142 @@ export function FigmaLibraryScreen({
             <View style={styles.drafts}>
               <Text style={styles.sectionHeading}>制作中の思い出</Text>
               {drafts.map((draft) => (
-                <ActionButton
+                <View
                   key={draft.id}
-                  label={`${draft.title}の続きを開く`}
-                  onPress={() => onOpenDraft(draft)}
                   style={styles.draftRow}
                   testID={`draft-${draft.id}`}
                 >
-                  <View style={styles.draftText}>
-                    <Text style={styles.draftTitle}>{draft.title}</Text>
-                    <Text style={styles.draftMeta}>
-                      {draftProgress(draft).label}
-                    </Text>
-                  </View>
-                  <Text style={styles.chevron}>›</Text>
-                </ActionButton>
+                  <ActionButton
+                    label={`${draft.title}の続きを開く`}
+                    onPress={() => onOpenDraft(draft)}
+                    style={styles.draftOpen}
+                    testID={`open-draft-${draft.id}`}
+                  >
+                    <View style={styles.draftText}>
+                      <Text style={styles.draftTitle}>{draft.title}</Text>
+                      <Text style={styles.draftMeta}>
+                        {draftProgress(draft).label}
+                      </Text>
+                    </View>
+                    <Text style={styles.chevron}>›</Text>
+                  </ActionButton>
+                  <ActionButton
+                    label={`${draft.title}のメニュー`}
+                    onPress={() =>
+                      setMemoryAction({
+                        draftId: draft.id,
+                        title: draft.title,
+                        stage: "menu",
+                      })
+                    }
+                    style={styles.moreButton}
+                    testID={`draft-actions-${draft.id}`}
+                  >
+                    <Feather
+                      name="more-horizontal"
+                      size={20}
+                      color={c.secondary}
+                    />
+                  </ActionButton>
+                </View>
+              ))}
+            </View>
+          )}
+          {pendingMemoryDeletions.length > 0 && (
+            <View
+              style={styles.deletionNotices}
+              testID="memory-deletion-status"
+            >
+              {pendingMemoryDeletions.map((deletion) => (
+                <View key={deletion.draftId} style={styles.deletionNotice}>
+                  <Text style={styles.deletionNoticeText}>
+                    {deletion.status === "failed" ||
+                    deletion.status === "local_failed"
+                      ? "思い出の削除を完了できませんでした。"
+                      : deletion.status === "requesting"
+                        ? "削除状況を確認しています。"
+                        : "思い出を削除しています。"}
+                  </Text>
+                  {deletion.status !== "deleting" && (
+                    <ActionButton
+                      label="思い出の削除を再試行"
+                      onPress={() => onRetryMemoryDeletion(deletion.draftId)}
+                      style={styles.retryDeletion}
+                      testID={`retry-memory-deletion-${deletion.draftId}`}
+                    >
+                      <Text style={styles.retryDeletionText}>再試行</Text>
+                    </ActionButton>
+                  )}
+                </View>
               ))}
             </View>
           )}
         </Animated.View>
       </ScrollView>
+      <NativeSheet
+        open={memoryAction !== null}
+        onClose={() => setMemoryAction(null)}
+        title={
+          memoryAction?.stage === "confirm"
+            ? "思い出を削除しますか？"
+            : "思い出の操作"
+        }
+        description={
+          memoryAction?.stage === "confirm"
+            ? `${memoryAction.title}の元の会話と歌詞も削除され、元に戻せません。`
+            : (memoryAction?.title ?? "思い出を選んでください。")
+        }
+        closeDisabled={busy}
+        snap={0.42}
+        footer={
+          memoryAction?.stage === "confirm" ? (
+            <View style={styles.deleteFooter}>
+              <ActionButton
+                label="削除をキャンセル"
+                onPress={() => setMemoryAction(null)}
+                disabled={busy}
+                style={styles.cancelDeletion}
+                testID="cancel-memory-deletion"
+              >
+                <Text style={styles.cancelDeletionText}>キャンセル</Text>
+              </ActionButton>
+              <ActionButton
+                label="思い出を削除する"
+                onPress={() => {
+                  if (!memoryAction) return;
+                  const target = memoryAction;
+                  setMemoryAction(null);
+                  onDeleteMemory(target.draftId, target.title);
+                }}
+                disabled={busy}
+                style={styles.confirmDeletion}
+                testID="confirm-memory-deletion"
+              >
+                <Text style={styles.confirmDeletionText}>削除する</Text>
+              </ActionButton>
+            </View>
+          ) : (
+            <ActionButton
+              label="思い出の削除を選ぶ"
+              onPress={() =>
+                setMemoryAction((current) =>
+                  current ? { ...current, stage: "confirm" } : null,
+                )
+              }
+              style={styles.confirmDeletion}
+              testID="open-memory-deletion-confirmation"
+            >
+              <Text style={styles.confirmDeletionText}>削除</Text>
+            </ActionButton>
+          )
+        }
+      >
+        {memoryAction?.stage === "confirm" && (
+          <Text style={styles.deletionExplanation}>
+            完成した曲、元の会話、文字起こし、歌詞、位置情報を削除します。この操作は取り消せません。
+          </Text>
+        )}
+      </NativeSheet>
       {!searchOpen && (
         <View style={[styles.dock, { bottom: Math.max(insets.bottom, 16) }]}>
           <ActionButton
@@ -719,6 +865,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  moreButton: {
+    width: 36,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   playIcon: { width: 44, height: 44 },
   pauseButton: { backgroundColor: c.rose, borderRadius: 22 },
   pauseText: {
@@ -761,9 +913,64 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
   },
+  draftOpen: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+  },
   draftText: { flex: 1, gap: 4 },
   draftTitle: { color: c.primary, fontSize: 17, lineHeight: 27 },
   draftMeta: { color: c.secondary, fontSize: 13, lineHeight: 21 },
+  deletionNotices: { gap: 8, marginTop: 16 },
+  deletionNotice: {
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: c.raised,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  deletionNoticeText: {
+    flex: 1,
+    color: c.secondary,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  retryDeletion: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: c.surface,
+  },
+  retryDeletionText: { color: c.primary, fontSize: 13, fontWeight: "600" },
+  deleteFooter: { flexDirection: "row", gap: 10 },
+  cancelDeletion: {
+    flex: 1,
+    minHeight: 50,
+    borderRadius: 16,
+    backgroundColor: c.raised,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cancelDeletionText: { color: c.primary, fontSize: 15, fontWeight: "600" },
+  confirmDeletion: {
+    minHeight: 50,
+    borderRadius: 16,
+    paddingHorizontal: 20,
+    backgroundColor: c.rose,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  confirmDeletionText: { color: c.onRose, fontSize: 15, fontWeight: "700" },
+  deletionExplanation: {
+    color: c.secondary,
+    fontSize: 14,
+    lineHeight: 22,
+    paddingBottom: 12,
+  },
   dock: { position: "absolute", left: 16, right: 16 },
   recordButton: {
     height: 56,

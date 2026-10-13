@@ -77,6 +77,11 @@ const explanations: Record<string, string> = {
   audio_review_expired:
     "音声と文字起こしは保存されています。確認期限が過ぎました。もう一度処理を始めると、保存済みの文字起こしを使います。",
   draft_not_ready: "この記録は処理中です。保存した生成状況を確認してください。",
+  memory_deleted: "この思い出は削除中か、すでに削除されています。",
+  memory_deletion_failed:
+    "思い出を削除できませんでした。時間をおいて再試行してください。",
+  memory_local_deletion_failed:
+    "端末内の思い出を削除できませんでした。空き容量や保存状態を確認して再試行してください。",
   invalid_speaker_selection:
     "選んだ友達を確認できません。友達の声の登録を確認して、もう一度選んでください。",
   speaker_selection_unavailable:

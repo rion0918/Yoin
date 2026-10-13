@@ -36,6 +36,11 @@
       "name": "yoin-delete-account",
       "binding": "DELETE_ACCOUNT",
       "class_name": "DeleteAccountWorkflow"
+    },
+    {
+      "name": "yoin-delete-memory",
+      "binding": "DELETE_MEMORY",
+      "class_name": "DeleteMemoryWorkflow"
     }
   ],
   "observability": { "enabled": false }

@@ -102,7 +102,7 @@ export async function paidCall<T>(
         output.costUsd < 0
       )
         throw new ReconciliationError();
-      await finishOwnedUpload(env, job.owner_id, outputKey);
+      await finishOwnedUpload(env, job.owner_id, outputKey, job.draft_id);
       return await settle(env, job, attemptId, outputKey, reserve, output);
     }
     throw new ReconciliationError();
@@ -155,7 +155,7 @@ export async function paidCall<T>(
           httpMetadata: { contentType: "application/json" },
         },
       );
-    await finishOwnedUpload(env, job.owner_id, outputKey);
+    await finishOwnedUpload(env, job.owner_id, outputKey, job.draft_id);
     return await settle(env, job, attemptId, outputKey, reserve, output);
   } catch (error) {
     if (

@@ -16,7 +16,14 @@ const code = transpileModule(
 function storageHarness(fail = false) {
   const sourceUri = "file://cache/source.wav";
   const files = new Set([sourceUri]);
+  const pendingLocations = new Map<
+    string,
+    { draftId: string; sample: string }
+  >();
   const events: string[] = [];
+  let failFileDelete = false;
+  let failSqlite = false;
+  let libraryDocument: string | null = null;
   let start: () => void = () => {};
   const started = new Promise<void>((resolve) => {
     start = resolve;
@@ -28,10 +35,22 @@ function storageHarness(fail = false) {
   let operation: Promise<void> = Promise.resolve();
   class Directory {
     uri: string;
-    constructor(...parts: string[]) {
-      this.uri = parts.map((part) => part.replace(/\/$/, "")).join("/");
+    exists = true;
+    constructor(...parts: (string | Directory)[]) {
+      this.uri = parts
+        .map((part) =>
+          typeof part === "string"
+            ? part.replace(/\/$/, "")
+            : part.uri.replace(/\/$/, ""),
+        )
+        .join("/");
     }
     create() {}
+    list() {
+      return [...files]
+        .filter((uri) => uri.startsWith(`${this.uri.replace(/\/$/, "")}/`))
+        .map((uri) => new File(uri));
+    }
   }
   class File {
     uri: string;
@@ -44,7 +63,11 @@ function storageHarness(fail = false) {
     get exists() {
       return files.has(this.uri);
     }
+    get name() {
+      return this.uri.split("/").at(-1) ?? "";
+    }
     delete() {
+      if (failFileDelete) throw new Error("delete_failed");
       events.push("delete");
       files.delete(this.uri);
     }
@@ -75,6 +98,61 @@ function storageHarness(fail = false) {
       uid: string,
       clip: contracts.SavedRecording,
     ): Promise<contracts.SavedRecording>;
+    accountAudioDirectory(uid: string): Directory;
+    saveLibrary(uid: string, state: contracts.LibraryDocument): Promise<void>;
+    savePendingBackgroundLocationSample(
+      uid: string,
+      draftId: string,
+      clipId: string,
+      sample: contracts.LocationSample,
+    ): Promise<void>;
+    eraseMemory(
+      uid: string,
+      draftId: string,
+      clipIds: string[],
+      localUris: string[],
+    ): Promise<void>;
+  };
+  const transaction = {
+    async getFirstAsync(sql: string, ...values: unknown[]) {
+      if (sql.includes("FROM library"))
+        return libraryDocument ? { document: libraryDocument } : null;
+      if (sql.includes("FROM pending_location_samples")) {
+        const value = pendingLocations.get(String(values[0]));
+        return value && value.draftId === values[1]
+          ? { sample: value.sample }
+          : null;
+      }
+      return null;
+    },
+    async runAsync(sql: string, ...values: unknown[]) {
+      if (failSqlite) throw new Error("sqlite_failed");
+      if (sql.startsWith("INSERT INTO library"))
+        libraryDocument = String(values[0]);
+      else if (sql.startsWith("INSERT OR IGNORE INTO pending_location_samples"))
+        pendingLocations.set(String(values[0]), {
+          draftId: String(values[1]),
+          sample: String(values[2]),
+        });
+      else if (sql.startsWith("DELETE FROM pending_location_samples")) {
+        for (const [clipId, value] of pendingLocations)
+          if (value.draftId === values[0]) pendingLocations.delete(clipId);
+      }
+    },
+  };
+  const database = {
+    async execAsync() {},
+    async withExclusiveTransactionAsync(
+      work: (tx: typeof transaction) => Promise<void>,
+    ) {
+      if (failSqlite) throw new Error("sqlite_failed");
+      await work(transaction);
+    },
+    async getFirstAsync(sql: string) {
+      return sql.includes("FROM library") && libraryDocument
+        ? { document: libraryDocument }
+        : null;
+    },
   };
   runInNewContext(code, {
     exports: storage,
@@ -93,11 +171,12 @@ function storageHarness(fail = false) {
           File,
           Directory,
           Paths: {
-            cache: { uri: "file://cache/" },
-            document: "file://documents/",
+            cache: new Directory("file://cache/"),
+            document: new Directory("file://documents/"),
           },
         };
-      if (name === "expo-sqlite") return {};
+      if (name === "expo-sqlite")
+        return { openDatabaseAsync: async () => database };
       if (name === "../../shared/contracts") return contracts;
       if (name === "../pipeline/location") return location;
       if (name === "./account") return account;
@@ -115,6 +194,13 @@ function storageHarness(fail = false) {
     finish,
     get operation() {
       return operation;
+    },
+    pendingLocations,
+    setFileDeletionFailure(value: boolean) {
+      failFileDelete = value;
+    },
+    setSqliteFailure(value: boolean) {
+      failSqlite = value;
     },
   };
 }
@@ -179,3 +265,99 @@ for (const action of ["copy", "move"] as const) {
     });
   }
 }
+
+test("memory cleanup removes local files and blocks delayed location samples, then retries file failures", async () => {
+  const h = storageHarness();
+  const directory = h.storage.accountAudioDirectory("user");
+  const targetFile = `${directory.uri}/clip.m4a`;
+  const otherFile = `${directory.uri}/other.m4a`;
+  const recoveryFile = "file://documents/recording-recovery.m4a";
+  h.files.add(targetFile);
+  h.files.add(otherFile);
+  h.files.add(recoveryFile);
+  const sample: contracts.LocationSample = {
+    latitude: 35,
+    longitude: 139,
+    accuracy: 5,
+    timestamp: 1_800_000_000_000,
+  };
+  await h.storage.savePendingBackgroundLocationSample(
+    "user",
+    "target",
+    "clip",
+    sample,
+  );
+  await h.storage.saveLibrary("user", {
+    ...contracts.emptyLibrary(),
+    pendingMemoryDeletions: [
+      {
+        draftId: "target",
+        clipIds: ["clip"],
+        localUris: [recoveryFile],
+        remote: true,
+        status: "deleting",
+      },
+    ],
+  });
+  await h.storage.eraseMemory("user", "target", ["clip"], [recoveryFile]);
+  await h.storage.savePendingBackgroundLocationSample(
+    "user",
+    "target",
+    "clip",
+    sample,
+  );
+  assert.equal(h.files.has(targetFile), false);
+  assert.equal(h.files.has(recoveryFile), false);
+  assert.equal(h.files.has(otherFile), true);
+  assert.equal(h.pendingLocations.size, 0);
+
+  h.files.add(targetFile);
+  h.setFileDeletionFailure(true);
+  await assert.rejects(
+    h.storage.eraseMemory("user", "target", ["clip"], [recoveryFile]),
+    /delete_failed/,
+  );
+  h.setFileDeletionFailure(false);
+  await h.storage.eraseMemory("user", "target", ["clip"], [recoveryFile]);
+  assert.equal(h.files.has(targetFile), false);
+  assert.equal(h.files.has(otherFile), true);
+});
+
+test("persisted server deletion tombstones block delayed background location samples", async () => {
+  const h = storageHarness();
+  const sample: contracts.LocationSample = {
+    latitude: 35,
+    longitude: 139,
+    accuracy: 5,
+    timestamp: 1_800_000_000_000,
+  };
+  await h.storage.saveLibrary("user", {
+    ...contracts.emptyLibrary(),
+    serverDeletedMemoryIds: ["target"],
+  });
+
+  await h.storage.savePendingBackgroundLocationSample(
+    "user",
+    "target",
+    "clip",
+    sample,
+  );
+
+  assert.equal(h.pendingLocations.size, 0);
+});
+
+test("memory cleanup preserves audio files when SQLite fails and can be retried", async () => {
+  const h = storageHarness();
+  const directory = h.storage.accountAudioDirectory("user");
+  const targetFile = `${directory.uri}/clip.m4a`;
+  h.files.add(targetFile);
+  h.setSqliteFailure(true);
+  await assert.rejects(
+    h.storage.eraseMemory("user", "target", ["clip"], []),
+    /sqlite_failed/,
+  );
+  assert.equal(h.files.has(targetFile), true);
+  h.setSqliteFailure(false);
+  await h.storage.eraseMemory("user", "target", ["clip"], []);
+  assert.equal(h.files.has(targetFile), false);
+});

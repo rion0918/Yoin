@@ -84,7 +84,7 @@ export async function runtimeCallback(
     await fixedBody(request, size, (body) =>
       env.AUDIO.put(key, body, { httpMetadata: { contentType: "audio/mpeg" } }),
     );
-    await finishOwnedUpload(env, job.owner_id, key);
+    await finishOwnedUpload(env, job.owner_id, key, job.draft_id);
     await env.DB.prepare(
       "INSERT OR IGNORE INTO audio_objects (id, owner_id, draft_id, object_key, mime_type, size_bytes, duration_ms, kind) VALUES (?, ?, ?, ?, 'audio/mpeg', ?, 0, 'song')",
     )
@@ -103,6 +103,6 @@ export async function runtimeCallback(
       httpMetadata: { contentType: "application/json" },
     }),
   );
-  await finishOwnedUpload(env, job.owner_id, key);
+  await finishOwnedUpload(env, job.owner_id, key, job.draft_id);
   return Response.json({ key });
 }

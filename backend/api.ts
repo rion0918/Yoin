@@ -15,9 +15,13 @@ import {
 } from "../shared/speaker-matching.ts";
 import {
   assertAccountActive,
+  assertMemoryActive,
   finishOwnedUpload,
   getAccount,
+  memoryDeletionIds,
+  memoryDeletionStatus,
   requestDeletion,
+  requestMemoryDeletion,
 } from "./accounts.ts";
 import {
   audioClip,
@@ -66,18 +70,23 @@ async function launch(env: Env, job: JobRow) {
   const workflow = job.kind === "generate" ? env.GENERATE : env.PREPARE;
   try {
     await assertAccountActive(env, job.owner_id);
+    await assertMemoryActive(env, job.owner_id, job.draft_id);
     const instance = await workflow.create({
       id: job.id,
       params: { jobId: job.id },
     });
     try {
       await assertAccountActive(env, job.owner_id);
+      await assertMemoryActive(env, job.owner_id, job.draft_id);
     } catch (error) {
       await instance.delete();
       throw error;
     }
   } catch (error) {
-    if (error instanceof HttpError && error.code === "account_deleted")
+    if (
+      error instanceof HttpError &&
+      (error.code === "account_deleted" || error.code === "memory_deleted")
+    )
       throw error;
     // A durable queued row remains available if dispatch fails or the instance already exists.
   }
@@ -282,7 +291,7 @@ async function saveLocationRoute(
     if (existing?.customMetadata?.routeHash !== hash)
       throw new HttpError(409, "location_route_conflict");
   }
-  await finishOwnedUpload(env, owner, key);
+  await finishOwnedUpload(env, owner, key, clip.draft_id);
   const summary = locationSummary(payload, key);
   const result = await env.DB.prepare(
     "UPDATE clips SET location_summary_json = ?, location_hash = ? WHERE id = ? AND owner_id = ? AND location_hash IS NULL AND NOT EXISTS (SELECT 1 FROM accounts WHERE uid = ? AND status != 'active')",
@@ -400,7 +409,7 @@ async function completeUpload(
       clip.object_key,
       clip.upload_id,
     ).complete(stored.parts);
-  await finishOwnedUpload(env, owner, clip.object_key);
+  await finishOwnedUpload(env, owner, clip.object_key, clip.draft_id);
   if (object.size !== clip.size_bytes)
     throw new HttpError(422, "upload_size_mismatch");
   await env.DB.batch([
@@ -1041,6 +1050,14 @@ export async function handleRequest(request: Request, env: Env) {
     await assertAccountActive(env, owner);
     const speakerResponse = await handleSpeakers(request, env, owner, path);
     if (speakerResponse) return speakerResponse;
+    const deletionStatus = /^\/drafts\/([a-zA-Z0-9_-]+)\/deletion$/.exec(path);
+    if (deletionStatus && request.method === "GET")
+      return await memoryDeletionStatus(env, owner, id(deletionStatus[1]));
+    if (path === "/memory-deletions" && request.method === "GET")
+      return await memoryDeletionIds(env, owner);
+    const deletionRequest = /^\/drafts\/([a-zA-Z0-9_-]+)$/.exec(path);
+    if (deletionRequest && request.method === "DELETE")
+      return await requestMemoryDeletion(env, owner, id(deletionRequest[1]));
     if (path === "/drafts" && request.method === "POST")
       return await createDraft(request, env, owner);
     const draft =
@@ -1097,7 +1114,7 @@ export async function handleRequest(request: Request, env: Env) {
     if (path === "/songs" && request.method === "GET") {
       const rows = (
         await env.DB.prepare(
-          "SELECT id FROM songs WHERE owner_id = ? ORDER BY created_at DESC",
+          "SELECT s.id FROM songs s WHERE s.owner_id = ? AND NOT EXISTS (SELECT 1 FROM memory_deletions m WHERE m.owner_id = s.owner_id AND m.draft_id = s.draft_id) ORDER BY s.created_at DESC",
         )
           .bind(owner)
           .all<{ id: string }>()

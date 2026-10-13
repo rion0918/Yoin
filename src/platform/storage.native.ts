@@ -68,6 +68,23 @@ export async function savePendingBackgroundLocationSample(
   if (!validLocationSample(sample)) return;
   const db = await getDatabase(uid);
   await db.withExclusiveTransactionAsync(async (transaction) => {
+    const stored = await transaction.getFirstAsync<{ document: string }>(
+      "SELECT document FROM library WHERE id = 1",
+    );
+    if (stored) {
+      try {
+        const library = JSON.parse(stored.document) as LibraryDocument;
+        if (
+          library.serverDeletedMemoryIds?.includes(draftId) ||
+          library.pendingMemoryDeletions?.some(
+            (deletion) => deletion.draftId === draftId,
+          )
+        )
+          return;
+      } catch {
+        return;
+      }
+    }
     await transaction.runAsync(
       "INSERT OR IGNORE INTO pending_location_samples (clip_id, draft_id, sample) VALUES (?, ?, ?)",
       clipId,
@@ -302,6 +319,46 @@ export async function eraseLibrary(uid: string): Promise<void> {
       accountStorageKey(uid),
     );
     if (directory.exists) directory.delete();
+  });
+}
+export function eraseMemory(
+  uid: string,
+  draftId: string,
+  clipIds: string[],
+  localUris: string[],
+): Promise<void> {
+  return writes.run(async () => {
+    const db = await getDatabase(uid);
+    await db.withExclusiveTransactionAsync(async (transaction) => {
+      await transaction.runAsync(
+        "DELETE FROM pending_location_samples WHERE draft_id = ?",
+        draftId,
+      );
+    });
+
+    const accountDirectory = new Directory(
+      Paths.document,
+      "accounts",
+      accountStorageKey(uid),
+    );
+    const audioDirectory = new Directory(accountDirectory, "audio");
+    if (audioDirectory.exists) {
+      const filePrefixes = clipIds.map((clipId) => `${clipId}.`);
+      for (const entry of audioDirectory.list()) {
+        if (
+          entry instanceof File &&
+          filePrefixes.some((prefix) => entry.name.startsWith(prefix))
+        )
+          entry.delete();
+      }
+    }
+
+    const documentPrefix = `${Paths.document.uri.replace(/\/$/, "")}/`;
+    for (const uri of new Set(localUris)) {
+      if (!uri.startsWith(documentPrefix)) continue;
+      const file = new File(uri);
+      if (file.exists) file.delete();
+    }
   });
 }
 export async function readSpeakerAudio(uri: string): Promise<Uint8Array> {

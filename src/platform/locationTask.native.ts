@@ -77,6 +77,13 @@ export async function clearActiveLocationCapture(
   });
 }
 
+export async function eraseMemoryLocationCapture(uid: string, draftId: string) {
+  const capture = await getActiveLocationCapture();
+  if (!capture || capture.uid !== uid || capture.draftId !== draftId) return;
+  await stopBackgroundLocationTask();
+  await clearActiveLocationCapture({ uid, clipId: capture.clipId });
+}
+
 export async function stopBackgroundLocationTask() {
   if (await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK))
     await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);

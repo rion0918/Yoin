@@ -12,6 +12,7 @@ import {
   editLyricBlock,
   markLocationUploaded,
   mergeRemoteDraft,
+  removeMemoryReferences,
   restoreRecording,
   sourceContext,
   sourcePlaybackRange,
@@ -248,6 +249,77 @@ test("only a real completed song removes its draft and repeated completion is ha
   assert.equal(completed.songs[0].durationMs, 113400);
   assert.deepEqual(completeSong(completed, song), completed);
   assert.equal(state.drafts.length, 1);
+});
+
+test("memory deletion removes only the target draft, song, recovery references, and location route", () => {
+  const otherDraft = createLocalDraft("d2", "2026-10-04T14:59:59Z");
+  const state = {
+    ...saved(),
+    drafts: [...saved().drafts, otherDraft],
+    songs: [
+      {
+        id: "s1",
+        draftId: "d1",
+        title: "旅",
+        createdAt: "2026-10-03T14:59:59Z",
+        clips: [clip],
+        utterances: [],
+        lyrics: { revision: 1, blocks: [] },
+        audioId: "audio-s1",
+        durationMs: 1000,
+      },
+    ],
+    recoveryFiles: [
+      {
+        draftId: "d1",
+        clipId: "c2",
+        recordedAt: clip.recordedAt ?? "",
+        timezone: clip.timezone,
+        localUri: "file:///audio/recovery.m4a",
+      },
+      {
+        draftId: "d2",
+        clipId: "c3",
+        recordedAt: clip.recordedAt ?? "",
+        timezone: clip.timezone,
+        localUri: "file:///audio/other.m4a",
+      },
+    ],
+    locationRoutes: [
+      {
+        route: {
+          version: 1 as const,
+          draftId: "d1",
+          clipId: "c1",
+          recordedAt: "2026-10-03T14:59:59Z",
+          endedAt: "2026-10-03T15:00:00Z",
+          segments: [],
+        },
+        summary: {
+          startLocation: null,
+          endLocation: null,
+          representativeLocations: [],
+          places: [],
+        },
+        uploaded: false,
+      },
+    ],
+  };
+
+  const deleted = removeMemoryReferences(state, "d1");
+
+  assert.deepEqual(
+    deleted.drafts.map((draft) => draft.id),
+    ["d2"],
+  );
+  assert.deepEqual(deleted.songs, []);
+  assert.deepEqual(
+    deleted.recoveryFiles?.flatMap((file) =>
+      file.purpose === "speaker" ? [] : [file.draftId],
+    ),
+    ["d2"],
+  );
+  assert.deepEqual(deleted.locationRoutes, []);
 });
 
 test("clip playback spans the full recording while lyric playback keeps its source interval", () => {

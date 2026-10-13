@@ -321,7 +321,10 @@ export function validateUtterances(
               typeof issue.startOffset !== "string") ||
             (issue.endOffset !== null && typeof issue.endOffset !== "string") ||
             !Number.isSafeInteger(issue.chunkOffsetMs) ||
-            issue.chunkOffsetMs !== startMs,
+            (issue.correction === "clamped_end"
+              ? issue.chunkOffsetMs < 0 || issue.chunkOffsetMs > startMs
+              : issue.correction !== undefined ||
+                issue.chunkOffsetMs !== startMs),
         ))
     )
       throw new HttpError(422, "invalid_transcript_timing_issues");

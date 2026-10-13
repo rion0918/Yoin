@@ -1379,11 +1379,15 @@ it("freezes preparation settings and rejects a changed retry without a second jo
   ).toBe(409);
   expect(
     await bindings.DB.prepare(
-      "SELECT generation_version, music_preferences_json FROM jobs WHERE idempotency_key = 'prepare-modern'",
+      "SELECT generation_version, music_preferences_json, speaker_matching_config_json FROM jobs WHERE idempotency_key = 'prepare-modern'",
     ).first(),
   ).toEqual({
     generation_version: 2,
     music_preferences_json: JSON.stringify(body.musicPreferences),
+    speaker_matching_config_json: JSON.stringify(
+      (await import("../../shared/speaker-matching.ts"))
+        .SPEAKER_MATCHING_CONFIG,
+    ),
   });
 });
 
@@ -1442,4 +1446,202 @@ it("recovers a lost completed reading acknowledgement using the original revisio
       ).first()
     )?.n,
   ).toBe(1);
+});
+
+it("corrects and clears automatic speaker candidates atomically and rejects a competing review", async () => {
+  await request("/drafts", "POST", {
+    id: draftId,
+    title: "会話",
+    createdAt: "2026-10-13T00:00:00Z",
+  });
+  await bindings.DB.prepare(
+    "INSERT INTO clips (id,draft_id,owner_id,mime_type,size_bytes,duration_ms,timezone,object_key,status) VALUES ('review-clip',?,'private-tester','audio/mp4',10,10000,'Asia/Tokyo','originals/private-tester/review-clip','uploaded')",
+  )
+    .bind(draftId)
+    .run();
+  for (const id of ["u1", "u2"])
+    await bindings.DB.prepare(
+      "INSERT INTO utterances (id,clip_id,start_ms,end_ms,speaker,text,speaker_profile_id,speaker_name) VALUES (?,'review-clip',100,500,'unknown','こんにちは','a','あおい')",
+    )
+      .bind(id)
+      .run();
+  const { utterances } = await import("../database.ts");
+  const fingerprint = await sha256(
+    JSON.stringify(await utterances(bindings, draftId, "private-tester")),
+  );
+  const snapshot = [
+    { id: "a", name: "あおい", modelVersion: "model", embedding: [1] },
+    { id: "b", name: "れん", modelVersion: "model", embedding: [1] },
+  ];
+  await bindings.DB.prepare(
+    "INSERT INTO jobs (id,owner_id,draft_id,kind,idempotency_key,fingerprint,status,stage,transcript_fingerprint,speaker_snapshot_json,created_at) VALUES ('review-job','private-tester',?,'prepare','review','input','needs_audio_review','review_audio',?,?,'2026-10-13')",
+  )
+    .bind(draftId, fingerprint, JSON.stringify(snapshot))
+    .run();
+  await bindings.DB.prepare(
+    "UPDATE drafts SET job_id='review-job',status='needs_audio_review' WHERE id=?",
+  )
+    .bind(draftId)
+    .run();
+  const sendEvent = vi.fn(async () => {});
+  bindings.PREPARE = {
+    get: vi.fn(async () => ({ sendEvent })),
+  } as unknown as Env["PREPARE"];
+  const body = {
+    jobId: "review-job",
+    transcriptFingerprint: fingerprint,
+    assignments: [
+      { utteranceId: "u1", speakerProfileId: "b" },
+      { utteranceId: "u2", speakerProfileId: null },
+    ],
+  };
+  expect(
+    (await request(`/drafts/${draftId}/transcript-review`, "POST", body))
+      .status,
+  ).toBe(202);
+  const result = await utterances(bindings, draftId, "private-tester");
+  expect(result[0]?.speakerProfileId).toBe("b");
+  expect(result[1]?.speakerProfileId).toBeUndefined();
+  expect(
+    (await request(`/drafts/${draftId}/transcript-review`, "POST", body))
+      .status,
+  ).toBe(200);
+  expect(
+    (
+      await request(`/drafts/${draftId}/transcript-review`, "POST", {
+        ...body,
+        assignments: [{ utteranceId: "u1", speakerProfileId: "a" }],
+      })
+    ).status,
+  ).toBe(409);
+  await bindings.DB.prepare(
+    "UPDATE utterances SET speaker='話者未確認',timing_issues_json=? WHERE id='u2'",
+  )
+    .bind(
+      JSON.stringify([
+        {
+          text: "語",
+          startOffset: "3.9s",
+          endOffset: "1.1s",
+          chunkOffsetMs: 0,
+        },
+      ]),
+    )
+    .run();
+  const nextFingerprint = await sha256(
+    JSON.stringify(await utterances(bindings, draftId, "private-tester")),
+  );
+  await bindings.DB.prepare(
+    "UPDATE jobs SET transcript_reviewed_at=NULL,transcript_fingerprint=? WHERE id='review-job'",
+  )
+    .bind(nextFingerprint)
+    .run();
+  for (const profile of ["a", null])
+    expect(
+      (
+        await request(`/drafts/${draftId}/transcript-review`, "POST", {
+          jobId: "review-job",
+          transcriptFingerprint: nextFingerprint,
+          assignments: [{ utteranceId: "u2", speakerProfileId: profile }],
+        })
+      ).status,
+    ).toBe(422);
+  const competing = await Promise.all(
+    ["a", "b"].map((profile) =>
+      request(`/drafts/${draftId}/transcript-review`, "POST", {
+        jobId: "review-job",
+        transcriptFingerprint: nextFingerprint,
+        assignments: [{ utteranceId: "u1", speakerProfileId: profile }],
+      }),
+    ),
+  );
+  expect(competing.map((response) => response.status).sort()).toEqual([
+    202, 409,
+  ]);
+});
+
+it("exposes recovery and restarts only the same settled music job through the owned API", async () => {
+  const block = {
+    id: "verse",
+    text: "朝の道",
+    sourceUtteranceIds: ["clip:u:0:1"],
+    section: "verse",
+    singingText: "あさのみち",
+  };
+  await seedReview(block);
+  const preferences = JSON.stringify({ genre: "acoustic", vocal: "auto" });
+  await bindings.DB.prepare(
+    "UPDATE lyric_revisions SET generation_version=2,music_preferences_json=?",
+  )
+    .bind(preferences)
+    .run();
+  await bindings.DB.prepare(
+    "INSERT INTO jobs (id,owner_id,draft_id,kind,idempotency_key,fingerprint,status,stage,error,lyric_revision,blocks_json,generation_version,music_preferences_json,created_at) VALUES ('music-recover','private-tester',?,'generate','key','approved','needs_reconciliation','check_generated_lyrics','generated_lyrics_differ',1,?,2,?,'2026-10-13')",
+  )
+    .bind(draftId, JSON.stringify([block]), preferences)
+    .run();
+  await bindings.DB.prepare(
+    "UPDATE drafts SET job_id='music-recover',status='needs_reconciliation' WHERE id=?",
+  )
+    .bind(draftId)
+    .run();
+  const saved = {
+    audioId: "music-audio",
+    key: "songs/private-tester/music-recover.mp3",
+    mimeType: "audio/mpeg",
+    sizeBytes: 3,
+    returnedLyrics: "[[A0]]あさのみち",
+  };
+  await bindings.AUDIO.put(saved.key, new Uint8Array([1, 2, 3]));
+  await bindings.DB.prepare(
+    "INSERT INTO audio_objects (id,owner_id,draft_id,object_key,mime_type,size_bytes,duration_ms,kind) VALUES ('music-audio','private-tester',?,?,'audio/mpeg',3,0,'song')",
+  )
+    .bind(draftId, saved.key)
+    .run();
+  await bindings.DB.prepare(
+    "INSERT INTO provider_attempts (id,job_id,owner_id,stage,status,amount_micros,created_at) VALUES ('music-music-recover','music-recover','private-tester','music','succeeded',80000,'2026-10-13')",
+  ).run();
+  await bindings.AUDIO.put(
+    "results/private-tester/music-music-recover.json",
+    JSON.stringify({ version: 1, value: saved, costUsd: 0.08 }),
+  );
+  const restart = vi.fn(async () => {});
+  bindings.GENERATE = {
+    get: vi.fn(async () => ({ restart })),
+  } as unknown as Env["GENERATE"];
+  expect(await (await request(`/drafts/${draftId}`)).json()).toMatchObject({
+    jobKind: "generate",
+    jobStage: "check_generated_lyrics",
+    musicRecoveryAvailable: true,
+  });
+  for (let i = 0; i < 2; i++)
+    expect(
+      (
+        await request(`/drafts/${draftId}/recover-music`, "POST", {
+          jobId: "music-recover",
+        })
+      ).status,
+    ).toBe(202);
+  expect(restart).toHaveBeenCalledOnce();
+  expect(
+    (
+      await request(`/drafts/${draftId}/recover-music`, "POST", {
+        jobId: "other-job",
+      })
+    ).status,
+  ).toBe(404);
+  await bindings.DB.prepare(
+    "UPDATE jobs SET status='needs_reconciliation' WHERE id='music-recover'",
+  ).run();
+  await bindings.DB.prepare(
+    "UPDATE provider_attempts SET status='needs_reconciliation' WHERE id='music-music-recover'",
+  ).run();
+  expect(
+    (
+      await request(`/drafts/${draftId}/recover-music`, "POST", {
+        jobId: "music-recover",
+      })
+    ).status,
+  ).toBe(409);
+  expect(restart).toHaveBeenCalledOnce();
 });

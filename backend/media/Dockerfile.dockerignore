@@ -12,3 +12,4 @@
 !shared/
 !shared/contracts.ts
 !shared/music.ts
+!shared/speaker-matching.ts

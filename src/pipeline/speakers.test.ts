@@ -237,7 +237,7 @@ test("transcript review only offers ready participants selected for that recordi
   );
 });
 
-test("transcript review allows assigning anonymous labels but preserves identified voices", () => {
+test("transcript review allows correcting automatic labels", () => {
   assert.equal(
     speakerUi.canAssignTranscriptSpeaker({
       id: "anonymous",
@@ -260,7 +260,7 @@ test("transcript review allows assigning anonymous labels but preserves identifi
       speakerName: "あおい",
       text: "桜が咲いてるね",
     }),
-    false,
+    true,
   );
 });
 
@@ -297,7 +297,7 @@ test("transcript review summary reports assigned and unresolved speaker utteranc
       ],
       [{ utteranceId: "unknown-1", speakerProfileId: "speaker-b" }],
     ),
-    { assignableCount: 2, assignedCount: 1, unresolvedCount: 1 },
+    { assignableCount: 3, assignedCount: 2, unresolvedCount: 1 },
   );
 });
 
@@ -327,5 +327,53 @@ test("clearing a transcript speaker assignment leaves other choices untouched", 
   assert.deepEqual(
     speakerUi.removeTranscriptSpeakerAssignment(assignments, "clip:u:100:1"),
     [{ utteranceId: "clip:u:200:1", speakerProfileId: "speaker-b" }],
+  );
+});
+
+test("clearing an automatic candidate is an explicit null override and unverified whole chunks cannot be assigned", () => {
+  const utterance = {
+    id: "u",
+    clipId: "c",
+    startMs: 0,
+    endMs: 1000,
+    speaker: "unknown",
+    speakerProfileId: "a",
+    speakerName: "A",
+    text: "そうだね",
+  };
+  const assignments = speakerUi.updateTranscriptSpeakerAssignment(
+    [],
+    "u",
+    null,
+  );
+  assert.deepEqual(assignments, [{ utteranceId: "u", speakerProfileId: null }]);
+  assert.equal(
+    speakerUi.transcriptReviewSummary([utterance], assignments).unresolvedCount,
+    1,
+  );
+  assert.equal(
+    speakerUi.canAssignTranscriptSpeaker({
+      ...utterance,
+      speaker: "話者未確認",
+      timingIssues: [
+        { text: "語", startOffset: null, endOffset: null, chunkOffsetMs: 0 },
+      ],
+    }),
+    false,
+  );
+  assert.equal(
+    speakerUi.canAssignTranscriptSpeaker({
+      ...utterance,
+      timingIssues: [
+        {
+          text: "語",
+          startOffset: "0s",
+          endOffset: "1.063s",
+          chunkOffsetMs: 0,
+          correction: "clamped_end",
+        },
+      ],
+    }),
+    true,
   );
 });

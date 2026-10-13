@@ -12,7 +12,9 @@ export function TranscriptTimingNotice({
   return (
     <View style={styles.notice}>
       <Text style={styles.text}>
-        認識時刻に不整合があります。全文と原音を保持しています。該当する音声区間全体が出典です。個々の発話時刻と話者名は未確認です。
+        {issues.every((issue) => issue.correction === "clamped_end")
+          ? "末尾の認識時刻が原音の終端を100ミリ秒以内だけ超えたため、終端に合わせました。元の認識時刻を保持しています。該当する発話を聴いて確認してください。"
+          : "認識時刻に不整合があります。全文と原音を保持しています。該当する音声区間全体が出典です。個々の発話時刻と話者名は未確認です。"}
       </Text>
       {issues.map((issue) => (
         <Text key={JSON.stringify(issue)} style={styles.text}>

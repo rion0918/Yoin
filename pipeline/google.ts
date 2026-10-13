@@ -401,8 +401,13 @@ export function parseTranscription(
     );
   const content = outputs(raw, stage);
   const timingIssues: TranscriptTimingIssue[] = [];
-  const words: { start: number; end: number; speaker: string; text: string }[] =
-    [];
+  const words: {
+    start: number;
+    end: number;
+    speaker: string;
+    text: string;
+    issue?: TranscriptTimingIssue;
+  }[] = [];
   for (const block of content) {
     if (block.type !== "text") continue;
     if (!Array.isArray(block.annotations)) continue;
@@ -425,11 +430,29 @@ export function parseTranscription(
         "invalid_response",
         raw,
       );
+      const clamped =
+        inspectedDurationMs !== undefined &&
+        start !== null &&
+        end !== null &&
+        start < inspectedDurationMs &&
+        end > inspectedDurationMs &&
+        end - inspectedDurationMs <= 100 &&
+        end >= start;
+      const issue: TranscriptTimingIssue | undefined = clamped
+        ? {
+            text: word.text,
+            startOffset: String(word.start_offset),
+            endOffset: String(word.end_offset),
+            chunkOffsetMs: options.offsetMs,
+            correction: "clamped_end",
+          }
+        : undefined;
       const validTiming =
         start !== null &&
         end !== null &&
+        start < (inspectedDurationMs ?? MAX_TRANSCRIBE_CHUNK_MS) &&
         end >= start &&
-        end <= (inspectedDurationMs ?? MAX_TRANSCRIBE_CHUNK_MS);
+        (end <= (inspectedDurationMs ?? MAX_TRANSCRIBE_CHUNK_MS) || clamped);
       if (!validTiming) {
         valid(
           inspectedDurationMs !== undefined,
@@ -447,7 +470,13 @@ export function parseTranscription(
         });
         continue;
       }
-      words.push({ start, end, speaker, text: word.text });
+      words.push({
+        start,
+        end: clamped ? inspectedDurationMs : end,
+        speaker,
+        text: word.text,
+        issue,
+      });
     }
   }
   if (timingIssues.length) {
@@ -501,6 +530,8 @@ export function parseTranscription(
           : "";
       previous.text += space + word.text;
       previous.endMs = Math.max(previous.endMs, endMs);
+      if (word.issue)
+        previous.timingIssues = [...(previous.timingIssues ?? []), word.issue];
     } else
       utterances.push({
         id: `${options.clipId}:u:${startMs}:${utterances.length + 1}`,
@@ -509,6 +540,7 @@ export function parseTranscription(
         endMs,
         speaker: word.speaker,
         text: word.text,
+        ...(word.issue ? { timingIssues: [word.issue] } : {}),
       });
   }
   const { costUsd, costSource } = tokenCost(raw, stage);

@@ -8,8 +8,13 @@ import {
   type LyricBlock,
   MAX_AUDIO_MS,
   type RegisteredSpeaker,
+  type SpeakerMatch,
 } from "../shared/contracts.ts";
-import { hasReadyReadings, singingLyricsMatch } from "../shared/music.ts";
+import {
+  displayLyricsMatch,
+  hasReadyReadings,
+  singingLyricsMatch,
+} from "../shared/music.ts";
 import { resourceOwner } from "./accounts.ts";
 import { analyzeTranscriptCoverage } from "./audio-coverage.ts";
 import {
@@ -22,6 +27,7 @@ import {
   utterances,
 } from "./database.ts";
 import { identifySpeakersInChunk, inspectClip, probeSong } from "./media.ts";
+import { readSavedMusic } from "./music-recovery.ts";
 import { paidCall, RESERVATION_USD } from "./paid.ts";
 import type { SavedMusic } from "./providers.ts";
 import {
@@ -277,37 +283,52 @@ export async function prepareDraft(
       ? (JSON.parse(job.speaker_snapshot_json) as RegisteredSpeaker[])
       : [];
     let source = await utterances(env, job.draft_id, job.owner_id);
-    if (snapshot.length) {
+    let speakerIssue: string | null = null;
+    if (snapshot.length && !job.transcript_reviewed_at) {
+      await setJob(env, job, "running", "identifying_speakers");
       for (const { clip, inspection } of inspected) {
         for (const [index, chunk] of inspection.chunks.entries()) {
           const candidates = source.filter(
             (item) =>
-              !item.timingIssues?.length &&
+              (!item.timingIssues?.length ||
+                item.timingIssues.every(
+                  (issue) => issue.correction === "clamped_end",
+                )) &&
               item.clipId === clip.id &&
               item.startMs >= chunk.offsetMs &&
               item.endMs <= chunk.offsetMs + chunk.durationMs,
           );
           const matchable = candidates;
           if (!matchable.length) continue;
-          const matches = await step.do(
-            `identify-${clip.id}-${chunk.offsetMs}`,
-            mediaStep,
-            () =>
-              identifySpeakersInChunk(env, job, clip, {
-                index,
-                offsetMs: chunk.offsetMs,
-                durationMs: chunk.durationMs,
-                utterances: matchable.map(
-                  ({ id, speaker, startMs, endMs }) => ({
-                    id,
-                    speaker,
-                    startMs,
-                    endMs,
-                  }),
-                ),
-                profiles: snapshot,
-              }),
-          );
+          let matches: SpeakerMatch[];
+          try {
+            matches = await step.do(
+              `identify-${clip.id}-${chunk.offsetMs}`,
+              mediaStep,
+              () =>
+                identifySpeakersInChunk(env, job, clip, {
+                  index,
+                  offsetMs: chunk.offsetMs,
+                  durationMs: chunk.durationMs,
+                  utterances: matchable.map(
+                    ({ id, speaker, startMs, endMs }) => ({
+                      id,
+                      speaker,
+                      startMs,
+                      endMs,
+                    }),
+                  ),
+                  profiles: snapshot,
+                }),
+            );
+          } catch (error) {
+            if (!job.speaker_matching_config_json) throw error;
+            speakerIssue =
+              error instanceof HttpError
+                ? error.message
+                : "speaker_identification_failed";
+            continue;
+          }
           const assignments = new Map<
             string,
             {
@@ -322,9 +343,20 @@ export async function prepareDraft(
               (item) => item.id === match.speakerProfileId,
             );
             if (!profile) throw new HttpError(502, "invalid_speaker_matches");
-            const targets = match.utteranceId
-              ? matchable.filter((item) => item.id === match.utteranceId)
-              : matchable.filter((item) => item.speaker === match.speaker);
+            const targets = (
+              match.utteranceId
+                ? matchable.filter((item) => item.id === match.utteranceId)
+                : matchable.filter((item) => item.speaker === match.speaker)
+            ).filter(
+              (target) =>
+                !job.speaker_matching_config_json ||
+                !matchable.some(
+                  (other) =>
+                    other.id !== target.id &&
+                    other.startMs < target.endMs &&
+                    other.endMs > target.startMs,
+                ),
+            );
             for (const target of targets)
               assignments.set(target.id, {
                 utteranceId: target.id,
@@ -346,7 +378,9 @@ export async function prepareDraft(
     }
     if (!source.length) throw new HttpError(422, "no_speech_detected");
     let needsAudioReview =
-      recoveringTranscript || source.some((item) => item.speaker === "unknown");
+      Boolean(job.speaker_matching_config_json) ||
+      recoveringTranscript ||
+      source.some((item) => item.speaker === "unknown");
     for (const { clip, inspection } of inspected) {
       const activityRanges = inspection.chunks.flatMap(
         (chunk) => chunk.activityRanges ?? [],
@@ -361,7 +395,12 @@ export async function prepareDraft(
         durationMs: inspection.durationMs,
         activityRanges,
         utterances: source.filter(
-          (item) => item.clipId === clip.id && !item.timingIssues?.length,
+          (item) =>
+            item.clipId === clip.id &&
+            (!item.timingIssues?.length ||
+              item.timingIssues.every(
+                (issue) => issue.correction === "clamped_end",
+              )),
         ),
       });
       const durations = [
@@ -412,7 +451,13 @@ export async function prepareDraft(
       .bind(transcriptFingerprint, job.id, job.owner_id)
       .run();
     if (needsAudioReview) {
-      await setJob(env, job, "needs_audio_review", "review_audio");
+      await setJob(
+        env,
+        job,
+        "needs_audio_review",
+        "review_audio",
+        speakerIssue,
+      );
       let approvedFingerprint: string;
       try {
         const review = await step.waitForEvent<{
@@ -435,7 +480,13 @@ export async function prepareDraft(
       const reviewedSource = await utterances(env, job.draft_id, job.owner_id);
       const reviewedFingerprint = await sha256(JSON.stringify(reviewedSource));
       if (reviewedFingerprint !== approvedFingerprint) {
-        await setJob(env, job, "needs_audio_review", "review_audio");
+        await setJob(
+          env,
+          job,
+          "needs_audio_review",
+          "review_audio",
+          speakerIssue,
+        );
         return;
       }
       source = reviewedSource;
@@ -559,17 +610,7 @@ export async function updateLyricReadings(
   }
 }
 
-export function lyricsMatch(blocks: LyricBlock[], returned: string) {
-  const clean = (value: string) =>
-    value
-      .replace(/\[[^\]]*\]/g, "")
-      .replace(/^[\s#*>-]+/gm, "")
-      .replace(/[\p{P}\p{S}\s]/gu, "")
-      .normalize("NFKC");
-  return (
-    clean(blocks.map((block) => block.text).join("\n")) === clean(returned)
-  );
-}
+export const lyricsMatch = displayLyricsMatch;
 
 export async function generateSong(
   env: Env,
@@ -584,6 +625,7 @@ export async function generateSong(
   if (job.kind !== "generate" || !job.blocks_json || !job.lyric_revision)
     throw new HttpError(409, "wrong_workflow_kind");
   if (["ready", "needs_reconciliation"].includes(job.status)) return;
+  const recoveringMusic = job.stage === "recovering_music";
   try {
     await step.do("start", () =>
       setJob(env, job, "running", "generating_music"),
@@ -604,15 +646,20 @@ export async function generateSong(
     if (settings && !hasReadyReadings(blocks))
       throw new HttpError(422, "readings_not_ready");
     const saved = await step.do("generate_music", paidStep, () =>
-      paidCall<SavedMusic>(
-        env,
-        job,
-        `music-${job.id}`,
-        "music",
-        RESERVATION_USD.music,
-        () =>
-          generateMusic(env, job, `music-${job.id}`, { blocks, ...settings }),
-      ),
+      recoveringMusic
+        ? readSavedMusic(env, job)
+        : paidCall<SavedMusic>(
+            env,
+            job,
+            `music-${job.id}`,
+            "music",
+            RESERVATION_USD.music,
+            () =>
+              generateMusic(env, job, `music-${job.id}`, {
+                blocks,
+                ...settings,
+              }),
+          ),
     );
     if (
       !(settings

@@ -9,6 +9,7 @@ import type {
   SongDocument,
   Utterance,
 } from "../shared/contracts.ts";
+import { musicRecoveryAvailable } from "./music-recovery.ts";
 import { type Env, HttpError } from "./types.ts";
 
 export type DraftRow = {
@@ -59,6 +60,7 @@ export type JobRow = {
   song_id: string | null;
   created_at: string;
   speaker_snapshot_json?: string | null;
+  speaker_matching_config_json?: string | null;
   transcript_fingerprint?: string | null;
   transcript_reviewed_at?: string | null;
   expected_chunks?: number;
@@ -247,6 +249,7 @@ export async function draftDocument(
   owner: string,
 ): Promise<DraftDocument> {
   const row = await ownedDraft(env, draftId, owner);
+  const job = row.job_id ? await ownedJob(env, row.job_id, owner) : null;
   return {
     id: row.id,
     title: row.title,
@@ -257,6 +260,13 @@ export async function draftDocument(
     lyrics: await lyrics(env, draftId, row.lyric_revision),
     status: row.status,
     jobId: row.job_id,
+    ...(job
+      ? {
+          jobKind: job.kind,
+          jobStage: job.stage,
+          musicRecoveryAvailable: await musicRecoveryAvailable(env, job),
+        }
+      : {}),
     ...(row.status === "needs_reconciliation"
       ? {
           transcriptRecoveryAvailable: await savedTranscriptionAvailable(

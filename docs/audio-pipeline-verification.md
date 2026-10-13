@@ -16,7 +16,21 @@
 | backendテスト | 100/100成功 | 含む復旧後の確認待ち、選択プロフィールによる声照合 |
 | 音声サービステスト | 23成功、5スキップ、失敗0 | 含む保存応答復旧時のGoogle再送0回 |
 | Expo export・Worker dry-run | 成功 | Android・iOS・WebとCloudflare Worker。本番配置ではない |
-| 修正後の内部テスト実機 | 未確認 | PR・本番反映・Play配布はまだ行っていない |
+| 修正後の内部テスト実機 | 未確認 | 修正版 v8 は2026-10-13に内部テストへ公開済み。実機へのインストール後の受け入れは未実施 |
+
+## 2026-10-13 未特定発話の話者割り当てを内部テストへ反映
+
+[PR #22](https://github.com/rion0918/Yoin/pull/22)で、話者が `unknown` または仮ラベルの発話に、録音参加者を割り当てる確認操作を追加しました。割り当てを `unknown` に戻すこともできます。これは自動話者識別の精度改善ではなく、曖昧な発話を利用者が確認するための修正です。[ADR 0026](adr/0026-manual-transcript-speaker-review.md)はProposedです。
+
+| 確認 | 結果 | 確認できた範囲・制約 |
+| :--- | :--- | :--- |
+| main CI/CD [#63](https://github.com/rion0918/Yoin/actions/runs/38332144963) | 成功 | main commit `7c7fc894b984795da97cb100b2a6bff497fea47c`。backendテスト103/103成功 |
+| 本番サービス反映 | 成功 | 予算設定の照合、D1 migration、Cloud Runのデプロイ・health check、Workerデプロイ後の検証が成功。有料AI API呼び出しなし |
+| Play versionCode guard | 成功 | Play最大値7、EAS現行値7、次のversionCodeは8 |
+| EAS Play内部テストビルド | 成功 | [build](https://expo.dev/accounts/rion0918/projects/yoin/builds/3afe3048-d3f4-460b-b4f4-94a4a27e6072)、`com.rion0918.yoin`、`playInternal`、versionCode 8、PR commit `6106bff5f59547d697eebfaf7a6b542604a077fa`。利用者の承認を受けてソースとビルド設定をEASへ送信 |
+| Play内部テスト公開 | 公開済み | [リリース詳細](https://play.google.com/console/u/2/developers/8177657172912099283/app/4975036814426691237/tracks/4701432920924884384/releases/6/details)。タイトル「話者確認の改善」、version 0.1.0 (versionCode 8)、2026-10-13 10:49 JST |
+| Play Consoleの警告 | 任意・非ブロッキング | 難読化マッピングファイル未添付。R8/ProGuard利用時に推奨される項目で、公開を妨げなかった |
+| Android実機受け入れ | 未確認 | v8をインストールし、未特定発話の参加者割り当てと歌詞作成を実機で確認する必要がある |
 
 ## 2026-10-12 Lyria向けの曲設定・歌唱用の読み
 

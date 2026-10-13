@@ -264,6 +264,43 @@ test("transcript review allows assigning anonymous labels but preserves identifi
   );
 });
 
+test("transcript review summary reports assigned and unresolved speaker utterances", () => {
+  assert.deepEqual(
+    speakerUi.transcriptReviewSummary(
+      [
+        {
+          id: "unknown-1",
+          clipId: "clip",
+          startMs: 0,
+          endMs: 3000,
+          speaker: "unknown",
+          text: "また歩こう",
+        },
+        {
+          id: "unknown-2",
+          clipId: "clip",
+          startMs: 4000,
+          endMs: 7000,
+          speaker: "unknown",
+          text: "そうだね",
+        },
+        {
+          id: "identified",
+          clipId: "clip",
+          startMs: 8000,
+          endMs: 10000,
+          speaker: "spk_1",
+          speakerProfileId: "speaker-a",
+          speakerName: "あおい",
+          text: "帰ろう",
+        },
+      ],
+      [{ utteranceId: "unknown-1", speakerProfileId: "speaker-b" }],
+    ),
+    { assignableCount: 2, assignedCount: 1, unresolvedCount: 1 },
+  );
+});
+
 test("changing a transcript speaker assignment replaces only that utterance", () => {
   const assignments = [
     { utteranceId: "clip:u:100:1", speakerProfileId: "speaker-a" },

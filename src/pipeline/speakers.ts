@@ -112,6 +112,22 @@ export function canAssignTranscriptSpeaker(utterance: Utterance) {
   return !utterance.speakerProfileId && !utterance.speakerName;
 }
 
+export function transcriptReviewSummary(
+  utterances: Utterance[],
+  assignments: TranscriptSpeakerAssignment[],
+) {
+  const assignable = utterances.filter(canAssignTranscriptSpeaker);
+  const assignedIds = new Set(assignments.map((item) => item.utteranceId));
+  const assignedCount = assignable.filter((item) =>
+    assignedIds.has(item.id),
+  ).length;
+  return {
+    assignableCount: assignable.length,
+    assignedCount,
+    unresolvedCount: assignable.length - assignedCount,
+  };
+}
+
 export function transcriptReviewSpeakers(
   speakers: SpeakerProfile[],
   selectedIds: string[] | undefined,

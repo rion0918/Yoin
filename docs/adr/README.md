@@ -34,6 +34,7 @@ ADR（Architecture Decision Record）は、1つの重要な判断について、
 | [0024: Lyriaへ確認済みの読みと曲構成を渡す](0024-lyria-singing-readings.md) | Proposed | 2026-10-12 |
 | [0025: 話者ラベルのない文字起こしを未特定のまま確認する](0025-unlabelled-transcript-review.md) | Proposed | 2026-10-13 |
 | [0026: 確認画面で未特定の発話へ話者を割り当てる](0026-manual-transcript-speaker-review.md) | Proposed | 2026-10-13 |
+| [0027: 話者ラベルのない発話を登録音声と個別照合する](0027-match-unlabelled-utterances.md) | Proposed | 2026-10-13 |
 
 Accepted の記録が現在の採用済み判断です。Proposed は提案段階であり、採用済みとして扱いません。記録の追加・状態変更時には、この一覧も更新します。
 

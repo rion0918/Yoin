@@ -483,13 +483,16 @@ export function parseTranscription(
   const utterances: Utterance[] = [];
   for (const word of words) {
     const previous = utterances.at(-1);
+    const unlabeled = word.speaker === "unknown";
+    const maximumGapMs = unlabeled ? 500 : 1200;
+    const maximumUtteranceMs = unlabeled ? 4000 : 15000;
     const startMs = options.offsetMs + word.start;
     const endMs = options.offsetMs + word.end;
     if (
       previous &&
       previous.speaker === word.speaker &&
-      startMs - previous.endMs <= 1200 &&
-      endMs - previous.startMs <= 15000 &&
+      startMs - previous.endMs <= maximumGapMs &&
+      endMs - previous.startMs <= maximumUtteranceMs &&
       !/[。！？.!?]$/.test(previous.text)
     ) {
       const space =

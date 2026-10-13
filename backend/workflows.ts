@@ -287,9 +287,7 @@ export async function prepareDraft(
               item.startMs >= chunk.offsetMs &&
               item.endMs <= chunk.offsetMs + chunk.durationMs,
           );
-          const matchable = candidates.filter(
-            (item) => item.speaker !== "unknown" || snapshot.length === 1,
-          );
+          const matchable = candidates;
           if (!matchable.length) continue;
           const matches = await step.do(
             `identify-${clip.id}-${chunk.offsetMs}`,
@@ -299,31 +297,47 @@ export async function prepareDraft(
                 index,
                 offsetMs: chunk.offsetMs,
                 durationMs: chunk.durationMs,
-                utterances: matchable.map(({ speaker, startMs, endMs }) => ({
-                  speaker,
-                  startMs,
-                  endMs,
-                })),
+                utterances: matchable.map(
+                  ({ id, speaker, startMs, endMs }) => ({
+                    id,
+                    speaker,
+                    startMs,
+                    endMs,
+                  }),
+                ),
                 profiles: snapshot,
               }),
           );
+          const assignments = new Map<
+            string,
+            {
+              utteranceId: string;
+              speakerProfileId: string;
+              speakerName: string;
+            }
+          >();
           for (const match of matches) {
             if (!match.speakerProfileId) continue;
             const profile = snapshot.find(
               (item) => item.id === match.speakerProfileId,
             );
             if (!profile) throw new HttpError(502, "invalid_speaker_matches");
+            const targets = match.utteranceId
+              ? matchable.filter((item) => item.id === match.utteranceId)
+              : matchable.filter((item) => item.speaker === match.speaker);
+            for (const target of targets)
+              assignments.set(target.id, {
+                utteranceId: target.id,
+                speakerProfileId: profile.id,
+                speakerName: profile.name,
+              });
+          }
+          if (assignments.size) {
+            const values = JSON.stringify([...assignments.values()]);
             await env.DB.prepare(
-              "UPDATE utterances SET speaker_profile_id = ?, speaker_name = ? WHERE clip_id = ? AND speaker = ? AND start_ms >= ? AND end_ms <= ?",
+              "UPDATE utterances SET speaker_profile_id = (SELECT json_extract(value, '$.speakerProfileId') FROM json_each(?) WHERE json_extract(value, '$.utteranceId') = utterances.id), speaker_name = (SELECT json_extract(value, '$.speakerName') FROM json_each(?) WHERE json_extract(value, '$.utteranceId') = utterances.id) WHERE clip_id = ? AND id IN (SELECT json_extract(value, '$.utteranceId') FROM json_each(?))",
             )
-              .bind(
-                profile.id,
-                profile.name,
-                clip.id,
-                match.speaker,
-                chunk.offsetMs,
-                chunk.offsetMs + chunk.durationMs,
-              )
+              .bind(values, values, clip.id, values)
               .run();
           }
         }

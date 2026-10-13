@@ -1,5 +1,17 @@
 # 音声パイプラインの検証記録
 
+## 2026-10-13 思い出削除・MP3保存の本番反映と内部テストv10
+
+[PR #27](https://github.com/rion0918/Yoin/pull/27)をmainへ取り込み、main commit `4672d26d2277c185afedfa43fc01898341dd05b7` を配布対象にしました。思い出削除機能とD1 migration `0012_memory_deletion.sql` はmainに先行して含まれており、今回のPRでは完成曲のMP3保存と長時間音声取り込みを修正しました。PRのスカッシュコミットは `完成曲MP3保存と長時間音声取り込みを改善` です。
+
+main push後のCI run #81と、同じmain commitを対象にした手動本番ワークフロー run #82が成功しました。[本番反映 run #82](https://github.com/rion0918/Yoin/actions/runs/38409068335)でD1 migration、Cloud RunとWorkerの反映、healthと無認証APIの拒否を確認しました。Cloud Run revisionは `yoin-audio-00017-ngj`、image digestは `sha256:9ad997edeca984c5d8e52012bdc42edc7161b7059e102498fbf016e84ff619fe`、Worker Version IDは `e59daf34-9db9-43e5-b485-aee8cf46ed16` です。
+
+Play最大9・EAS現在9・次回予定10を照合し、[EAS build `4f11f9db-0c45-41c3-8c0e-3ae31ee8512b`](https://expo.dev/accounts/rion0918/projects/yoin/builds/4f11f9db-0c45-41c3-8c0e-3ae31ee8512b)からAndroid AABを作成しました。EASのビルド記録はブランチ上のcommit `866e6355748f6a07e668e615112c8b26ba885692` を示しますが、そのソースツリーはmain commitと同一です。Play Consoleの解析でpackage `com.rion0918.yoin`、versionCode 10 / versionName 0.1.0、最小API 24、target API 36を確認しました。署名検証は終了コード0で、SHA-256証明書指紋 `DD:63:D9:D7:E5:8D:E6:FF:70:0F:0E:99:42:D5:15:F4:3D:F6:EF:2D:DF:FB:05:11:6A:61:B3:EF:04:81:D7:C3` が公開済みv9と一致します。AABのSHA-256は `04e4d6489c43f49d6cbdcb4e579420c396c81108d5311a21defe959e55f04d32`、ローカル保存先はGit管理外の `.local/builds/yoin-internal-v10.aab` です。Play Console自身によるAAB解析も成功しています。
+
+2026-10-13 23:41 JST、[内部テストv10](https://play.google.com/console/u/0/developers/8177657172912099283/app/4975036814426691237/tracks/4701432920924884384/releases/8/details)を「10 (0.1.0) - 思い出削除・曲のMP3保存」として公開しました。リリースノートには思い出削除、完成曲のMP3保存、長時間音声取り込みの改善を記載しました。既存の内部テスター設定を使い、製品版へは公開していません。Play Consoleの警告は難読化解除ファイルがないという1件で、公開を妨げるエラーはありませんでした。
+
+この確認時点でADBに接続されたAndroid端末はありません。versionCode 10をPlayからインストールした端末での削除操作、MP3の保存・再生、長時間音声取り込みは未実施です。CI・本番反映・AAB解析・内部テスト公開の成功と、端末操作の成功は区別します。
+
 ## 2026-10-13 最新mainの本番反映と内部テストv9
 
 ユーザーの「内部テストまで通して、それに必要な操作は許可します」という指示に従い、main commit `de03634f2ee999a087e22890658895f720c47965` を配布対象にしました。[PR #24](https://github.com/rion0918/Yoin/pull/24)の保存済み曲の復旧・話者候補の確認と、[PR #25](https://github.com/rion0918/Yoin/pull/25)の読み確認処理・画面案内の修正を含みます。

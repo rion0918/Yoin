@@ -300,6 +300,7 @@ export type LibraryDocument = {
   locationRoutes?: LocalLocationRoute[];
   locationPlaceCache?: LocalLocationPlaceCache[];
   pendingMemoryDeletions?: PendingMemoryDeletion[];
+  serverDeletedMemoryIds?: string[];
 };
 
 export type MediaChunk = {

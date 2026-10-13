@@ -81,7 +81,12 @@ describe("private API", () => {
   });
 
   it("keeps data routes and non-read privacy requests authenticated", async () => {
-    for (const path of ["/account", "/songs", "/drafts/private-draft"]) {
+    for (const path of [
+      "/account",
+      "/songs",
+      "/drafts/private-draft",
+      "/memory-deletions",
+    ]) {
       expect((await request(path, "GET", undefined, "wrong")).status).toBe(401);
     }
     expect((await request("/privacy", "POST", {}, "wrong")).status).toBe(401);
@@ -115,6 +120,43 @@ describe("private API", () => {
       revision: 1,
       idempotencyKey: "deletion-race",
     });
+    expect(remove).toHaveBeenCalledOnce();
+  });
+  it("removes a generation workflow created after memory deletion starts during dispatch", async () => {
+    await seedReview({
+      id: "block",
+      text: "秋の風",
+      sourceUtteranceIds: ["clip:u:0:1"],
+    });
+    let allowCreate!: () => void;
+    let signalCreate!: () => void;
+    const createStarted = new Promise<void>((resolve) => {
+      signalCreate = resolve;
+    });
+    const createGate = new Promise<void>((resolve) => {
+      allowCreate = resolve;
+    });
+    const remove = vi.fn(async () => {});
+    bindings.GENERATE = {
+      create: async () => {
+        signalCreate();
+        await createGate;
+        return { delete: remove };
+      },
+    } as unknown as Env["GENERATE"];
+    bindings.DELETE_MEMORY = {
+      create: vi.fn(async () => ({ id: "memory-deletion" })),
+    } as unknown as Env["DELETE_MEMORY"];
+
+    const generating = request(`/drafts/${draftId}/generate`, "POST", {
+      revision: 1,
+      idempotencyKey: "memory-deletion-race",
+    });
+    await createStarted;
+    expect((await request(`/drafts/${draftId}`, "DELETE")).status).toBe(202);
+    allowCreate();
+    await generating;
+
     expect(remove).toHaveBeenCalledOnce();
   });
   it("offers authenticated speaker registration instead of anonymous labels only", async () => {

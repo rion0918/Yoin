@@ -12,7 +12,6 @@ import {
   editLyricBlock,
   markLocationUploaded,
   mergeRemoteDraft,
-  removeDeletedMemoryId,
   removeMemoryReferences,
   restoreRecording,
   sourceContext,
@@ -40,13 +39,6 @@ function saved() {
     clip,
   );
 }
-
-test("a missing remote deletion restores the memory's visible state", () => {
-  assert.deepEqual(
-    removeDeletedMemoryId(["memory-a", "memory-b"], "memory-a"),
-    ["memory-b"],
-  );
-});
 
 test("interrupted recovery retains the file reference but never restores a recording indicator", () => {
   const pending = {

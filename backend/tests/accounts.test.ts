@@ -156,6 +156,13 @@ it("accepts owner-scoped memory deletion, hides the song, and rejects other owne
   expect(await deleted.json()).toEqual({ status: "deleting" });
   expect((await api("alice", "/drafts/alice-draft/deletion")).status).toBe(200);
   expect(await (await api("alice", "/songs")).json()).toEqual([]);
+  expect((await api("alice", "/songs/alice-song")).status).toBe(409);
+  expect(await (await api("alice", "/memory-deletions")).json()).toEqual({
+    draftIds: ["alice-draft"],
+  });
+  expect(await (await api("bob", "/memory-deletions")).json()).toEqual({
+    draftIds: [],
+  });
   expect((await api("bob", "/drafts/alice-draft", "DELETE")).status).toBe(404);
   expect((await api("alice", "/drafts/alice-draft", "DELETE")).status).toBe(
     202,

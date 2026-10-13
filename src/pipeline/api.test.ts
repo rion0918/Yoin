@@ -31,10 +31,13 @@ test("deletes a memory through its authenticated draft endpoint and reads deleti
   const api = createApi(
     { apiUrl: "https://test.invalid", getIdToken: async () => "firebase" },
     async (url, options) => {
+      const path = new URL(String(url)).pathname;
       requests.push({
-        path: new URL(String(url)).pathname,
+        path,
         method: options?.method ?? "GET",
       });
+      if (path === "/memory-deletions")
+        return Response.json({ draftIds: ["draft-a"] });
       return Response.json({ status: "deleting" }, { status: 202 });
     },
   );
@@ -49,11 +52,18 @@ test("deletes a memory through its authenticated draft endpoint and reads deleti
       memoryDeletion(id: string): Promise<{ status: string }>;
     }
   ).memoryDeletion;
+  const memoryDeletionIds = (
+    api as unknown as {
+      memoryDeletionIds(): Promise<{ draftIds: string[] }>;
+    }
+  ).memoryDeletionIds;
   assert.deepEqual(await deleteMemory("draft-a"), { status: "deleting" });
   assert.deepEqual(await memoryDeletion("draft-a"), { status: "deleting" });
+  assert.deepEqual(await memoryDeletionIds(), { draftIds: ["draft-a"] });
   assert.deepEqual(requests, [
     { path: "/drafts/draft-a", method: "DELETE" },
     { path: "/drafts/draft-a/deletion", method: "GET" },
+    { path: "/memory-deletions", method: "GET" },
   ]);
 });
 

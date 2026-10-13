@@ -15,8 +15,10 @@ import {
 } from "../shared/speaker-matching.ts";
 import {
   assertAccountActive,
+  assertMemoryActive,
   finishOwnedUpload,
   getAccount,
+  memoryDeletionIds,
   memoryDeletionStatus,
   requestDeletion,
   requestMemoryDeletion,
@@ -68,18 +70,23 @@ async function launch(env: Env, job: JobRow) {
   const workflow = job.kind === "generate" ? env.GENERATE : env.PREPARE;
   try {
     await assertAccountActive(env, job.owner_id);
+    await assertMemoryActive(env, job.owner_id, job.draft_id);
     const instance = await workflow.create({
       id: job.id,
       params: { jobId: job.id },
     });
     try {
       await assertAccountActive(env, job.owner_id);
+      await assertMemoryActive(env, job.owner_id, job.draft_id);
     } catch (error) {
       await instance.delete();
       throw error;
     }
   } catch (error) {
-    if (error instanceof HttpError && error.code === "account_deleted")
+    if (
+      error instanceof HttpError &&
+      (error.code === "account_deleted" || error.code === "memory_deleted")
+    )
       throw error;
     // A durable queued row remains available if dispatch fails or the instance already exists.
   }
@@ -1046,6 +1053,8 @@ export async function handleRequest(request: Request, env: Env) {
     const deletionStatus = /^\/drafts\/([a-zA-Z0-9_-]+)\/deletion$/.exec(path);
     if (deletionStatus && request.method === "GET")
       return await memoryDeletionStatus(env, owner, id(deletionStatus[1]));
+    if (path === "/memory-deletions" && request.method === "GET")
+      return await memoryDeletionIds(env, owner);
     const deletionRequest = /^\/drafts\/([a-zA-Z0-9_-]+)$/.exec(path);
     if (deletionRequest && request.method === "DELETE")
       return await requestMemoryDeletion(env, owner, id(deletionRequest[1]));

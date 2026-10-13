@@ -35,7 +35,6 @@ import {
   editSingingText,
   markLocationUploaded,
   mergeRemoteDraft,
-  removeDeletedMemoryId,
   removeMemoryReferences,
   restoreRecording,
 } from "./pipeline/library";
@@ -108,6 +107,7 @@ export function useSession(identity: SessionIdentity) {
   const busyRef = useRef(false);
   const memoryDeletionLocks = useRef(new Set<string>());
   const confirmedMemoryDeletions = useRef(new Set<string>());
+  const confirmedServerMemoryDeletions = useRef(new Set<string>());
   const activeSourceClipId = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const clearError = useCallback(() => setError(null), []);
@@ -132,7 +132,20 @@ export function useSession(identity: SessionIdentity) {
       const operation = queue.current.then(async () => {
         scope.assertActive();
         let next = change(stateRef.current);
+        const serverDeletedMemoryIds = new Set([
+          ...(next.serverDeletedMemoryIds ??
+            stateRef.current.serverDeletedMemoryIds ??
+            []),
+          ...confirmedServerMemoryDeletions.current,
+        ]);
+        if (serverDeletedMemoryIds.size > 0)
+          next = {
+            ...next,
+            serverDeletedMemoryIds: [...serverDeletedMemoryIds].sort(),
+          };
         for (const draftId of confirmedMemoryDeletions.current)
+          next = removeMemoryReferences(next, draftId);
+        for (const draftId of serverDeletedMemoryIds)
           next = removeMemoryReferences(next, draftId);
         await saveLibrary(identity.uid, next);
         scope.assertActive();
@@ -181,11 +194,27 @@ export function useSession(identity: SessionIdentity) {
       .then(async (stored) => {
         let restored = stored;
         const pendingDeletions = stored.pendingMemoryDeletions ?? [];
+        for (const draftId of stored.serverDeletedMemoryIds ?? []) {
+          confirmedMemoryDeletions.current.add(draftId);
+          confirmedServerMemoryDeletions.current.add(draftId);
+        }
         for (const deletion of pendingDeletions) {
-          if (!deletion.remote || deletion.status !== "requesting")
+          if (!deletion.remote || deletion.status !== "requesting") {
             confirmedMemoryDeletions.current.add(deletion.draftId);
+            if (deletion.remote)
+              confirmedServerMemoryDeletions.current.add(deletion.draftId);
+          }
         }
         const hiddenMemoryIds = new Set(confirmedMemoryDeletions.current);
+        for (const draftId of hiddenMemoryIds)
+          restored = removeMemoryReferences(restored, draftId);
+        if (confirmedServerMemoryDeletions.current.size > 0)
+          restored = {
+            ...restored,
+            serverDeletedMemoryIds: [
+              ...confirmedServerMemoryDeletions.current,
+            ].sort(),
+          };
         if (stored.pendingRecording) {
           const pending = stored.pendingRecording;
           const canRecover =
@@ -232,10 +261,9 @@ export function useSession(identity: SessionIdentity) {
           }
         }
         if (!alive) return;
-        for (const draftId of hiddenMemoryIds)
-          restored = removeMemoryReferences(restored, draftId);
         stateRef.current = restored;
         setState(restored);
+        setDeletedMemoryIds([...hiddenMemoryIds]);
         setReady(true);
         if (hiddenMemoryIds.size > 0) await saveLibrary(identity.uid, restored);
       })
@@ -1031,6 +1059,38 @@ export function useSession(identity: SessionIdentity) {
     (deletion: PendingMemoryDeletion) => Promise<void>
   >(async () => {});
   const polling = useRef(false);
+  const applyServerMemoryDeletions = useCallback(
+    async (draftIds: string[]) => {
+      const additions = draftIds.filter(
+        (draftId) =>
+          !confirmedServerMemoryDeletions.current.has(draftId) ||
+          !stateRef.current.serverDeletedMemoryIds?.includes(draftId),
+      );
+      for (const draftId of additions) {
+        confirmedMemoryDeletions.current.add(draftId);
+        confirmedServerMemoryDeletions.current.add(draftId);
+      }
+      if (additions.length === 0) return;
+      setDeletedMemoryIds((current) => [
+        ...new Set([...current, ...additions]),
+      ]);
+      await commit((current) => {
+        let next: LibraryDocument = {
+          ...current,
+          serverDeletedMemoryIds: [
+            ...new Set([
+              ...(current.serverDeletedMemoryIds ?? []),
+              ...additions,
+            ]),
+          ].sort(),
+        };
+        for (const draftId of additions)
+          next = removeMemoryReferences(next, draftId);
+        return next;
+      });
+    },
+    [commit],
+  );
   const refresh = useCallback(async () => {
     if (polling.current || busyRef.current || scope.signal.aborted) return;
     polling.current = true;
@@ -1038,6 +1098,8 @@ export function useSession(identity: SessionIdentity) {
       for (const deletion of stateRef.current.pendingMemoryDeletions ?? [])
         await reconcileMemoryDeletionRef.current(deletion);
       const api = createApi(connectionRef.current);
+      const { draftIds } = await api.memoryDeletionIds();
+      await applyServerMemoryDeletions(draftIds);
       for (const draft of stateRef.current.drafts.filter(
         (value) =>
           !confirmedMemoryDeletions.current.has(value.id) &&
@@ -1111,7 +1173,7 @@ export function useSession(identity: SessionIdentity) {
     } finally {
       polling.current = false;
     }
-  }, [commit, scope]);
+  }, [commit, scope, applyServerMemoryDeletions]);
   useEffect(() => {
     if (!ready) return;
     void refresh();
@@ -1147,6 +1209,9 @@ export function useSession(identity: SessionIdentity) {
           setAccountDeleted(true);
           return;
         }
+        const { draftIds } = await api.memoryDeletionIds();
+        if (!active) return;
+        await applyServerMemoryDeletions(draftIds);
         const songs = await api.songs();
         if (active)
           await commit((current) => ({
@@ -1168,7 +1233,14 @@ export function useSession(identity: SessionIdentity) {
     return () => {
       active = false;
     };
-  }, [ready, commit, scope, identity.uid, stopAndSave]);
+  }, [
+    ready,
+    commit,
+    scope,
+    identity.uid,
+    stopAndSave,
+    applyServerMemoryDeletions,
+  ]);
   async function suspend() {
     if (scope.signal.aborted) return true;
     if (busyRef.current) return false;
@@ -1436,8 +1508,9 @@ export function useSession(identity: SessionIdentity) {
       throw new Error(message(failure));
     }
   }
-  function confirmMemoryDeletion(draftId: string) {
+  function confirmMemoryDeletion(draftId: string, remote = false) {
     confirmedMemoryDeletions.current.add(draftId);
+    if (remote) confirmedServerMemoryDeletions.current.add(draftId);
     setDeletedMemoryIds((current) =>
       current.includes(draftId) ? current : [...current, draftId],
     );
@@ -1474,9 +1547,16 @@ export function useSession(identity: SessionIdentity) {
       } catch (lookupFailure) {
         if (lookupFailure instanceof ApiError && lookupFailure.status === 404) {
           confirmedMemoryDeletions.current.delete(deletion.draftId);
+          confirmedServerMemoryDeletions.current.delete(deletion.draftId);
           setDeletedMemoryIds((ids) =>
-            removeDeletedMemoryId(ids, deletion.draftId),
+            ids.filter((id) => id !== deletion.draftId),
           );
+          await commit((current) => ({
+            ...current,
+            serverDeletedMemoryIds: (
+              current.serverDeletedMemoryIds ?? []
+            ).filter((id) => id !== deletion.draftId),
+          }));
           await removeDeletionRecord(deletion.draftId);
           throw failure;
         }
@@ -1485,7 +1565,7 @@ export function useSession(identity: SessionIdentity) {
         );
       }
     }
-    confirmMemoryDeletion(deletion.draftId);
+    confirmMemoryDeletion(deletion.draftId, true);
     await stopMemoryAudio(deletion.draftId, deletion.clipIds);
     await eraseLocalMemory(
       deletion,
@@ -1517,16 +1597,23 @@ export function useSession(identity: SessionIdentity) {
         if (failure instanceof ApiError && failure.status === 404) {
           if (deletion.status === "requesting") {
             confirmedMemoryDeletions.current.delete(deletion.draftId);
+            confirmedServerMemoryDeletions.current.delete(deletion.draftId);
             setDeletedMemoryIds((ids) =>
-              removeDeletedMemoryId(ids, deletion.draftId),
+              ids.filter((id) => id !== deletion.draftId),
             );
+            await commit((current) => ({
+              ...current,
+              serverDeletedMemoryIds: (
+                current.serverDeletedMemoryIds ?? []
+              ).filter((id) => id !== deletion.draftId),
+            }));
             await removeDeletionRecord(deletion.draftId);
           }
           return;
         }
         return;
       }
-      confirmMemoryDeletion(deletion.draftId);
+      confirmMemoryDeletion(deletion.draftId, true);
       if (remoteStatus === "deleted") {
         if (!deletion.localCleanupComplete) {
           await stopMemoryAudio(deletion.draftId, deletion.clipIds);

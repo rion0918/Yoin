@@ -75,6 +75,7 @@ export async function savePendingBackgroundLocationSample(
       try {
         const library = JSON.parse(stored.document) as LibraryDocument;
         if (
+          library.serverDeletedMemoryIds?.includes(draftId) ||
           library.pendingMemoryDeletions?.some(
             (deletion) => deletion.draftId === draftId,
           )

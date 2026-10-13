@@ -201,6 +201,8 @@ export function createApi(
       request<{ status: "deleting" | "deleted" | "failed" }>(
         `/drafts/${encodeURIComponent(id)}/deletion`,
       ),
+    memoryDeletionIds: () =>
+      request<{ draftIds: string[] }>("/memory-deletions"),
     createUpload: (clip: AudioClip) =>
       request<UploadCreated>(
         `/drafts/${encodeURIComponent(clip.draftId)}/clips`,

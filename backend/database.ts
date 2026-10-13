@@ -317,6 +317,7 @@ export async function songDocument(
       duration_ms: number;
     }>();
   if (!row) throw new HttpError(404, "song_not_found");
+  await assertMemoryActive(env, owner, row.draft_id);
   const revision = await lyrics(env, row.draft_id, row.lyric_revision);
   if (!revision) throw new HttpError(500, "song_lyrics_missing");
   return {

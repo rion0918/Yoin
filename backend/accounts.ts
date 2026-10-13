@@ -149,6 +149,16 @@ export async function memoryDeletionStatus(
   if (!deletion) throw new HttpError(404, "draft_not_found");
   return Response.json({ status: deletion.status });
 }
+export async function memoryDeletionIds(env: Env, owner: string) {
+  const deletions = await env.DB.prepare(
+    "SELECT draft_id FROM memory_deletions WHERE owner_id = ? ORDER BY draft_id",
+  )
+    .bind(owner)
+    .all<{ draft_id: string }>();
+  return Response.json({
+    draftIds: deletions.results.map((deletion) => deletion.draft_id),
+  });
+}
 export async function getAccount(env: Env, identity: Identity) {
   await env.DB.prepare("INSERT OR IGNORE INTO accounts (uid) VALUES (?)")
     .bind(identity.uid)

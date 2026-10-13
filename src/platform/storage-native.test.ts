@@ -323,6 +323,29 @@ test("memory cleanup removes local files and blocks delayed location samples, th
   assert.equal(h.files.has(otherFile), true);
 });
 
+test("persisted server deletion tombstones block delayed background location samples", async () => {
+  const h = storageHarness();
+  const sample: contracts.LocationSample = {
+    latitude: 35,
+    longitude: 139,
+    accuracy: 5,
+    timestamp: 1_800_000_000_000,
+  };
+  await h.storage.saveLibrary("user", {
+    ...contracts.emptyLibrary(),
+    serverDeletedMemoryIds: ["target"],
+  });
+
+  await h.storage.savePendingBackgroundLocationSample(
+    "user",
+    "target",
+    "clip",
+    sample,
+  );
+
+  assert.equal(h.pendingLocations.size, 0);
+});
+
 test("memory cleanup preserves audio files when SQLite fails and can be retried", async () => {
   const h = storageHarness();
   const directory = h.storage.accountAudioDirectory("user");

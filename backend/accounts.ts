@@ -88,7 +88,7 @@ export async function deleteAccountData(env: Env, uid: string) {
       .all<{ id: string; kind: string }>()
   ).results;
   for (const job of jobs) {
-    const workflow = job.kind === "prepare" ? env.PREPARE : env.GENERATE;
+    const workflow = job.kind === "generate" ? env.GENERATE : env.PREPARE;
     // Completed and in-flight Workflow results both contain private audio/lyrics.
     try {
       const instance = await workflow.get(job.id);

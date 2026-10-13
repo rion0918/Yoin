@@ -99,7 +99,7 @@ test("a lost generation response is never automatically sent twice", async () =>
   );
   await assert.rejects(
     api.generate("draft", 3, "same-operation", "夜明け前"),
-    /音声と歌詞/,
+    /保存済みの音声と処理状況/,
   );
   assert.equal(requests, 1);
   assert.equal(
@@ -110,6 +110,31 @@ test("a lost generation response is never automatically sent twice", async () =>
       songTitle: "夜明け前",
     }),
   );
+});
+test("preparation failures do not claim that uncreated lyrics are saved", async () => {
+  for (const code of [
+    "ai_budget_exhausted",
+    "provider_outcome_unconfirmed",
+    "unexpected_processing_failure",
+  ]) {
+    let requests = 0;
+    const api = createApi(
+      { apiUrl: "https://test.invalid", getIdToken: async () => "tester" },
+      async () => {
+        requests++;
+        return Response.json({ error: code }, { status: 503 });
+      },
+    );
+    await assert.rejects(api.prepare("draft", "same-operation"), (error) => {
+      assert.ok(error instanceof Error);
+      assert.doesNotMatch(error.message, /歌詞|新しい曲/);
+      assert.match(error.message, /保存/);
+      if (code === "provider_outcome_unconfirmed")
+        assert.match(error.message, /自動で再送しません/);
+      return true;
+    });
+    assert.equal(requests, 1);
+  }
 });
 test("invalid auth and stale revisions are reported without starting another operation", async () => {
   const api = createApi(

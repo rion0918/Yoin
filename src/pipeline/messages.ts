@@ -48,15 +48,15 @@ const explanations: Record<string, string> = {
   empty_audio:
     "音声が見つかりません。会話を録音するか音声を取り込んでください。",
   ai_budget_exhausted:
-    "現在、新しい曲を作れません。音声と歌詞は保存されています。",
+    "現在、新しいAI処理を開始できません。音声と処理状況は保存されています。",
   provider_cost_exceeded_reservation:
-    "現在、新しい曲を作れません。音声と歌詞は保存されています。",
+    "現在、新しいAI処理を開始できません。音声と処理状況は保存されています。",
   invalid_ai_budget:
-    "現在、新しい曲を作れません。音声と歌詞は保存されています。",
+    "現在、新しいAI処理を開始できません。音声と処理状況は保存されています。",
   generated_lyrics_differ:
     "曲の歌詞が確認した内容と異なるため、完成できませんでした。音声と歌詞は保存されています。",
   provider_outcome_unconfirmed:
-    "曲の受付を確認できませんでした。音声と歌詞は保存されています。この状態では作り直せません。時間をおいて状況を確認してください。",
+    "処理結果を確認できません。保存済みの内容は残っています。確認が終わるまで自動で再送しません。",
   media_service_busy:
     "曲の生成サービスが混み合っています。Googleへの送信は始まっていません。少し時間をおいて、もう一度お試しください。",
   provider_not_configured:
@@ -94,6 +94,6 @@ const explanations: Record<string, string> = {
 export function explainError(value: string): string {
   if (explanations[value]) return explanations[value];
   return /^[a-z_]+$/.test(value)
-    ? "処理を続けられませんでした。音声と歌詞は保存されています。時間をおいて状況を確認してください。"
+    ? "処理を続けられませんでした。保存済みの音声と処理状況を確認してください。"
     : value;
 }

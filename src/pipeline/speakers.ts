@@ -103,10 +103,10 @@ export function mergeSpeakerProfiles(
 }
 
 export function speakerLabel(utterance: Utterance) {
-  return (
-    utterance.speakerName ||
-    (utterance.speaker === "unknown" ? "話者未特定" : utterance.speaker)
-  );
+  if (utterance.speakerName) return utterance.speakerName;
+  if (utterance.speaker === "unknown") return "話者未特定";
+  const match = /^spk_(\d+)$/.exec(utterance.speaker);
+  return match ? `話者${match[1]}（名前未特定）` : utterance.speaker;
 }
 
 export function canAssignTranscriptSpeaker(utterance: Utterance) {

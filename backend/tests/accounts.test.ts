@@ -221,6 +221,50 @@ it("deletion resumes after a service failure, removes only its owner, and keeps 
   ).rejects.toMatchObject({ status: 403 });
   expect(await bindings.AUDIO.head("songs/alice/late.mp3")).toBeNull();
 });
+it("deletes preparation and reading workflow results from their owning binding", async () => {
+  for (const [id, owner, kind] of [
+    ["alice-prepare", "alice", "prepare"],
+    ["alice-readings", "alice", "readings"],
+    ["bob-readings", "bob", "readings"],
+  ])
+    await bindings.DB.prepare(
+      "INSERT INTO jobs (id, owner_id, draft_id, kind, idempotency_key, fingerprint, status, created_at) VALUES (?, ?, ?, ?, ?, 'hash', 'waiting_review', '2026-10-13')",
+    )
+      .bind(id, owner, `${owner}-draft`, kind, id)
+      .run();
+  const preparationResults = new Set([
+    "alice-prepare",
+    "alice-readings",
+    "bob-readings",
+  ]);
+  const generationResults = new Set(["alice-job", "bob-job"]);
+  bindings.PREPARE = {
+    get: async (id: string) => {
+      if (!preparationResults.has(id)) throw new Error("instance.not_found");
+      return {
+        status: async () => ({ status: "complete" }),
+        delete: async () => preparationResults.delete(id),
+      };
+    },
+  } as unknown as Env["PREPARE"];
+  bindings.GENERATE = {
+    get: async (id: string) => {
+      if (!generationResults.has(id)) throw new Error("instance.not_found");
+      return {
+        status: async () => ({ status: "complete" }),
+        delete: async () => generationResults.delete(id),
+      };
+    },
+  } as unknown as Env["GENERATE"];
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    Response.json({ deleted: true }),
+  );
+
+  await deleteAccountData(bindings, "alice");
+
+  expect([...preparationResults]).toEqual(["bob-readings"]);
+  expect([...generationResults]).toEqual(["bob-job"]);
+});
 it("requires recent Google authentication and refuses to report an undispatched deletion as accepted", async () => {
   const identity = {
     uid: "alice",

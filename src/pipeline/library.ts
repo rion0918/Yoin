@@ -295,6 +295,13 @@ export function removeMemoryReferences(
   };
 }
 
+export function removeDeletedMemoryId(
+  deletedMemoryIds: readonly string[],
+  draftId: string,
+): string[] {
+  return deletedMemoryIds.filter((id) => id !== draftId);
+}
+
 export function sourceContext(
   clip: AudioClip,
   offsetMs = 0,

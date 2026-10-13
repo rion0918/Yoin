@@ -35,6 +35,7 @@ import {
   editSingingText,
   markLocationUploaded,
   mergeRemoteDraft,
+  removeDeletedMemoryId,
   removeMemoryReferences,
   restoreRecording,
 } from "./pipeline/library";
@@ -1473,6 +1474,9 @@ export function useSession(identity: SessionIdentity) {
       } catch (lookupFailure) {
         if (lookupFailure instanceof ApiError && lookupFailure.status === 404) {
           confirmedMemoryDeletions.current.delete(deletion.draftId);
+          setDeletedMemoryIds((ids) =>
+            removeDeletedMemoryId(ids, deletion.draftId),
+          );
           await removeDeletionRecord(deletion.draftId);
           throw failure;
         }
@@ -1513,6 +1517,9 @@ export function useSession(identity: SessionIdentity) {
         if (failure instanceof ApiError && failure.status === 404) {
           if (deletion.status === "requesting") {
             confirmedMemoryDeletions.current.delete(deletion.draftId);
+            setDeletedMemoryIds((ids) =>
+              removeDeletedMemoryId(ids, deletion.draftId),
+            );
             await removeDeletionRecord(deletion.draftId);
           }
           return;

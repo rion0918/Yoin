@@ -6,6 +6,7 @@ expo-env.d.ts
 *.tsbuildinfo
 /ios/
 /android/
+/modules/**/android/build/
 .DS_Store
 .env*
 !.env.local.example

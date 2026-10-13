@@ -168,11 +168,14 @@ function LibraryRoute({
     onRetryMemoryDeletion: (draftId: string) => {
       void app.retryMemoryDeletion(draftId);
     },
+    onDownloadSong: app.downloadSong,
+    onCancelSongDownload: app.cancelSongDownload,
   };
   return (
     <FigmaLibraryScreen
       {...screenProps}
       busy={app.busy}
+      songExportState={app.songExportState}
       activeSongId={app.activeSongId}
       playing={app.playing}
       position={app.position}
@@ -754,7 +757,7 @@ function SessionApp({
                   setAccountError(null);
                   Alert.alert(
                     "アカウントを削除しますか？",
-                    "下書き、曲、登録した声を削除します。元に戻せません。続けるとGoogleで本人確認を行います。",
+                    "下書き、曲、登録した声を削除します。元に戻せません。保存先に書き出したMP3は端末に残ります。続けるとGoogleで本人確認を行います。",
                     [
                       { text: "キャンセル", style: "cancel" },
                       {

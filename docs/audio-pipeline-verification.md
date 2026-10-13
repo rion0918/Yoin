@@ -1,5 +1,19 @@
 # 音声パイプラインの検証記録
 
+## 2026-10-13 最新mainの本番反映と内部テストv9
+
+ユーザーの「内部テストまで通して、それに必要な操作は許可します」という指示に従い、main commit `de03634f2ee999a087e22890658895f720c47965` を配布対象にしました。[PR #24](https://github.com/rion0918/Yoin/pull/24)の保存済み曲の復旧・話者候補の確認と、[PR #25](https://github.com/rion0918/Yoin/pull/25)の読み確認処理・画面案内の修正を含みます。
+
+[mainのCI](https://github.com/rion0918/Yoin/actions/runs/38353682069)で、Biome、アプリ・backend型検査、アプリ176件、backend118件、音声サービス35件のテストが成功しました。失敗・スキップは0件です。ExpoのAndroid・iOS・Web export、Worker dry-run、linux/amd64音声コンテナー、音声モデル、health・無認証APIの拒否も検査しています。
+
+同じコミットの[手動本番CI](https://github.com/rion0918/Yoin/actions/runs/38355461158)で再検証と配置が成功しました。既存の `AI_BUDGET_USD=8.733897` の一致を配置前に確認し、D1 migration `0011_speaker_matching_input.sql` を適用しました。Cloud Run `yoin-audio-00015-slv` は100%のトラフィックを受け、イメージdigestは `sha256:31f6a82247dc4ab1d986e06fcb45089d230886b4dec346b810c54765eea61173`、Worker Version IDは `dcee5231-0a86-4c6b-9397-508f4b27c914` です。配置後のCI検査に加え、Cloud Run `/health` の `ok` とWorker `/account` の無認証401を確認しました。予算設定・台帳の初期化・既存アカウントの削除は行っていません。有料AIの新規呼び出しも行っていません。
+
+Play最大8・EAS現在8・次回予定9の照合を通し、専用npm scriptから[EAS build `6dbdb787-2268-4acd-858c-547d6ca76ad2`](https://expo.dev/accounts/rion0918/projects/yoin/builds/6dbdb787-2268-4acd-858c-547d6ca76ad2)を作成しました。2026-10-13 15:26 JSTに完了し、`playInternal` / store配布 / versionCode 9、ビルドのgit commitが上記mainと一致することを確認しました。Bundletool validate、パッケージ `com.rion0918.yoin`、versionCode 9、公開済みv8とのアップロード証明書一致、jarsignerの検証が成功しています。jarsignerは自己署名・タイムスタンプなし・JarInputStreamでの読取に関する警告を出しましたが、終了コードは0でした。AABのSHA-256は `458c9e45d742a7c1363dd4111988f854d89d427b0036a13841b6893b153d0a77`、ローカル保存先はGit管理外の `.local/builds/yoin-internal-v9.aab` です。
+
+Play ConsoleでAABの解析とversionCode 9 / versionName 0.1.0 / target API 36を確認し、2026-10-13 15:36 JSTに「9 (0.1.0) - 話者候補の確認と曲の復旧」として公開しました。[内部テストのリリース](https://play.google.com/console/u/0/developers/8177657172912099283/app/4975036814426691237/tracks/4701432920924884384/releases/7/details)が「内部テスターに公開」と表示され、トラックが有効であることを確認しています。既存のテスター設定を使用し、製品版には公開していません。Play側の警告は難読化解除ファイルがないという1件で、公開を妨げるエラーはありませんでした。
+
+この確認時点でADBに接続されたAndroid端末はありません。versionCode 9をPlayからインストールした端末でのGoogleログイン、録音・取り込み、話者候補確認、歌詞編集、曲生成・復旧・再生と、実AIの話者識別・歌唱品質の受け入れは未実施です。自動テスト・本番疎通・配布の成功と、端末操作・実AI品質の成功は区別します。
+
 ## 2026-10-12 Lyria更新の本番反映と内部テストv6
 
 [PR #19](https://github.com/rion0918/Yoin/pull/19)をmainへ取り込み、main commit `29bfb236773af399ae9bd9348d8926704b48ee13` のCIが成功しました。Cloud RunとWorkerの更新、D1 migration `0010` の適用、ヘルスチェックを[本番CI](https://github.com/rion0918/Yoin/actions/runs/38250895117)で確認しました。初回はCloudflare APIの読み取りが504で失敗しましたが、書き込み前に停止し、失敗ジョブの再実行で全工程が成功しています。

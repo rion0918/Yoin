@@ -51,11 +51,21 @@ import {
   playbackTransition,
 } from "./pipeline/playback";
 import {
+  createSongExportManager,
+  type SongExportState,
+} from "./pipeline/songExport";
+import {
   assertCanRecordConversation,
   mergeSpeakerProfiles,
 } from "./pipeline/speakers";
 import {
+  cancelSongExportSave,
+  cleanSongExportTemporaryFiles,
+  createSongExportTemporaryUri,
+  deleteSongExportSavedFile,
+  deleteSongExportTemporaryFile,
   deleteSpeakerAudio,
+  downloadSongExportAudio,
   eraseLibrary,
   eraseMemory,
   importAudio,
@@ -65,6 +75,7 @@ import {
   readSpeakerAudio,
   recoverRecording,
   saveLibrary,
+  saveSongExportFile,
   useAudioEngine,
 } from "./platform";
 import { createAccountScope } from "./platform/account";
@@ -104,6 +115,8 @@ export function useSession(identity: SessionIdentity) {
   const [deletedMemoryIds, setDeletedMemoryIds] = useState<string[]>([]);
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [songExportState, setSongExportState] =
+    useState<SongExportState | null>(null);
   const busyRef = useRef(false);
   const memoryDeletionLocks = useRef(new Set<string>());
   const confirmedMemoryDeletions = useRef(new Set<string>());
@@ -120,6 +133,25 @@ export function useSession(identity: SessionIdentity) {
   const [playback, setPlayback] = useState(initPlayback);
   const playbackRef = useRef(playback);
   const playbackRequest = useRef(0);
+  const songExportManagerRef = useRef<ReturnType<
+    typeof createSongExportManager
+  > | null>(null);
+  if (!songExportManagerRef.current) {
+    songExportManagerRef.current = createSongExportManager({
+      createOperationId: () => id("song-export"),
+      createTemporaryUri: (operationId) =>
+        createSongExportTemporaryUri(identity.uid, operationId),
+      getAudioUrl: (audioId) =>
+        createApi(connectionRef.current).audioUrl(audioId),
+      download: downloadSongExportAudio,
+      saveFile: saveSongExportFile,
+      cancelSave: cancelSongExportSave,
+      deleteTemporaryFile: deleteSongExportTemporaryFile,
+      deleteSavedFile: deleteSongExportSavedFile,
+      onState: setSongExportState,
+    });
+  }
+  const songExportManager = songExportManagerRef.current;
   const changePlayback = useCallback((event: PlaybackEvent) => {
     const next = playbackTransition(playbackRef.current, event);
     if (next === playbackRef.current) return;
@@ -187,9 +219,28 @@ export function useSession(identity: SessionIdentity) {
   audioRef.current = audio;
 
   useEffect(() => {
+    const cancelExport = () => songExportManager.cancel();
+    scope.signal.addEventListener("abort", cancelExport, { once: true });
+    return () => {
+      scope.signal.removeEventListener("abort", cancelExport);
+      songExportManager.cancel();
+    };
+  }, [scope, songExportManager]);
+
+  useEffect(() => {
     let alive = true;
     void audioRef.current
       .stopRecording()
+      .then(async () => {
+        try {
+          await cleanSongExportTemporaryFiles(identity.uid);
+        } catch {
+          if (alive)
+            setError(
+              "前回の一時音源を削除できませんでした。端末の空き容量を確認してください。",
+            );
+        }
+      })
       .then(() => loadLibrary(identity.uid))
       .then(async (stored) => {
         let restored = stored;
@@ -1066,6 +1117,7 @@ export function useSession(identity: SessionIdentity) {
           !confirmedServerMemoryDeletions.current.has(draftId) ||
           !stateRef.current.serverDeletedMemoryIds?.includes(draftId),
       );
+      for (const draftId of additions) songExportManager.cancel(draftId);
       for (const draftId of additions) {
         confirmedMemoryDeletions.current.add(draftId);
         confirmedServerMemoryDeletions.current.add(draftId);
@@ -1089,7 +1141,7 @@ export function useSession(identity: SessionIdentity) {
         return next;
       });
     },
-    [commit],
+    [commit, songExportManager],
   );
   const refresh = useCallback(async () => {
     if (polling.current || busyRef.current || scope.signal.aborted) return;
@@ -1200,6 +1252,7 @@ export function useSession(identity: SessionIdentity) {
         if (account.uid !== identity.uid)
           throw new Error("ログインを確認できません。");
         if (account.status !== "active") {
+          songExportManager.cancel();
           await stopAndSave();
           await audioRef.current.stopPlayback();
           await api.deleteAccount();
@@ -1240,6 +1293,7 @@ export function useSession(identity: SessionIdentity) {
     identity.uid,
     stopAndSave,
     applyServerMemoryDeletions,
+    songExportManager,
   ]);
   async function suspend() {
     if (scope.signal.aborted) return true;
@@ -1247,6 +1301,7 @@ export function useSession(identity: SessionIdentity) {
     busyRef.current = true;
     setBusy(true);
     try {
+      songExportManager.cancel();
       await stopAndSave();
       await audioRef.current.stopPlayback();
       await queue.current;
@@ -1262,6 +1317,7 @@ export function useSession(identity: SessionIdentity) {
   }
   async function deleteAccount() {
     return run(async () => {
+      songExportManager.cancel();
       await stopAndSave();
       await audioRef.current.stopPlayback();
       const api = createApi(connectionRef.current);
@@ -1283,6 +1339,28 @@ export function useSession(identity: SessionIdentity) {
     },
     [changePlayback],
   );
+  async function downloadSong(song: SongDocument) {
+    if (!ready || scope.signal.aborted)
+      return {
+        status: "failed" as const,
+        message: "ライブラリを準備してから、もう一度お試しください。",
+      };
+    const deleting = (stateRef.current.pendingMemoryDeletions ?? []).some(
+      (deletion) => deletion.draftId === song.draftId,
+    );
+    const currentSong = stateRef.current.songs.find(
+      (value) => value.id === song.id && value.draftId === song.draftId,
+    );
+    if (!currentSong || deleting)
+      return {
+        status: "failed" as const,
+        message: "この曲は削除中か、ライブラリで見つかりません。",
+      };
+    return songExportManager.start(currentSong);
+  }
+  function cancelSongDownload() {
+    songExportManager.cancel();
+  }
   async function pauseSong() {
     playbackRequest.current++;
     if (playbackRef.current.target === "song")
@@ -1639,6 +1717,7 @@ export function useSession(identity: SessionIdentity) {
   }
   reconcileMemoryDeletionRef.current = reconcileMemoryDeletion;
   async function deleteMemory(draftId: string) {
+    songExportManager.cancel(draftId);
     return run(async () => {
       if (memoryDeletionLocks.current.has(draftId)) return true;
       memoryDeletionLocks.current.add(draftId);
@@ -1799,6 +1878,9 @@ export function useSession(identity: SessionIdentity) {
     suspend,
     deleteAccount,
     deleteMemory,
+    songExportState,
+    downloadSong,
+    cancelSongDownload,
     retryMemoryDeletion,
     recorder: audio.state,
     newRecording,

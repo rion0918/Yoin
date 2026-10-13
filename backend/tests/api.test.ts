@@ -72,6 +72,10 @@ describe("private API", () => {
     expect(text).toContain("rion.developer.apps@gmail.com");
     expect(text).toContain("画面ロック");
     expect(text).toContain("アカウントを削除");
+    expect(text).toContain("ダウンロード（MP3）");
+    expect(text).toContain(
+      "書き出した曲は、Yoin の思い出・アカウント・アプリを削除しても端末に残ります。",
+    );
     const head = await handleRequest(
       new Request("https://yoin.test/privacy", { method: "HEAD" }),
       {} as Env,

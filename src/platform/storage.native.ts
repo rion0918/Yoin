@@ -1,4 +1,3 @@
-import { createAudioPlayer } from "expo-audio";
 import * as DocumentPicker from "expo-document-picker";
 import { Directory, File, FileMode, Paths } from "expo-file-system";
 import { deleteDatabaseAsync, openDatabaseAsync } from "expo-sqlite";
@@ -14,7 +13,7 @@ import {
   validLocationSample,
 } from "../pipeline/location";
 import { accountStorageKey } from "./account";
-import { waitUntilLoaded } from "./audio.native";
+import { inspectAudioDuration } from "./audio.native";
 import {
   audioPartRange,
   clipFromRecording,
@@ -23,6 +22,7 @@ import {
   mimeTypeForUri,
   validateInspection,
 } from "./operations";
+import { eraseSongExportTemporaryFiles } from "./songExport";
 import type { AudioInspection, PendingRecording } from "./types";
 
 const writes = createSerialQueue();
@@ -174,17 +174,12 @@ export async function inspectLocalAudio(uri: string): Promise<AudioInspection> {
   const file = new File(uri);
   if (!file.exists || file.size <= 0)
     throw new Error("音声ファイルが見つかりません。");
-  const player = createAudioPlayer(uri, { updateInterval: 100 });
-  try {
-    const seconds = await waitUntilLoaded(player);
-    return validateInspection({
-      durationMs: Math.round(seconds * 1000),
-      sizeBytes: file.size,
-      mimeType: mimeTypeForUri(uri, file.type),
-    });
-  } finally {
-    player.release();
-  }
+  const durationMs = await inspectAudioDuration(uri);
+  return validateInspection({
+    durationMs,
+    sizeBytes: file.size,
+    mimeType: mimeTypeForUri(uri, file.type),
+  });
 }
 
 export async function importAudio(
@@ -298,6 +293,7 @@ export async function preserveRecording(
 export async function eraseLibrary(uid: string): Promise<void> {
   erased.add(uid);
   return writes.run(async () => {
+    await eraseSongExportTemporaryFiles(uid);
     const library = await loadLibrary(uid);
     const pending = [
       library.pendingRecording,

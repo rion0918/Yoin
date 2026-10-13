@@ -180,7 +180,10 @@ function storageHarness(fail = false) {
       if (name === "../../shared/contracts") return contracts;
       if (name === "../pipeline/location") return location;
       if (name === "./account") return account;
-      if (name === "./audio.native") return { waitUntilLoaded: async () => 1 };
+      if (name === "./audio.native")
+        return { inspectAudioDuration: async () => 1000 };
+      if (name === "./songExport")
+        return { eraseSongExportTemporaryFiles: async () => {} };
       if (name === "./operations") return operations;
       throw new Error(`Unexpected import: ${name}`);
     },

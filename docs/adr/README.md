@@ -40,10 +40,12 @@ ADR（Architecture Decision Record）は、1つの重要な判断について、
 | [0029: 一致する保存済み曲だけを同じジョブで完成処理へ戻す](0029-saved-music-recovery.md) | Proposed | 2026-10-13 |
 | [0030: 話者ラベルのない会話を声の区間で集約して候補を確認する](0030-diarized-speaker-review.md) | Proposed | 2026-10-13 |
 | [0031: 思い出単位の削除を永続記録と非同期処理で行う](0031-memory-deletion.md) | Proposed | 2026-10-13 |
+| [0032: Androidの完成曲を利用者が選んだ保存先へ書き出す](0032-android-song-mp3-export.md) | Proposed | 2026-10-13 |
+| [0033: Androidで音声メタデータから取り込み時間を読む](0033-android-audio-metadata-inspection.md) | Proposed | 2026-10-13 |
 
 Accepted の記録が現在の採用済み判断です。Proposed は提案段階であり、採用済みとして扱いません。記録の追加・状態変更時には、この一覧も更新します。
 
-番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0031-<short-title>.md` です。
+番号は `0001` からの連番とし、削除・却下・置き換え後も再利用しません。次の記録は `0034-<short-title>.md` です。
 
 ## 作業前に読む
 

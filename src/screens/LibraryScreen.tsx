@@ -37,10 +37,10 @@ const draftLabels: Partial<Record<LocalDraft["status"], string>> = {
   preparing: "会話から、歌詞へ",
   updating_readings: "歌詞の読みを更新しています",
   waiting_review: "歌詞を確かめよう",
-  needs_audio_review: "会話の内容を確認しよう",
+  needs_audio_review: "話者と内容を確認して歌詞を作る",
   generating: "この一日が、一曲になる",
   failed: "保存した記録から続きを確認",
-  needs_reconciliation: "受付の確認を待っています",
+  needs_reconciliation: "処理結果の確認が必要です",
 };
 
 export function LibraryScreen({
@@ -146,8 +146,12 @@ export function LibraryScreen({
                 <View style={styles.rowInformation}>
                   <Text style={styles.draftTitle}>{draft.title}</Text>
                   <Text style={styles.detail}>
-                    {draftLabels[draft.status] ??
-                      `${draft.clips.length}区間の会話 / ${formatTime(draft.clips.reduce((sum, clip) => sum + clip.durationMs, 0) / 1000)}`}
+                    {draft.status === "needs_reconciliation" &&
+                    !draft.lyrics &&
+                    draft.transcriptRecoveryAvailable
+                      ? "文字起こしを復旧できます"
+                      : (draftLabels[draft.status] ??
+                        `${draft.clips.length}区間の会話 / ${formatTime(draft.clips.reduce((sum, clip) => sum + clip.durationMs, 0) / 1000)}`)}
                   </Text>
                   <DayTrace clips={draft.clips} />
                 </View>

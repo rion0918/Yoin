@@ -15,7 +15,11 @@ export type RegisteredSpeaker = {
   modelVersion: string;
   embedding: number[];
 };
-export type SpeakerMatch = { speaker: string; speakerProfileId: string | null };
+export type SpeakerMatch = {
+  speaker: string;
+  speakerProfileId: string | null;
+  utteranceId?: string;
+};
 
 export type SpeakerProfile = {
   id: string;
@@ -179,6 +183,10 @@ export type Utterance = {
   speakerName?: string;
   text: string;
   timingIssues?: TranscriptTimingIssue[];
+};
+export type TranscriptSpeakerAssignment = {
+  utteranceId: string;
+  speakerProfileId: string;
 };
 
 export type MusicPreferences = {

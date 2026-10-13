@@ -13,6 +13,7 @@ import {
   generateMusic,
   transcribeAudio,
 } from "../providers.ts";
+import { sha256 } from "../security.ts";
 import { applyAccountSchema } from "./schema.ts";
 
 const schema = `${initialSchema}\n${runtimeSchema}\n${speakerSchema}\n${draftSpeakersSchema}`;
@@ -153,30 +154,29 @@ beforeEach(async () => {
   );
 });
 
-async function freezeSpeakerSnapshot() {
+async function freezeSpeakerSnapshot(profileCount = 2) {
+  const profiles = [
+    {
+      id: "speaker-a",
+      name: "あおい",
+      modelVersion: "weSpeakerResNet34Lm:1",
+      embedding: Array.from({ length: 256 }, (_, index) =>
+        index === 0 ? 1 : 0,
+      ),
+    },
+    {
+      id: "speaker-b",
+      name: "れん",
+      modelVersion: "weSpeakerResNet34Lm:1",
+      embedding: Array.from({ length: 256 }, (_, index) =>
+        index === 1 ? 1 : 0,
+      ),
+    },
+  ];
   await bindings.DB.prepare(
     "UPDATE jobs SET speaker_snapshot_json = ? WHERE id = 'prepare-job'",
   )
-    .bind(
-      JSON.stringify([
-        {
-          id: "speaker-a",
-          name: "あおい",
-          modelVersion: "weSpeakerResNet34Lm:1",
-          embedding: Array.from({ length: 256 }, (_, index) =>
-            index === 0 ? 1 : 0,
-          ),
-        },
-        {
-          id: "speaker-b",
-          name: "れん",
-          modelVersion: "weSpeakerResNet34Lm:1",
-          embedding: Array.from({ length: 256 }, (_, index) =>
-            index === 1 ? 1 : 0,
-          ),
-        },
-      ]),
-    )
+    .bind(JSON.stringify(profiles.slice(0, profileCount)))
     .run();
 }
 
@@ -499,6 +499,66 @@ it("keeps temporary labels for unknown voices", async () => {
   ]);
 });
 
+it("matches unlabeled utterances independently against multiple selected voices", async () => {
+  await freezeSpeakerSnapshot();
+  vi.mocked(transcribeAudio).mockImplementation(
+    async (_env, _job, _attempt, { clipId, offsetMs }) => ({
+      value: [
+        {
+          id: `${clipId}:u:${offsetMs + 100}:1`,
+          clipId,
+          startMs: offsetMs + 100,
+          endMs: offsetMs + 4100,
+          speaker: "unknown",
+          text: "また歩こう",
+        },
+      ],
+      costUsd: 0.1,
+      usage: { model: "gemini-test" },
+    }),
+  );
+  vi.mocked(identifySpeakersInChunk).mockImplementation(
+    async (_env, _job, _clip, input) =>
+      input.utterances.map(({ id, speaker }) => ({
+        speaker,
+        utteranceId: id,
+        speakerProfileId: input.offsetMs === 0 ? "speaker-a" : "speaker-b",
+      })),
+  );
+  const waitForEvent = vi.fn(async () => {
+    const pending = await ownedJob(bindings, "prepare-job", "private-tester");
+    const draft = await draftDocument(bindings, "draft", "private-tester");
+    expect(pending.status).toBe("needs_audio_review");
+    expect(draft.utterances.map(({ speakerName }) => speakerName)).toEqual([
+      "あおい",
+      "れん",
+    ]);
+    expect(createLyrics).not.toHaveBeenCalled();
+    return {
+      payload: { transcriptFingerprint: pending.transcript_fingerprint },
+    };
+  });
+
+  await prepareDraft(bindings, "prepare-job", {
+    ...step,
+    waitForEvent,
+  } as unknown as WorkflowStep);
+
+  expect(identifySpeakersInChunk).toHaveBeenCalledTimes(2);
+  expect(waitForEvent).toHaveBeenCalledOnce();
+  for (const call of vi.mocked(identifySpeakersInChunk).mock.calls) {
+    expect(call[3].profiles).toHaveLength(2);
+    expect(call[3].utterances).toEqual([
+      expect.objectContaining({ id: expect.any(String), speaker: "unknown" }),
+    ]);
+  }
+  expect(createLyrics).toHaveBeenCalledOnce();
+  expect(vi.mocked(createLyrics).mock.calls[0]?.[3].utterances).toMatchObject([
+    { speakerProfileId: "speaker-a", speakerName: "あおい" },
+    { speakerProfileId: "speaker-b", speakerName: "れん" },
+  ]);
+});
+
 it("retries failed speaker matching from cached transcripts without another paid transcription", async () => {
   await freezeSpeakerSnapshot();
   vi.mocked(identifySpeakersInChunk)
@@ -732,6 +792,190 @@ it("preserves the full unverified transcript and waits for review without naming
   expect(identifySpeakersInChunk).not.toHaveBeenCalled();
   expect(createLyrics).toHaveBeenCalledOnce();
   expect(transcribeAudio).toHaveBeenCalledOnce();
+});
+
+it("pauses recovered transcripts for speaker and text review before creating lyrics", async () => {
+  await freezeSpeakerSnapshot();
+  await bindings.DB.prepare(
+    "UPDATE jobs SET status = 'queued', stage = 'recovering_transcription' WHERE id = 'prepare-job'",
+  ).run();
+  vi.mocked(transcribeAudio).mockImplementation(
+    async (_env, _job, _attempt, { clipId, offsetMs }) => ({
+      value: [
+        {
+          id: `${clipId}:u:${offsetMs + 100}:1`,
+          clipId,
+          startMs: offsetMs + 100,
+          endMs: offsetMs + 500,
+          speaker: "unknown",
+          text: "また歩こう。",
+        },
+      ],
+      costUsd: 0.1,
+      usage: { model: "gemini-test" },
+    }),
+  );
+  const waitForEvent = vi.fn(async () => {
+    expect(createLyrics).not.toHaveBeenCalled();
+    const pending = await ownedJob(bindings, "prepare-job", "private-tester");
+    expect(pending).toMatchObject({
+      status: "needs_audio_review",
+      stage: "review_audio",
+    });
+    const draft = await draftDocument(bindings, "draft", "private-tester");
+    expect(draft.utterances).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ speaker: "unknown", text: "また歩こう。" }),
+      ]),
+    );
+    return {
+      payload: { transcriptFingerprint: pending.transcript_fingerprint },
+    };
+  });
+
+  await prepareDraft(bindings, "prepare-job", {
+    ...step,
+    waitForEvent,
+  } as unknown as WorkflowStep);
+
+  expect(waitForEvent).toHaveBeenCalledOnce();
+  expect(identifySpeakersInChunk).toHaveBeenCalledTimes(2);
+  for (const call of vi.mocked(identifySpeakersInChunk).mock.calls)
+    expect(call[3].utterances).toEqual([
+      expect.objectContaining({ id: expect.any(String), speaker: "unknown" }),
+    ]);
+  expect(createLyrics).toHaveBeenCalledOnce();
+  expect(
+    await ownedJob(bindings, "prepare-job", "private-tester"),
+  ).toMatchObject({ status: "waiting_review", stage: "review_lyrics" });
+});
+
+it("uses speaker assignments saved during transcript review for lyric creation", async () => {
+  await bindings.DB.prepare(
+    "UPDATE clips SET duration_ms = 90000, client_duration_ms = 90000 WHERE id = 'clip'",
+  ).run();
+  vi.mocked(inspectClip).mockResolvedValue({
+    durationMs: 90000,
+    sizeBytes: 10,
+    chunks: [
+      {
+        key: "processed/clip/0.m4a",
+        offsetMs: 0,
+        durationMs: 90000,
+        mimeType: "audio/mp4",
+      },
+    ],
+  });
+  vi.mocked(transcribeAudio).mockResolvedValue({
+    value: [
+      {
+        id: "clip:u:100:1",
+        clipId: "clip",
+        startMs: 100,
+        endMs: 1200,
+        speaker: "unknown",
+        text: "駅に着いたよ",
+      },
+    ],
+    costUsd: 0.1,
+    usage: { model: "gemini-test" },
+  });
+  const waitForEvent = vi.fn(async () => {
+    expect(createLyrics).not.toHaveBeenCalled();
+    await bindings.DB.prepare(
+      "UPDATE utterances SET speaker_profile_id = 'speaker-a', speaker_name = 'あおい' WHERE id = 'clip:u:100:1'",
+    ).run();
+    const reviewed = await draftDocument(bindings, "draft", "private-tester");
+    const reviewedFingerprint = await sha256(
+      JSON.stringify(reviewed.utterances),
+    );
+    await bindings.DB.prepare(
+      "UPDATE jobs SET transcript_fingerprint = ? WHERE id = 'prepare-job'",
+    )
+      .bind(reviewedFingerprint)
+      .run();
+    return {
+      payload: { transcriptFingerprint: reviewedFingerprint },
+    };
+  });
+
+  await prepareDraft(bindings, "prepare-job", {
+    ...step,
+    waitForEvent,
+  } as unknown as WorkflowStep);
+
+  expect(waitForEvent).toHaveBeenCalledOnce();
+  expect(createLyrics).toHaveBeenCalledOnce();
+  expect(vi.mocked(createLyrics).mock.calls[0]?.[3].utterances).toEqual([
+    expect.objectContaining({
+      id: "clip:u:100:1",
+      speaker: "unknown",
+      speakerProfileId: "speaker-a",
+      speakerName: "あおい",
+      text: "駅に着いたよ",
+    }),
+  ]);
+});
+
+it("checks unidentified speech against one selected voice but still requires review", async () => {
+  await freezeSpeakerSnapshot(1);
+  vi.mocked(transcribeAudio).mockImplementation(
+    async (_env, _job, _attempt, { clipId, offsetMs }) => ({
+      value: [
+        {
+          id: `${clipId}:u:${offsetMs + 100}:1`,
+          clipId,
+          startMs: offsetMs + 100,
+          endMs: offsetMs + 500,
+          speaker: "unknown",
+          text: "また歩こう。",
+        },
+      ],
+      costUsd: 0.1,
+      usage: { model: "gemini-test" },
+    }),
+  );
+  vi.mocked(identifySpeakersInChunk).mockImplementation(
+    async (_env, _job, _clip, input) =>
+      input.utterances.map(({ speaker }) => ({
+        speaker,
+        speakerProfileId: "speaker-a",
+      })),
+  );
+  const waitForEvent = vi.fn(async () => {
+    expect(createLyrics).not.toHaveBeenCalled();
+    const pending = await ownedJob(bindings, "prepare-job", "private-tester");
+    expect(pending.status).toBe("needs_audio_review");
+    const draft = await draftDocument(bindings, "draft", "private-tester");
+    expect(draft.utterances).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          speaker: "unknown",
+          speakerName: "あおい",
+          text: "また歩こう。",
+        }),
+      ]),
+    );
+    return {
+      payload: { transcriptFingerprint: pending.transcript_fingerprint },
+    };
+  });
+
+  await prepareDraft(bindings, "prepare-job", {
+    ...step,
+    waitForEvent,
+  } as unknown as WorkflowStep);
+
+  expect(identifySpeakersInChunk).toHaveBeenCalledTimes(2);
+  for (const call of vi.mocked(identifySpeakersInChunk).mock.calls) {
+    const input = call[3];
+    expect(input.profiles).toHaveLength(1);
+    expect(input.utterances).toEqual([
+      expect.objectContaining({ speaker: "unknown" }),
+    ]);
+  }
+  expect(waitForEvent).toHaveBeenCalledOnce();
+  expect(createLyrics).toHaveBeenCalledOnce();
 });
 
 async function seedReadingJob() {

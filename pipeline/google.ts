@@ -412,13 +412,15 @@ export function parseTranscription(
       const start = durationMs(word.start_offset);
       const end = durationMs(word.end_offset);
       const speaker =
-        typeof word.speaker === "string" && /^spk:[0-7]$/.test(word.speaker)
-          ? `spk_${Number(word.speaker.slice(4)) + 1}`
-          : word.speaker;
+        word.speaker === undefined
+          ? "unknown"
+          : typeof word.speaker === "string" && /^spk:[0-7]$/.test(word.speaker)
+            ? `spk_${Number(word.speaker.slice(4)) + 1}`
+            : word.speaker;
       valid(
         nonempty(word.text) &&
           typeof speaker === "string" &&
-          /^spk_[1-8]$/.test(speaker),
+          (speaker === "unknown" || /^spk_[1-8]$/.test(speaker)),
         stage,
         "invalid_response",
         raw,
@@ -481,13 +483,16 @@ export function parseTranscription(
   const utterances: Utterance[] = [];
   for (const word of words) {
     const previous = utterances.at(-1);
+    const unlabeled = word.speaker === "unknown";
+    const maximumGapMs = unlabeled ? 500 : 1200;
+    const maximumUtteranceMs = unlabeled ? 4000 : 15000;
     const startMs = options.offsetMs + word.start;
     const endMs = options.offsetMs + word.end;
     if (
       previous &&
       previous.speaker === word.speaker &&
-      startMs - previous.endMs <= 1200 &&
-      endMs - previous.startMs <= 15000 &&
+      startMs - previous.endMs <= maximumGapMs &&
+      endMs - previous.startMs <= maximumUtteranceMs &&
       !/[。！？.!?]$/.test(previous.text)
     ) {
       const space =

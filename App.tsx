@@ -38,6 +38,7 @@ import type {
   LocalDraft,
   LyricBlock,
   SongDocument,
+  TranscriptSpeakerAssignment,
   Utterance,
 } from "./shared/contracts";
 import type { SessionIdentity } from "./src/auth/types";
@@ -49,6 +50,7 @@ import { LyricReview } from "./src/components/LyricReview";
 import { NativeSheet } from "./src/components/NativeSheet";
 import { SongSourceContent } from "./src/components/SongSourceContent";
 import { SpeakerEnrollmentSheet } from "./src/components/SpeakerEnrollmentSheet";
+import { TranscriptSpeakerReview } from "./src/components/TranscriptSpeakerReview";
 import { TranscriptTimingNotice } from "./src/components/TranscriptTimingNotice";
 import { figmaColors } from "./src/design/figma";
 import { colors, radii } from "./src/design/tokens";
@@ -59,7 +61,7 @@ import {
   sourcePlaybackRange,
 } from "./src/pipeline/library";
 import { explainError } from "./src/pipeline/messages";
-import { speakerLabel } from "./src/pipeline/speakers";
+import { speakerLabel, transcriptReviewSummary } from "./src/pipeline/speakers";
 import { FigmaLibraryScreen } from "./src/screens/FigmaLibraryScreen";
 import { LoginScreen } from "./src/screens/LoginScreen";
 import { MusicScreen } from "./src/screens/MusicScreen";
@@ -106,7 +108,7 @@ const statusLabel: Record<string, string> = {
   generating: "この一日が、一曲になる",
   ready: "曲ができました",
   failed: "処理を続けられませんでした",
-  needs_reconciliation: "曲の受付を確認できませんでした",
+  needs_reconciliation: "処理結果の確認が必要です",
 };
 
 function LibraryRoute({
@@ -232,7 +234,11 @@ function RecordingRoute({
             ? "音声を保存中"
             : draft.status === "local"
               ? undefined
-              : statusLabel[draft.status]
+              : draft.status === "needs_reconciliation" &&
+                  !draft.lyrics &&
+                  draft.transcriptRecoveryAvailable
+                ? "文字起こしを復旧できます"
+                : statusLabel[draft.status]
       }
       onToggle={(title) => {
         void app.toggleRecording(draftId, title);
@@ -371,11 +377,18 @@ function SessionApp({
   const [activeSourceClipId, setActiveSourceClipId] = useState<string | null>(
     null,
   );
+  const [activeTranscriptUtteranceId, setActiveTranscriptUtteranceId] =
+    useState<string | null>(null);
   const [editedBlocks, setEditedBlocks] = useState<LyricBlock[]>([]);
+  const [speakerAssignmentState, setSpeakerAssignmentState] = useState<{
+    key: string;
+    assignments: TranscriptSpeakerAssignment[];
+  }>({ key: "", assignments: [] });
   const close = () => {
     Keyboard.dismiss();
     void app.closeSource();
     setActiveSourceClipId(null);
+    setActiveTranscriptUtteranceId(null);
     setSheetOpen(false);
   };
   const show = useCallback(
@@ -403,6 +416,16 @@ function SessionApp({
     overlay && "draftId" in overlay
       ? app.state.drafts.find((value) => value.id === overlay.draftId)
       : undefined;
+  const transcriptAssignmentKey = draft
+    ? `${draft.id}:${draft.jobId ?? ""}`
+    : "";
+  const transcriptAssignments =
+    speakerAssignmentState.key === transcriptAssignmentKey
+      ? speakerAssignmentState.assignments
+      : [];
+  const transcriptReview = draft
+    ? transcriptReviewSummary(draft.utterances, transcriptAssignments)
+    : null;
   const deletionExit = useRef(false);
   useEffect(() => {
     if (app.accountDeleted && !deletionExit.current) {
@@ -483,9 +506,12 @@ function SessionApp({
           ? "あのときの会話"
           : overlayKind === "review"
             ? "この歌詞で、残そう。"
-            : overlayKind === "progress"
-              ? "思い出の仕上げ"
-              : "この一日を、仕上げよう。";
+            : overlayKind === "progress" &&
+                draft?.status === "needs_audio_review"
+              ? "話者と文字起こしの確認"
+              : overlayKind === "progress"
+                ? "思い出の仕上げ"
+                : "この一日を、仕上げよう。";
   const description =
     overlayKind === "settings"
       ? "アカウントと、登録した声を管理できます。"
@@ -493,11 +519,13 @@ function SessionApp({
         ? "友達の名前と声を登録すると、会話を友達ごとに振り返れます。"
         : overlayKind === "review"
           ? "会話を確かめながら、言葉を整えられます。"
-          : overlayKind === "source"
-            ? "歌詞の元になった音声を聴き返せます。"
-            : overlayKind === "progress"
-              ? "この画面を閉じても、記録は残ります。"
-              : "残した音声を確かめて、歌詞にしよう。";
+          : overlayKind === "progress" && draft?.status === "needs_audio_review"
+            ? "文字起こしと話者の確認が必要です。話者未特定の発話は下で再生し、参加者を割り当てられます。歌詞はまだ作成されていません。画面下のボタンから作成できます。"
+            : overlayKind === "source"
+              ? "歌詞の元になった音声を聴き返せます。"
+              : overlayKind === "progress"
+                ? "この画面を閉じても、記録は残ります。"
+                : "残した音声を確かめて、歌詞にしよう。";
   let sourceUtterances: Utterance[] = [];
   let sourceClips: AudioClip[] = [];
   if (overlay?.kind === "source") {
@@ -634,7 +662,9 @@ function SessionApp({
           {!!draft?.error && (
             <Text accessibilityLiveRegion="polite" style={extra.errorCopy}>
               {draft.error === "provider_outcome_unconfirmed" && !draft.lyrics
-                ? "文字起こしの結果を確認できませんでした。元音声は保存されています。保存済みの応答を確認してください。"
+                ? draft.transcriptRecoveryAvailable
+                  ? "文字起こしを復旧できます。元音声と保存済みの応答から復旧し、内容を確認してから歌詞を作ります。"
+                  : "文字起こしの結果を確認できませんでした。元音声は保存されています。時間をおいて記録を開き直してください。"
                 : explainError(draft.error)}
             </Text>
           )}
@@ -774,9 +804,6 @@ function SessionApp({
             <View testID="generation-progress">
               {draft.status === "needs_audio_review" ? (
                 <>
-                  <Text style={styles.story}>
-                    認識できていない発話が残っている可能性があります。原音と全文を確認してください。内容を使って続けると、保存済みの文字起こしから歌詞を作ります。
-                  </Text>
                   <ScrollView style={{ maxHeight: 310 }}>
                     {draft.clips.map((clip) => (
                       <View key={clip.id} style={{ marginBottom: 18 }}>
@@ -853,42 +880,69 @@ function SessionApp({
                         </ActionButton>
                       </View>
                     ))}
-                    {draft.utterances.map((utterance) => (
-                      <View
-                        key={utterance.id}
-                        style={{
-                          flexDirection: "row",
-                          gap: 12,
-                          marginBottom: 12,
-                        }}
-                      >
-                        <Text
-                          style={{
-                            width: 74,
-                            color: colors.muted,
-                            fontSize: 12,
-                          }}
-                        >
-                          {utterance.timingIssues?.length
-                            ? "区間全体"
-                            : formatTime(utterance.startMs / 1000)}
-                        </Text>
-                        <Text
-                          style={[styles.story, { flex: 1, marginBottom: 0 }]}
-                        >
-                          {speakerLabel(utterance)} · 「{utterance.text}」
-                        </Text>
-                      </View>
-                    ))}
+                    <TranscriptSpeakerReview
+                      draft={draft}
+                      speakers={app.state.speakerProfiles ?? []}
+                      assignments={transcriptAssignments}
+                      activePlaybackUtteranceId={activeTranscriptUtteranceId}
+                      sourcePlaying={app.sourcePlaying}
+                      busy={app.busy}
+                      onPlayUtterance={(utterance) => {
+                        setActiveTranscriptUtteranceId(utterance.id);
+                        void app.playSource(
+                          utterance.clipId,
+                          utterance.timingIssues?.length
+                            ? 0
+                            : utterance.startMs,
+                          utterance.timingIssues?.length
+                            ? undefined
+                            : utterance.endMs,
+                          draft.id,
+                        );
+                      }}
+                      onStopUtterance={() => {
+                        setActiveTranscriptUtteranceId(null);
+                        void app.closeSource();
+                      }}
+                      onAssignmentsChange={(assignments) =>
+                        setSpeakerAssignmentState({
+                          key: transcriptAssignmentKey,
+                          assignments,
+                        })
+                      }
+                    />
                   </ScrollView>
+                  <Text style={styles.summary}>
+                    {transcriptReview?.unresolvedCount
+                      ? `未割当${transcriptReview.unresolvedCount}件は話者名なしで歌詞に含めます。`
+                      : "話者の割り当てを歌詞作成に反映します。"}
+                  </Text>
+                  {!draft.jobId && (
+                    <Text style={styles.summary}>
+                      処理状況を確認しています。通信後にこの画面を開き直してください。
+                    </Text>
+                  )}
                   <ActionButton
-                    label="認識済み内容で続ける"
-                    onPress={() => void app.approveTranscript(draft.id)}
+                    label={
+                      transcriptReview?.unresolvedCount
+                        ? `未割当${transcriptReview.unresolvedCount}件のまま歌詞を作る`
+                        : "内容を確認して歌詞を作る"
+                    }
+                    onPress={() =>
+                      void app.approveTranscript(
+                        draft.id,
+                        transcriptAssignments,
+                      )
+                    }
                     disabled={app.busy || !draft.jobId}
                     style={styles.primary}
                     testID="approve-transcript"
                   >
-                    <Text style={styles.primaryText}>認識済み内容で続ける</Text>
+                    <Text style={styles.primaryText}>
+                      {transcriptReview?.unresolvedCount
+                        ? `未割当${transcriptReview.unresolvedCount}件のまま歌詞を作る`
+                        : "内容を確認して歌詞を作る"}
+                    </Text>
                     <Feather
                       name="chevron-right"
                       size={20}
@@ -902,14 +956,14 @@ function SessionApp({
                   {draft.status === "needs_reconciliation" &&
                     draft.transcriptRecoveryAvailable && (
                       <ActionButton
-                        label="保存済みの文字起こしを確認"
+                        label="保存済みの文字起こしを復旧"
                         onPress={() => void app.recoverTranscript(draft.id)}
                         disabled={app.busy || !draft.jobId}
                         style={styles.primary}
                         testID="recover-transcript"
                       >
                         <Text style={styles.primaryText}>
-                          保存済みの文字起こしを確認
+                          保存済みの文字起こしを復旧
                         </Text>
                       </ActionButton>
                     )}

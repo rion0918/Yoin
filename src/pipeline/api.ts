@@ -12,6 +12,7 @@ import type {
   SongDocument,
   SpeakerProfile,
   SpeakerSampleDocument,
+  TranscriptSpeakerAssignment,
   UploadCreated,
 } from "../../shared/contracts.ts";
 import { explainError } from "./messages.ts";
@@ -271,11 +272,12 @@ export function createApi(
       draftId: string,
       jobId: string,
       transcriptFingerprint: string,
+      assignments: TranscriptSpeakerAssignment[] = [],
     ) =>
       request<{ accepted: true }>(
         `/drafts/${encodeURIComponent(draftId)}/transcript-review`,
         "POST",
-        { jobId, transcriptFingerprint },
+        { jobId, transcriptFingerprint, assignments },
       ),
     draft: (id: string) =>
       request<DraftDocument>(`/drafts/${encodeURIComponent(id)}`),

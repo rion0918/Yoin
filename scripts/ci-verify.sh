@@ -13,12 +13,17 @@ npm run backend:test
 FFMPEG_BIN="$(command -v ffmpeg)"
 FFPROBE_BIN="$(command -v ffprobe)"
 export FFMPEG_BIN FFPROBE_BIN
+
+media_image="yoin-audio:${GITHUB_SHA:-local}"
+docker buildx build --load --platform linux/amd64 --file backend/media/Dockerfile --tag "$media_image" .
+speaker_model_path="$RUNNER_TEMP/wespeaker_en_voxceleb_resnet34_LM.onnx"
+docker run --rm --entrypoint cat "$media_image" /app/backend/media/models/wespeaker_en_voxceleb_resnet34_LM.onnx > "$speaker_model_path"
+export SPEAKER_MODEL_PATH="$speaker_model_path"
+
 npm --prefix backend run test:media
 npm run export
 npm --prefix backend run dry-run
 
-media_image="yoin-audio:${GITHUB_SHA:-local}"
-docker buildx build --load --platform linux/amd64 --file backend/media/Dockerfile --tag "$media_image" .
 container_id="$(docker run --detach --platform linux/amd64 --publish 127.0.0.1:18080:8080 --env MEDIA_SERVICE_TOKEN=ci-test-token-ci-test-token-ci-test-token-ci-test-token --env MEDIA_ORIGIN=https://yoin.test "$media_image")"
 trap 'docker rm --force "$container_id" >/dev/null 2>&1 || true' EXIT
 

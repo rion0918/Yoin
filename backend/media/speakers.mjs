@@ -14,6 +14,9 @@ const MAX_SAMPLE_BYTES = 5 * 1024 * 1024;
 const MAX_CHUNK_BYTES = 16 * 1024 * 1024;
 const MIN_SPEECH_MS = 2_000;
 const MIN_MATCH_INTERVAL_MS = 3_000;
+const MIN_MATCH_SPEECH_MS = 1_500;
+const MAX_MATCH_AUDIO_MS = 10_000;
+const MAX_UNKNOWN_MATCH_UTTERANCES = 60;
 const MATCH_MINIMUM = 0.65;
 const MATCH_MARGIN = 0.1;
 const modelPath =
@@ -112,10 +115,20 @@ function subtractIntervals(start, end, excluded) {
   return pieces;
 }
 
-export function speakerIntervals(utterances, offsetMs, durationMs) {
+export function speakerIntervals(
+  utterances,
+  offsetMs,
+  durationMs,
+  { includeUnknown = false } = {},
+) {
   const bySpeaker = new Map();
   for (const utterance of utterances) {
     if (!utterance || typeof utterance.speaker !== "string") continue;
+    if (
+      !/^spk_[1-8]$/.test(utterance.speaker) &&
+      !(includeUnknown && utterance.speaker === "unknown")
+    )
+      continue;
     if (!bySpeaker.has(utterance.speaker)) bySpeaker.set(utterance.speaker, []);
     if (
       !Number.isSafeInteger(utterance.startMs) ||
@@ -128,12 +141,17 @@ export function speakerIntervals(utterances, offsetMs, durationMs) {
     [...bySpeaker.keys()].map((speaker) => [speaker, []]),
   );
   for (const utterance of utterances) {
+    if (!intervals.has(utterance.speaker)) continue;
     const start = Math.max(0, utterance.startMs - offsetMs);
     const end = Math.min(durationMs, utterance.endMs - offsetMs);
     if (end <= start) continue;
     const competing = [];
     for (const other of utterances) {
-      if (other.speaker === utterance.speaker || other.endMs <= other.startMs)
+      if (
+        other.speaker === utterance.speaker ||
+        !intervals.has(other.speaker) ||
+        other.endMs <= other.startMs
+      )
         continue;
       const otherStart = Math.max(0, other.startMs - offsetMs);
       const otherEnd = Math.min(durationMs, other.endMs - offsetMs);
@@ -152,6 +170,46 @@ export function speakerIntervals(utterances, offsetMs, durationMs) {
     );
   }
   return intervals;
+}
+
+export function speakerUtteranceIntervals(utterances, offsetMs, durationMs) {
+  return utterances.flatMap((utterance) => {
+    if (
+      utterance?.speaker !== "unknown" ||
+      typeof utterance.id !== "string" ||
+      !utterance.id.length ||
+      !Number.isSafeInteger(utterance.startMs) ||
+      !Number.isSafeInteger(utterance.endMs) ||
+      utterance.endMs <= utterance.startMs
+    )
+      return [];
+    const start = Math.max(0, utterance.startMs - offsetMs);
+    const end = Math.min(durationMs, utterance.endMs - offsetMs);
+    if (end <= start) return [];
+    const competing = utterances.flatMap((other) => {
+      if (
+        !other ||
+        other.id === utterance.id ||
+        !Number.isSafeInteger(other.startMs) ||
+        !Number.isSafeInteger(other.endMs) ||
+        other.endMs <= other.startMs
+      )
+        return [];
+      const otherStart = Math.max(0, other.startMs - offsetMs);
+      const otherEnd = Math.min(durationMs, other.endMs - offsetMs);
+      return otherEnd > start && otherStart < end
+        ? [[otherStart, otherEnd]]
+        : [];
+    });
+    return [
+      {
+        utteranceId: utterance.id,
+        ranges: subtractIntervals(start, end, mergeIntervals(competing)).filter(
+          ([rangeStart, rangeEnd]) => rangeEnd - rangeStart > 0,
+        ),
+      },
+    ];
+  });
 }
 
 async function readModel() {
@@ -173,7 +231,15 @@ async function readModel() {
   return extractorPromise;
 }
 
-async function waveData(file, options) {
+async function waveData(
+  file,
+  options,
+  {
+    minimumAudioMs = MIN_AUDIO_MS,
+    maximumAudioMs = MAX_AUDIO_MS,
+    minimumSpeechMs = MIN_SPEECH_MS,
+  } = {},
+) {
   const { stdout } = await execFile(
     options.ffprobe,
     [
@@ -190,7 +256,7 @@ async function waveData(file, options) {
   const probe = JSON.parse(stdout);
   const durationMs = Math.round(Number(probe.format?.duration) * 1000);
   if (
-    !boundedInteger(durationMs, MIN_AUDIO_MS, MAX_AUDIO_MS) ||
+    !boundedInteger(durationMs, minimumAudioMs, maximumAudioMs) ||
     !probe.streams?.some((stream) => stream.codec_type === "audio")
   )
     throw new Error("speaker_sample_too_short");
@@ -233,7 +299,7 @@ async function waveData(file, options) {
     const rms = Math.sqrt(energy / Math.max(1, end - start));
     if (rms >= 0.012) activeMs += Math.round(((end - start) / 16000) * 1000);
   }
-  if (activeMs < MIN_SPEECH_MS) throw new Error("speaker_sample_silent");
+  if (activeMs < minimumSpeechMs) throw new Error("speaker_sample_silent");
   const stream = extractor.createStream();
   stream.acceptWaveform({ sampleRate: wave.sampleRate, samples: wave.samples });
   const raw = Array.from(extractor.compute(stream));
@@ -359,6 +425,45 @@ async function concatIntervals(source, intervals, directory, options) {
   return output;
 }
 
+async function matchVoiceFromIntervals(
+  source,
+  ranges,
+  directory,
+  options,
+  profiles,
+  limits,
+) {
+  let remaining = limits.maximumAudioMs;
+  const selected = [];
+  for (const [start, end] of ranges) {
+    if (remaining <= 0) break;
+    const take = Math.min(remaining, end - start);
+    if (take > 0) selected.push([start, start + take]);
+    remaining -= take;
+  }
+  if (limits.maximumAudioMs - remaining < limits.minimumAudioMs) return null;
+  const segmentDirectory = await mkdtemp(join(directory, "segments-"));
+  try {
+    const waveform = await concatIntervals(
+      source,
+      selected,
+      segmentDirectory,
+      options,
+    );
+    const value = await waveData(
+      waveform,
+      { ...options, directory: segmentDirectory },
+      limits,
+    );
+    return chooseSpeaker(value.embedding, profiles);
+  } catch (error) {
+    if (error.message === "speaker_sample_too_short") return null;
+    throw error;
+  } finally {
+    await rm(segmentDirectory, { recursive: true, force: true });
+  }
+}
+
 export async function identifySpeakers(body, options) {
   const url = targetUrl(
     body.chunkUrl,
@@ -378,45 +483,53 @@ export async function identifySpeakers(body, options) {
     body.offsetMs,
     body.durationMs,
   );
+  const unknownIntervals = speakerUtteranceIntervals(
+    body.utterances,
+    body.offsetMs,
+    body.durationMs,
+  );
   const directory = await mkdtemp(join(tmpdir(), "yoin-speaker-identify-"));
   try {
     const source = join(directory, "chunk.audio");
     await fetchAudio(url, source, MAX_CHUNK_BYTES, { ...options, directory });
     const matches = [];
     for (const [speaker, ranges] of intervals) {
-      const speechMs = ranges.reduce(
+      const speakerProfileId = await matchVoiceFromIntervals(
+        source,
+        ranges,
+        directory,
+        options,
+        body.profiles,
+        {
+          minimumAudioMs: MIN_AUDIO_MS,
+          maximumAudioMs: MAX_AUDIO_MS,
+          minimumSpeechMs: MIN_SPEECH_MS,
+        },
+      );
+      matches.push({ speaker, speakerProfileId });
+    }
+    for (const [index, { utteranceId, ranges }] of unknownIntervals.entries()) {
+      const durationMs = ranges.reduce(
         (sum, [start, end]) => sum + end - start,
         0,
       );
-      let speakerProfileId = null;
-      if (speechMs >= MIN_AUDIO_MS && ranges.length) {
-        const segmentDirectory = await mkdtemp(join(directory, "segments-"));
-        let remaining = MAX_AUDIO_MS;
-        const selected = [];
-        for (const [start, end] of ranges) {
-          if (remaining <= 0) break;
-          const take = Math.min(remaining, end - start);
-          selected.push([start, start + take]);
-          remaining -= take;
-        }
-        const waveform = await concatIntervals(
-          source,
-          selected,
-          segmentDirectory,
-          options,
-        );
-        try {
-          const value = await waveData(waveform, {
-            ...options,
-            directory: segmentDirectory,
-          });
-          speakerProfileId = chooseSpeaker(value.embedding, body.profiles);
-        } catch (error) {
-          // An insufficient matching excerpt does not invalidate the recording.
-          if (error.message !== "speaker_sample_too_short") throw error;
-        }
-      }
-      matches.push({ speaker, speakerProfileId });
+      const speakerProfileId =
+        index < MAX_UNKNOWN_MATCH_UTTERANCES &&
+        durationMs >= MIN_MATCH_INTERVAL_MS
+          ? await matchVoiceFromIntervals(
+              source,
+              ranges,
+              directory,
+              options,
+              body.profiles,
+              {
+                minimumAudioMs: MIN_MATCH_INTERVAL_MS,
+                maximumAudioMs: MAX_MATCH_AUDIO_MS,
+                minimumSpeechMs: MIN_MATCH_SPEECH_MS,
+              },
+            )
+          : null;
+      matches.push({ speaker: "unknown", utteranceId, speakerProfileId });
     }
     return { matches, modelVersion: MODEL_VERSION };
   } finally {

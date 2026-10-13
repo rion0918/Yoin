@@ -6,6 +6,7 @@ import {
   MIN_SPEAKER_SAMPLE_MS,
   SPEAKER_SAMPLE_MS,
   type SpeakerProfile,
+  type TranscriptSpeakerAssignment,
   type Utterance,
 } from "../../shared/contracts.ts";
 import type { RecorderPhase } from "../platform/types.ts";
@@ -101,5 +102,58 @@ export function mergeSpeakerProfiles(
 }
 
 export function speakerLabel(utterance: Utterance) {
-  return utterance.speakerName || utterance.speaker;
+  return (
+    utterance.speakerName ||
+    (utterance.speaker === "unknown" ? "話者未特定" : utterance.speaker)
+  );
+}
+
+export function canAssignTranscriptSpeaker(utterance: Utterance) {
+  return !utterance.speakerProfileId && !utterance.speakerName;
+}
+
+export function transcriptReviewSummary(
+  utterances: Utterance[],
+  assignments: TranscriptSpeakerAssignment[],
+) {
+  const assignable = utterances.filter(canAssignTranscriptSpeaker);
+  const assignedIds = new Set(assignments.map((item) => item.utteranceId));
+  const assignedCount = assignable.filter((item) =>
+    assignedIds.has(item.id),
+  ).length;
+  return {
+    assignableCount: assignable.length,
+    assignedCount,
+    unresolvedCount: assignable.length - assignedCount,
+  };
+}
+
+export function transcriptReviewSpeakers(
+  speakers: SpeakerProfile[],
+  selectedIds: string[] | undefined,
+) {
+  const selected = new Set(selectedIds ?? []);
+  return speakers.filter(
+    (profile) =>
+      profile.status === "ready" &&
+      (!selected.size || selected.has(profile.id)),
+  );
+}
+
+export function updateTranscriptSpeakerAssignment(
+  assignments: TranscriptSpeakerAssignment[],
+  utteranceId: string,
+  speakerProfileId: string,
+): TranscriptSpeakerAssignment[] {
+  return [
+    ...assignments.filter((item) => item.utteranceId !== utteranceId),
+    { utteranceId, speakerProfileId },
+  ];
+}
+
+export function removeTranscriptSpeakerAssignment(
+  assignments: TranscriptSpeakerAssignment[],
+  utteranceId: string,
+): TranscriptSpeakerAssignment[] {
+  return assignments.filter((item) => item.utteranceId !== utteranceId);
 }

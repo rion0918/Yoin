@@ -16,6 +16,7 @@ import {
   type SongDocument,
   type SpeakerProfile,
   type SpeakerSampleDocument,
+  type TranscriptSpeakerAssignment,
 } from "../shared/contracts";
 import {
   DEFAULT_MUSIC_PREFERENCES,
@@ -1237,7 +1238,10 @@ export function useSession(identity: SessionIdentity) {
       return true;
     });
   }
-  async function approveTranscript(draftId: string) {
+  async function approveTranscript(
+    draftId: string,
+    assignments: TranscriptSpeakerAssignment[] = [],
+  ) {
     return run(async () => {
       const draft = getDraft(draftId);
       if (!draft.jobId) throw new Error("確認する文字起こしが見つかりません。");
@@ -1245,7 +1249,12 @@ export function useSession(identity: SessionIdentity) {
       const job = await api.job(draft.jobId);
       if (job.status !== "needs_audio_review" || !job.transcriptFingerprint)
         throw new Error("確認する文字起こしが見つかりません。");
-      await api.reviewTranscript(draftId, job.id, job.transcriptFingerprint);
+      await api.reviewTranscript(
+        draftId,
+        job.id,
+        job.transcriptFingerprint,
+        assignments,
+      );
       await updateDraft(draftId, (value) => ({
         ...value,
         status: "preparing",

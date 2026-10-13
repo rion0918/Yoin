@@ -189,6 +189,76 @@ test("STT normalizes zero-based colon speakers into the existing temporary label
     1,
   );
 });
+
+test("STT preserves word timing and leaves omitted speaker labels unidentified", () => {
+  const result = parseTranscription(
+    response([
+      {
+        type: "text",
+        annotations: [
+          {
+            type: "word_info",
+            text: "こんにちは。",
+            start_offset: "0.100s",
+            end_offset: "0.500s",
+          },
+          {
+            type: "word_info",
+            text: "おはよう。",
+            speaker: "spk:0",
+            start_offset: "1.000s",
+            end_offset: "1.500s",
+          },
+          {
+            type: "word_info",
+            text: "またね。",
+            start_offset: "2.000s",
+            end_offset: "2.500s",
+          },
+        ],
+      },
+    ]),
+    { clipId: "clip-a", offsetMs: 60000 },
+  );
+
+  assert.deepEqual(
+    result.utterances.map(({ speaker, text, startMs }) => ({
+      speaker,
+      text,
+      startMs,
+    })),
+    [
+      { speaker: "unknown", text: "こんにちは。", startMs: 60100 },
+      { speaker: "spk_1", text: "おはよう。", startMs: 61000 },
+      { speaker: "unknown", text: "またね。", startMs: 62000 },
+    ],
+  );
+});
+
+test("unlabeled transcript words stay in short reviewable phrases", () => {
+  const result = parseTranscription(
+    response([
+      {
+        type: "text",
+        annotations: Array.from({ length: 10 }, (_, index) => ({
+          type: "word_info",
+          text: `ことば${index}`,
+          start_offset: `${(index * 0.9).toFixed(1)}s`,
+          end_offset: `${(index * 0.9 + 0.7).toFixed(1)}s`,
+        })),
+      },
+    ]),
+    { clipId: "clip-a", offsetMs: 0 },
+  );
+
+  assert.ok(result.utterances.length > 1);
+  assert.ok(
+    result.utterances.every(
+      (utterance) => utterance.endMs - utterance.startMs <= 4000,
+    ),
+  );
+});
+
 test("saved completed transcriptions can be parsed without credentials or another request", () => {
   const raw = response([
     {

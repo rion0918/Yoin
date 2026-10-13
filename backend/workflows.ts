@@ -165,6 +165,7 @@ export async function prepareDraft(
   if (job.kind !== "prepare") throw new HttpError(409, "wrong_workflow_kind");
   if (["waiting_review", "ready", "needs_reconciliation"].includes(job.status))
     return;
+  const recoveringTranscript = job.stage === "recovering_transcription";
   try {
     await step.do("start", () => setJob(env, job, "running", "inspect_audio"));
     const sourceClips = await clips(env, job.draft_id, job.owner_id);
@@ -286,7 +287,8 @@ export async function prepareDraft(
               item.startMs >= chunk.offsetMs &&
               item.endMs <= chunk.offsetMs + chunk.durationMs,
           );
-          if (!candidates.length) continue;
+          const matchable = candidates;
+          if (!matchable.length) continue;
           const matches = await step.do(
             `identify-${clip.id}-${chunk.offsetMs}`,
             mediaStep,
@@ -295,31 +297,47 @@ export async function prepareDraft(
                 index,
                 offsetMs: chunk.offsetMs,
                 durationMs: chunk.durationMs,
-                utterances: candidates.map(({ speaker, startMs, endMs }) => ({
-                  speaker,
-                  startMs,
-                  endMs,
-                })),
+                utterances: matchable.map(
+                  ({ id, speaker, startMs, endMs }) => ({
+                    id,
+                    speaker,
+                    startMs,
+                    endMs,
+                  }),
+                ),
                 profiles: snapshot,
               }),
           );
+          const assignments = new Map<
+            string,
+            {
+              utteranceId: string;
+              speakerProfileId: string;
+              speakerName: string;
+            }
+          >();
           for (const match of matches) {
             if (!match.speakerProfileId) continue;
             const profile = snapshot.find(
               (item) => item.id === match.speakerProfileId,
             );
             if (!profile) throw new HttpError(502, "invalid_speaker_matches");
+            const targets = match.utteranceId
+              ? matchable.filter((item) => item.id === match.utteranceId)
+              : matchable.filter((item) => item.speaker === match.speaker);
+            for (const target of targets)
+              assignments.set(target.id, {
+                utteranceId: target.id,
+                speakerProfileId: profile.id,
+                speakerName: profile.name,
+              });
+          }
+          if (assignments.size) {
+            const values = JSON.stringify([...assignments.values()]);
             await env.DB.prepare(
-              "UPDATE utterances SET speaker_profile_id = ?, speaker_name = ? WHERE clip_id = ? AND speaker = ? AND start_ms >= ? AND end_ms <= ?",
+              "UPDATE utterances SET speaker_profile_id = (SELECT json_extract(value, '$.speakerProfileId') FROM json_each(?) WHERE json_extract(value, '$.utteranceId') = utterances.id), speaker_name = (SELECT json_extract(value, '$.speakerName') FROM json_each(?) WHERE json_extract(value, '$.utteranceId') = utterances.id) WHERE clip_id = ? AND id IN (SELECT json_extract(value, '$.utteranceId') FROM json_each(?))",
             )
-              .bind(
-                profile.id,
-                profile.name,
-                clip.id,
-                match.speaker,
-                chunk.offsetMs,
-                chunk.offsetMs + chunk.durationMs,
-              )
+              .bind(values, values, clip.id, values)
               .run();
           }
         }
@@ -327,7 +345,8 @@ export async function prepareDraft(
       source = await utterances(env, job.draft_id, job.owner_id);
     }
     if (!source.length) throw new HttpError(422, "no_speech_detected");
-    let needsAudioReview = false;
+    let needsAudioReview =
+      recoveringTranscript || source.some((item) => item.speaker === "unknown");
     for (const { clip, inspection } of inspected) {
       const activityRanges = inspection.chunks.flatMap(
         (chunk) => chunk.activityRanges ?? [],
@@ -386,7 +405,7 @@ export async function prepareDraft(
         .bind(JSON.stringify(summary), clip.id, job.owner_id)
         .run();
     }
-    const transcriptFingerprint = await sha256(JSON.stringify(source));
+    let transcriptFingerprint = await sha256(JSON.stringify(source));
     await env.DB.prepare(
       "UPDATE jobs SET transcript_fingerprint = ? WHERE id = ? AND owner_id = ?",
     )
@@ -394,6 +413,7 @@ export async function prepareDraft(
       .run();
     if (needsAudioReview) {
       await setJob(env, job, "needs_audio_review", "review_audio");
+      let approvedFingerprint: string;
       try {
         const review = await step.waitForEvent<{
           transcriptFingerprint: string;
@@ -401,8 +421,7 @@ export async function prepareDraft(
           type: "audio-transcript-review",
           timeout: "30 days",
         });
-        if (review.payload.transcriptFingerprint !== transcriptFingerprint)
-          return;
+        approvedFingerprint = review.payload.transcriptFingerprint;
       } catch {
         await setJob(
           env,
@@ -413,13 +432,14 @@ export async function prepareDraft(
         );
         return;
       }
-      const currentFingerprint = await sha256(
-        JSON.stringify(await utterances(env, job.draft_id, job.owner_id)),
-      );
-      if (currentFingerprint !== transcriptFingerprint) {
+      const reviewedSource = await utterances(env, job.draft_id, job.owner_id);
+      const reviewedFingerprint = await sha256(JSON.stringify(reviewedSource));
+      if (reviewedFingerprint !== approvedFingerprint) {
         await setJob(env, job, "needs_audio_review", "review_audio");
         return;
       }
+      source = reviewedSource;
+      transcriptFingerprint = reviewedFingerprint;
     }
     await setJob(env, job, "running", "creating_lyrics");
     const settings =

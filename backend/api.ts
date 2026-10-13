@@ -3,6 +3,8 @@ import {
   type LocationSample,
   MAX_AUDIO_MS,
   type MusicPreferences,
+  type RegisteredSpeaker,
+  type TranscriptSpeakerAssignment,
   UPLOAD_PART_BYTES,
   type UploadCreated,
 } from "../shared/contracts.ts";
@@ -647,38 +649,178 @@ async function reviewTranscript(
   const body = await json(request);
   const jobId = id(body.jobId);
   const fingerprint = text(body.transcriptFingerprint, 64);
+  const assignments = transcriptSpeakerAssignments(body.assignments);
   if (!/^[a-f0-9]{64}$/.test(fingerprint))
     throw new HttpError(422, "invalid_transcript_fingerprint");
   const draft = await ownedDraft(env, draftId, owner);
   const job = await ownedJob(env, jobId, owner);
   if (job.kind !== "prepare" || job.draft_id !== draftId)
     throw new HttpError(409, "draft_job_conflict");
-  if (draft.job_id !== job.id || job.transcript_fingerprint !== fingerprint)
+  if (draft.job_id !== job.id)
     throw new HttpError(409, "transcript_review_conflict");
+  const current = await utterances(env, draftId, owner);
+  const currentFingerprint = await sha256(JSON.stringify(current));
   const alreadyReviewed = Boolean(job.transcript_reviewed_at);
-  if (alreadyReviewed && job.status !== "needs_audio_review")
+  if (alreadyReviewed) {
+    if (currentFingerprint !== job.transcript_fingerprint)
+      throw new HttpError(409, "transcript_review_conflict");
+    if (job.status === "needs_audio_review") {
+      if (
+        !matchesSavedTranscriptAssignments(
+          assignments,
+          current,
+          job.speaker_snapshot_json,
+        )
+      )
+        throw new HttpError(409, "transcript_review_conflict");
+      const workflow = await env.PREPARE.get(job.id);
+      await workflow.sendEvent({
+        type: "audio-transcript-review",
+        payload: { transcriptFingerprint: currentFingerprint },
+      });
+    }
     return Response.json({ accepted: true });
+  }
+  if (job.transcript_fingerprint !== fingerprint)
+    throw new HttpError(409, "transcript_review_conflict");
   if (job.status !== "needs_audio_review")
     throw new HttpError(409, "transcript_review_conflict");
-  const currentFingerprint = await sha256(
-    JSON.stringify(await utterances(env, draftId, owner)),
-  );
   if (currentFingerprint !== fingerprint)
     throw new HttpError(409, "transcript_review_conflict");
-  await env.DB.prepare(
-    "UPDATE jobs SET transcript_reviewed_at = COALESCE(transcript_reviewed_at, ?) WHERE id = ? AND owner_id = ? AND transcript_fingerprint = ?",
-  )
-    .bind(new Date().toISOString(), job.id, owner, fingerprint)
-    .run();
+  const snapshot = job.speaker_snapshot_json
+    ? (JSON.parse(job.speaker_snapshot_json) as RegisteredSpeaker[])
+    : [];
+  const selectedIds = JSON.parse(draft.speaker_profile_ids_json) as string[];
+  const allowedIds = new Set(
+    selectedIds.length ? selectedIds : snapshot.map((profile) => profile.id),
+  );
+  const profileById = new Map(snapshot.map((profile) => [profile.id, profile]));
+  const assignmentsByUtterance = new Map<string, RegisteredSpeaker>();
+  for (const assignment of assignments) {
+    const target = current.find((item) => item.id === assignment.utteranceId);
+    const profile = profileById.get(assignment.speakerProfileId);
+    if (
+      !target ||
+      target.speakerProfileId ||
+      target.speakerName ||
+      !profile ||
+      !allowedIds.has(profile.id)
+    )
+      throw new HttpError(422, "invalid_speaker_assignment");
+    assignmentsByUtterance.set(assignment.utteranceId, profile);
+  }
+  const reviewed = current.map((item) => {
+    const profile = assignmentsByUtterance.get(item.id);
+    return profile
+      ? {
+          ...item,
+          speakerProfileId: profile.id,
+          speakerName: profile.name,
+        }
+      : item;
+  });
+  const reviewedFingerprint = await sha256(JSON.stringify(reviewed));
+  const assignmentsJson = JSON.stringify(
+    Object.fromEntries(
+      assignments.map((assignment) => {
+        const profile = assignmentsByUtterance.get(assignment.utteranceId);
+        if (!profile) throw new HttpError(422, "invalid_speaker_assignment");
+        return [
+          assignment.utteranceId,
+          { speakerProfileId: profile.id, speakerName: profile.name },
+        ];
+      }),
+    ),
+  );
+  const statements = assignments.length
+    ? [
+        env.DB.prepare(
+          "UPDATE utterances AS target SET speaker_profile_id = json_extract(assignment.value, '$.speakerProfileId'), speaker_name = json_extract(assignment.value, '$.speakerName') FROM json_each(?) AS assignment WHERE assignment.key = target.id AND target.speaker_profile_id IS NULL AND target.speaker_name IS NULL AND target.clip_id IN (SELECT id FROM clips WHERE draft_id = ? AND owner_id = ?) AND EXISTS (SELECT 1 FROM jobs WHERE id = ? AND owner_id = ? AND status = 'needs_audio_review' AND transcript_fingerprint = ?) AND (SELECT COUNT(*) FROM json_each(?) AS requested JOIN utterances AS eligible ON eligible.id = requested.key WHERE eligible.speaker_profile_id IS NULL AND eligible.speaker_name IS NULL AND eligible.clip_id IN (SELECT id FROM clips WHERE draft_id = ? AND owner_id = ?)) = ?",
+        ).bind(
+          assignmentsJson,
+          draftId,
+          owner,
+          job.id,
+          owner,
+          fingerprint,
+          assignmentsJson,
+          draftId,
+          owner,
+          assignments.length,
+        ),
+      ]
+    : [];
+  statements.push(
+    env.DB.prepare(
+      "UPDATE jobs SET transcript_fingerprint = ?, transcript_reviewed_at = COALESCE(transcript_reviewed_at, ?) WHERE id = ? AND owner_id = ? AND status = 'needs_audio_review' AND transcript_fingerprint = ? AND (SELECT COUNT(*) FROM json_each(?) AS assignment JOIN utterances AS target ON target.id = assignment.key WHERE target.speaker_profile_id = json_extract(assignment.value, '$.speakerProfileId') AND target.speaker_name = json_extract(assignment.value, '$.speakerName') AND target.clip_id IN (SELECT id FROM clips WHERE draft_id = ? AND owner_id = ?)) = ?",
+    ).bind(
+      reviewedFingerprint,
+      new Date().toISOString(),
+      job.id,
+      owner,
+      fingerprint,
+      assignmentsJson,
+      draftId,
+      owner,
+      assignments.length,
+    ),
+  );
+  const result = await env.DB.batch(statements);
+  if (result.at(-1)?.meta.changes !== 1)
+    throw new HttpError(409, "transcript_review_conflict");
   const workflow = await env.PREPARE.get(job.id);
   await workflow.sendEvent({
     type: "audio-transcript-review",
-    payload: { transcriptFingerprint: fingerprint },
+    payload: { transcriptFingerprint: reviewedFingerprint },
   });
   return Response.json(
     { accepted: true },
     { status: alreadyReviewed ? 200 : 202 },
   );
+}
+
+function transcriptSpeakerAssignments(
+  value: unknown,
+): TranscriptSpeakerAssignment[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 10_000)
+    throw new HttpError(422, "invalid_speaker_assignments");
+  const assignments = value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item))
+      throw new HttpError(422, "invalid_speaker_assignments");
+    const assignment = item as Record<string, unknown>;
+    return {
+      utteranceId: text(assignment.utteranceId, 200),
+      speakerProfileId: id(assignment.speakerProfileId),
+    };
+  });
+  if (
+    new Set(assignments.map((item) => item.utteranceId)).size !==
+    assignments.length
+  )
+    throw new HttpError(422, "invalid_speaker_assignments");
+  return assignments;
+}
+
+function matchesSavedTranscriptAssignments(
+  assignments: TranscriptSpeakerAssignment[],
+  current: Awaited<ReturnType<typeof utterances>>,
+  speakerSnapshotJson: string | null | undefined,
+) {
+  const snapshot = speakerSnapshotJson
+    ? (JSON.parse(speakerSnapshotJson) as RegisteredSpeaker[])
+    : [];
+  const profiles = new Map(snapshot.map((profile) => [profile.id, profile]));
+  const currentById = new Map(current.map((item) => [item.id, item]));
+  return assignments.every((assignment) => {
+    const profile = profiles.get(assignment.speakerProfileId);
+    const utterance = currentById.get(assignment.utteranceId);
+    return (
+      !!profile &&
+      utterance?.speakerProfileId === profile.id &&
+      utterance.speakerName === profile.name
+    );
+  });
 }
 
 async function submitJob(

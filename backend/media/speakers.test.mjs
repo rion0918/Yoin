@@ -10,6 +10,7 @@ import {
   enrollSpeaker,
   identifySpeakers,
   speakerIntervals,
+  speakerUtteranceIntervals,
 } from "./speakers.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -67,6 +68,67 @@ test("short utterances are excluded from speaker matching", () => {
   assert.deepEqual(intervals.get("spk_1"), []);
 });
 
+test("unlabelled speech cannot be matched as a diarized speaker by default", () => {
+  const intervals = speakerIntervals(
+    [{ speaker: "unknown", startMs: 0, endMs: 6000 }],
+    0,
+    10000,
+  );
+
+  assert.equal(intervals.has("unknown"), false);
+});
+
+test("unlabelled speech keeps separate utterance intervals for voice matching", () => {
+  assert.deepEqual(
+    speakerUtteranceIntervals(
+      [
+        { id: "u1", speaker: "unknown", startMs: 1000, endMs: 5000 },
+        { id: "u2", speaker: "unknown", startMs: 6000, endMs: 10000 },
+      ],
+      0,
+      12000,
+    ),
+    [
+      { utteranceId: "u1", ranges: [[1000, 5000]] },
+      { utteranceId: "u2", ranges: [[6000, 10000]] },
+    ],
+  );
+});
+
+test("unlabelled speech does not remove labelled speech from matching", () => {
+  const intervals = speakerIntervals(
+    [
+      { speaker: "spk_1", startMs: 0, endMs: 6000 },
+      { speaker: "unknown", startMs: 2000, endMs: 4000 },
+    ],
+    0,
+    10000,
+  );
+
+  assert.deepEqual(intervals.get("spk_1"), [[0, 6000]]);
+});
+
+test("unlabelled speech can be checked against one selected profile", () => {
+  const intervals = speakerIntervals(
+    [{ speaker: "unknown", startMs: 0, endMs: 6000 }],
+    0,
+    10000,
+    { includeUnknown: true },
+  );
+
+  assert.deepEqual(intervals.get("unknown"), [[0, 6000]]);
+});
+
+test("unlabelled speech is excluded when multiple profiles are selected", () => {
+  const intervals = speakerIntervals(
+    [{ speaker: "unknown", startMs: 0, endMs: 6000 }],
+    0,
+    10000,
+  );
+
+  assert.equal(intervals.has("unknown"), false);
+});
+
 test("the same temporary label in another chunk is compared independently", () => {
   const first = speakerIntervals(
     [{ speaker: "spk_1", startMs: 0, endMs: 6000 }],
@@ -116,6 +178,12 @@ test("a three-minute recording keeps temporary labels when the extracted voice i
         // Simulate a reported chunk end slightly beyond the decoded samples.
         { speaker: "spk_1", startMs: durationMs - 10_000, endMs: durationMs },
         { speaker: "spk_2", startMs: 1_000, endMs: 5_000 },
+        {
+          id: "unlabelled-1",
+          speaker: "unknown",
+          startMs: 10_000,
+          endMs: 15_000,
+        },
       ],
       profiles: [
         {
@@ -136,6 +204,11 @@ test("a three-minute recording keeps temporary labels when the extracted voice i
     assert.deepEqual(result.matches, [
       { speaker: "spk_1", speakerProfileId: null },
       { speaker: "spk_2", speakerProfileId: null },
+      {
+        speaker: "unknown",
+        utteranceId: "unlabelled-1",
+        speakerProfileId: null,
+      },
     ]);
     await assert.rejects(
       identifySpeakers(body, {

@@ -83,6 +83,19 @@ describe("provider transcript validation", () => {
       "invalid_number",
     );
   });
+
+  it("accepts an utterance whose speaker is explicitly unidentified", () => {
+    const utterance = {
+      id: "clip:u:100:1",
+      clipId: "clip",
+      startMs: 100,
+      endMs: 500,
+      speaker: "unknown",
+      text: "駅へ向かおう。",
+    };
+
+    expect(validateUtterances([utterance], "clip", 600)).toEqual([utterance]);
+  });
 });
 
 it("rejects review edits beyond the music provider's lyric limits", () => {

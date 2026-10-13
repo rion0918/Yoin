@@ -176,7 +176,12 @@ export async function identifySpeakersInChunk(
     index: number;
     offsetMs: number;
     durationMs: number;
-    utterances: Array<{ speaker: string; startMs: number; endMs: number }>;
+    utterances: Array<{
+      id: string;
+      speaker: string;
+      startMs: number;
+      endMs: number;
+    }>;
     profiles: RegisteredSpeaker[];
   },
 ): Promise<SpeakerMatch[]> {
@@ -199,7 +204,16 @@ export async function identifySpeakersInChunk(
       .filter((profile) => profile.modelVersion === SPEAKER_MODEL_VERSION)
       .map((profile) => profile.id),
   );
-  const labels = new Set(input.utterances.map((item) => item.speaker));
+  const labels = new Set(
+    input.utterances
+      .filter((item) => item.speaker !== "unknown")
+      .map((item) => item.speaker),
+  );
+  const unknownIds = new Set(
+    input.utterances
+      .filter((item) => item.speaker === "unknown")
+      .map((item) => item.id),
+  );
   if (
     !result ||
     typeof result !== "object" ||
@@ -209,24 +223,39 @@ export async function identifySpeakersInChunk(
   )
     throw new HttpError(502, "invalid_speaker_matches");
   const matches = (result as { matches: unknown[] }).matches;
-  if (matches.length !== labels.size)
+  if (matches.length !== labels.size + unknownIds.size)
     throw new HttpError(502, "invalid_speaker_matches");
   const seen = new Set<string>();
   return matches.map((item) => {
-    const match = item as { speaker?: unknown; speakerProfileId?: unknown };
+    const match = item as {
+      speaker?: unknown;
+      speakerProfileId?: unknown;
+      utteranceId?: unknown;
+    };
+    const identity =
+      typeof match.utteranceId === "string"
+        ? `utterance:${match.utteranceId}`
+        : `speaker:${String(match.speaker)}`;
     if (
       typeof match.speaker !== "string" ||
-      !labels.has(match.speaker) ||
-      seen.has(match.speaker) ||
+      (match.utteranceId === undefined
+        ? !labels.has(match.speaker) || match.speaker === "unknown"
+        : match.speaker !== "unknown" ||
+          typeof match.utteranceId !== "string" ||
+          !unknownIds.has(match.utteranceId)) ||
+      seen.has(identity) ||
       (match.speakerProfileId !== null &&
         (typeof match.speakerProfileId !== "string" ||
           !allowed.has(match.speakerProfileId)))
     )
       throw new HttpError(502, "invalid_speaker_matches");
-    seen.add(match.speaker);
+    seen.add(identity);
     return {
       speaker: match.speaker,
       speakerProfileId: match.speakerProfileId as string | null,
+      ...(typeof match.utteranceId === "string"
+        ? { utteranceId: match.utteranceId }
+        : {}),
     };
   });
 }

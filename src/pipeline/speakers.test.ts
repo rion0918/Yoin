@@ -144,6 +144,10 @@ test("conversation names use the saved identification and legacy labels still re
   };
   assert.equal(speakerLabel(utterance), "spk_1");
   assert.equal(
+    speakerLabel({ ...utterance, speaker: "unknown" }),
+    "話者未特定",
+  );
+  assert.equal(
     speakerLabel({
       ...utterance,
       speakerProfileId: profile.id,
@@ -201,4 +205,127 @@ test("voice registration timer never becomes negative after the target duration"
   const view = speakerUi.speakerSampleState(undefined, "recording", 21000);
   assert.equal(view.remainingSeconds, 0);
   assert.equal(view.progress, 1);
+});
+
+test("transcript review only offers ready participants selected for that recording", () => {
+  const speakers = [
+    {
+      id: "speaker-a",
+      name: "あおい",
+      status: "ready" as const,
+      sampleId: "a",
+      modelVersion: "v1",
+    },
+    {
+      id: "speaker-b",
+      name: "れん",
+      status: "ready" as const,
+      sampleId: "b",
+      modelVersion: "v1",
+    },
+    {
+      id: "speaker-c",
+      name: "みな",
+      status: "pending" as const,
+      sampleId: null,
+      modelVersion: null,
+    },
+  ];
+  assert.deepEqual(
+    speakerUi.transcriptReviewSpeakers(speakers, ["speaker-b", "speaker-c"]),
+    [speakers[1]],
+  );
+});
+
+test("transcript review allows assigning anonymous labels but preserves identified voices", () => {
+  assert.equal(
+    speakerUi.canAssignTranscriptSpeaker({
+      id: "anonymous",
+      clipId: "clip",
+      startMs: 0,
+      endMs: 1000,
+      speaker: "話者 1",
+      text: "駅に着いたよ",
+    }),
+    true,
+  );
+  assert.equal(
+    speakerUi.canAssignTranscriptSpeaker({
+      id: "identified",
+      clipId: "clip",
+      startMs: 1000,
+      endMs: 2000,
+      speaker: "話者 1",
+      speakerProfileId: "speaker-a",
+      speakerName: "あおい",
+      text: "桜が咲いてるね",
+    }),
+    false,
+  );
+});
+
+test("transcript review summary reports assigned and unresolved speaker utterances", () => {
+  assert.deepEqual(
+    speakerUi.transcriptReviewSummary(
+      [
+        {
+          id: "unknown-1",
+          clipId: "clip",
+          startMs: 0,
+          endMs: 3000,
+          speaker: "unknown",
+          text: "また歩こう",
+        },
+        {
+          id: "unknown-2",
+          clipId: "clip",
+          startMs: 4000,
+          endMs: 7000,
+          speaker: "unknown",
+          text: "そうだね",
+        },
+        {
+          id: "identified",
+          clipId: "clip",
+          startMs: 8000,
+          endMs: 10000,
+          speaker: "spk_1",
+          speakerProfileId: "speaker-a",
+          speakerName: "あおい",
+          text: "帰ろう",
+        },
+      ],
+      [{ utteranceId: "unknown-1", speakerProfileId: "speaker-b" }],
+    ),
+    { assignableCount: 2, assignedCount: 1, unresolvedCount: 1 },
+  );
+});
+
+test("changing a transcript speaker assignment replaces only that utterance", () => {
+  const assignments = [
+    { utteranceId: "clip:u:100:1", speakerProfileId: "speaker-a" },
+    { utteranceId: "clip:u:200:1", speakerProfileId: "speaker-b" },
+  ];
+  assert.deepEqual(
+    speakerUi.updateTranscriptSpeakerAssignment(
+      assignments,
+      "clip:u:100:1",
+      "speaker-b",
+    ),
+    [
+      { utteranceId: "clip:u:200:1", speakerProfileId: "speaker-b" },
+      { utteranceId: "clip:u:100:1", speakerProfileId: "speaker-b" },
+    ],
+  );
+});
+
+test("clearing a transcript speaker assignment leaves other choices untouched", () => {
+  const assignments = [
+    { utteranceId: "clip:u:100:1", speakerProfileId: "speaker-a" },
+    { utteranceId: "clip:u:200:1", speakerProfileId: "speaker-b" },
+  ];
+  assert.deepEqual(
+    speakerUi.removeTranscriptSpeakerAssignment(assignments, "clip:u:100:1"),
+    [{ utteranceId: "clip:u:200:1", speakerProfileId: "speaker-b" }],
+  );
 });

@@ -6,6 +6,7 @@ import {
   requestDeletion,
 } from "../accounts.ts";
 import { handleRequest } from "../api.ts";
+import { deleteMemoryData } from "../memory-deletion.ts";
 import initial from "../migrations/0001_initial.sql?raw";
 import runtime from "../migrations/0002_audio_runtime.sql?raw";
 import speakers from "../migrations/0003_speaker_profiles.sql?raw";
@@ -136,6 +137,155 @@ it("separates lists, ID access, speaker profiles and signed playback for two use
   expect(
     (await handleRequest(new Request(playback.url), bindings)).status,
   ).toBe(403);
+});
+it("accepts owner-scoped memory deletion, hides the song, and rejects other owners", async () => {
+  mockFirebaseKeys();
+  const createCalls: string[] = [];
+  const created = new Set<string>();
+  bindings.DELETE_MEMORY = {
+    create: async ({ id }: { id: string }) => {
+      if (created.has(id)) throw new Error("instance already exists");
+      created.add(id);
+      createCalls.push(id);
+    },
+    get: async () => ({ status: async () => ({ status: "running" }) }),
+  } as unknown as Env["DELETE_MEMORY"];
+
+  const deleted = await api("alice", "/drafts/alice-draft", "DELETE");
+  expect(deleted.status).toBe(202);
+  expect(await deleted.json()).toEqual({ status: "deleting" });
+  expect((await api("alice", "/drafts/alice-draft/deletion")).status).toBe(200);
+  expect(await (await api("alice", "/songs")).json()).toEqual([]);
+  expect((await api("bob", "/drafts/alice-draft", "DELETE")).status).toBe(404);
+  expect((await api("alice", "/drafts/alice-draft", "DELETE")).status).toBe(
+    202,
+  );
+  expect(createCalls).toHaveLength(1);
+  expect(
+    await bindings.DB.prepare("SELECT status FROM memory_deletions").first(),
+  ).toEqual({ status: "deleting" });
+  const firstWorkflow = (
+    await bindings.DB.prepare(
+      "SELECT workflow_id FROM memory_deletions WHERE owner_id = 'alice'",
+    ).first<{ workflow_id: string }>()
+  )?.workflow_id;
+  await bindings.DB.prepare(
+    "UPDATE memory_deletions SET status = 'failed' WHERE owner_id = 'alice'",
+  ).run();
+  expect((await api("alice", "/drafts/alice-draft", "DELETE")).status).toBe(
+    202,
+  );
+  const retriedWorkflow = await bindings.DB.prepare(
+    "SELECT workflow_id, status FROM memory_deletions WHERE owner_id = 'alice'",
+  ).first<{ workflow_id: string; status: string }>();
+  expect(retriedWorkflow?.workflow_id).not.toBe(firstWorkflow);
+  expect(retriedWorkflow?.status).toBe("deleting");
+  expect(createCalls).toHaveLength(2);
+});
+it("deletes only one memory's objects and rows while retaining its budget ledger", async () => {
+  await bindings.DB.prepare(
+    "INSERT INTO clips (id, draft_id, owner_id, mime_type, size_bytes, duration_ms, timezone, object_key, status) VALUES ('alice-clip', 'alice-draft', 'alice', 'audio/mp4', 3, 1000, 'Asia/Tokyo', 'originals/alice/alice-clip', 'uploaded')",
+  ).run();
+  const pendingUpload = await bindings.AUDIO.createMultipartUpload(
+    "originals/alice/alice-pending",
+  );
+  await bindings.DB.prepare(
+    "INSERT INTO clips (id, draft_id, owner_id, mime_type, size_bytes, duration_ms, timezone, object_key, upload_id, status) VALUES ('alice-pending', 'alice-draft', 'alice', 'audio/mp4', 3, 1000, 'Asia/Tokyo', 'originals/alice/alice-pending', ?, 'uploading')",
+  )
+    .bind(pendingUpload.uploadId)
+    .run();
+  await bindings.DB.prepare(
+    "UPDATE provider_attempts SET output_key = 'results/alice/alice-attempt.json' WHERE id = 'alice-attempt'",
+  ).run();
+  await bindings.AUDIO.put("originals/alice/alice-clip", "clip");
+  await bindings.AUDIO.put(
+    "processed/alice/alice-job/alice-clip/0.m4a",
+    "clip",
+  );
+  await bindings.AUDIO.put("songs/alice/alice-job.mp3", "song");
+  await bindings.AUDIO.put("results/alice/alice-attempt.json", "response");
+  await bindings.AUDIO.put("results/alice/alice-attempt-other.json", "keep");
+  await bindings.AUDIO.put(
+    "locations/alice/alice-draft/alice-clip/location.json",
+    "location",
+  );
+  await bindings.DB.prepare(
+    "INSERT INTO memory_deletions (owner_id, draft_id, workflow_id, status, requested_at) VALUES ('alice', 'alice-draft', 'memory-alice', 'deleting', '2026-10-13')",
+  ).run();
+
+  const ledgerBefore = (
+    await bindings.DB.prepare("SELECT * FROM budget_ledger ORDER BY id").all()
+  ).results;
+  await deleteMemoryData(bindings, { uid: "alice", draftId: "alice-draft" });
+  await deleteMemoryData(bindings, { uid: "alice", draftId: "alice-draft" });
+
+  expect(deletedWorkflows).toContain("alice-job");
+  expect(deletedWorkflows).not.toContain("bob-job");
+  expect(
+    await bindings.DB.prepare(
+      "SELECT * FROM drafts WHERE owner_id = 'alice'",
+    ).all(),
+  ).toMatchObject({ results: [] });
+  expect(
+    await bindings.DB.prepare(
+      "SELECT * FROM drafts WHERE owner_id = 'bob'",
+    ).all(),
+  ).toMatchObject({ results: [{ id: "bob-draft" }] });
+  expect(
+    await bindings.DB.prepare(
+      "SELECT * FROM songs WHERE owner_id = 'alice'",
+    ).all(),
+  ).toMatchObject({ results: [] });
+  expect(
+    await bindings.DB.prepare(
+      "SELECT * FROM songs WHERE owner_id = 'bob'",
+    ).all(),
+  ).toMatchObject({ results: [{ id: "bob-song" }] });
+  for (const [table, query] of [
+    ["clips", "SELECT id FROM clips WHERE owner_id = 'alice'"],
+    ["jobs", "SELECT id FROM jobs WHERE owner_id = 'alice'"],
+    [
+      "provider_attempts",
+      "SELECT id FROM provider_attempts WHERE owner_id = 'alice'",
+    ],
+    ["audio_objects", "SELECT id FROM audio_objects WHERE owner_id = 'alice'"],
+    [
+      "lyric_revisions",
+      "SELECT draft_id FROM lyric_revisions WHERE draft_id = 'alice-draft'",
+    ],
+  ]) {
+    expect(await bindings.DB.prepare(query).all(), table).toMatchObject({
+      results: [],
+    });
+  }
+  expect(
+    await bindings.DB.prepare(
+      "SELECT id FROM speaker_profiles WHERE owner_id = 'alice'",
+    ).all(),
+  ).toMatchObject({ results: [{ id: "alice-speaker" }] });
+  expect(
+    await bindings.DB.prepare(
+      "SELECT status FROM memory_deletions WHERE owner_id = 'alice'",
+    ).first(),
+  ).toEqual({ status: "deleted" });
+  expect(
+    (await bindings.DB.prepare("SELECT * FROM budget_ledger ORDER BY id").all())
+      .results,
+  ).toEqual(ledgerBefore);
+  for (const key of [
+    "originals/alice/alice-clip",
+    "processed/alice/alice-job/alice-clip/0.m4a",
+    "songs/alice/song.mp3",
+    "songs/alice/alice-job.mp3",
+    "results/alice/alice-attempt.json",
+    "locations/alice/alice-draft/alice-clip/location.json",
+  ])
+    expect(await bindings.AUDIO.head(key)).toBeNull();
+  expect(
+    await bindings.AUDIO.head("results/alice/alice-attempt-other.json"),
+  ).not.toBeNull();
+  expect(await bindings.AUDIO.head("voices/alice/song.mp3")).not.toBeNull();
+  expect(await bindings.AUDIO.head("songs/bob/song.mp3")).not.toBeNull();
 });
 it("deletion resumes after a service failure, removes only its owner, and keeps global reservations", async () => {
   await bindings.DB.prepare(

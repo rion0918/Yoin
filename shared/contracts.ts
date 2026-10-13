@@ -262,6 +262,15 @@ export type SongDocument = {
   durationMs: number;
 };
 
+export type PendingMemoryDeletion = {
+  draftId: string;
+  clipIds: string[];
+  localUris: string[];
+  remote: boolean;
+  status: "requesting" | "deleting" | "failed" | "local_failed";
+  localCleanupComplete?: boolean;
+};
+
 export type JobDocument = {
   id: string;
   draftId: string;
@@ -290,6 +299,7 @@ export type LibraryDocument = {
   recoveryFiles?: NonNullable<LibraryDocument["pendingRecording"]>[];
   locationRoutes?: LocalLocationRoute[];
   locationPlaceCache?: LocalLocationPlaceCache[];
+  pendingMemoryDeletions?: PendingMemoryDeletion[];
 };
 
 export type MediaChunk = {

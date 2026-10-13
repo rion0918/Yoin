@@ -245,6 +245,56 @@ export function completeSong(
   };
 }
 
+export function removeMemoryReferences(
+  state: LibraryDocument,
+  draftId: string,
+): LibraryDocument {
+  const sampleKey = (sample: { latitude: number; longitude: number }) =>
+    `${sample.latitude},${sample.longitude}`;
+  const deletedLocationSamples = new Set(
+    (state.locationRoutes ?? [])
+      .filter((entry) => entry.route.draftId === draftId)
+      .flatMap((entry) =>
+        entry.route.segments.flatMap((segment) =>
+          segment.samples.map(sampleKey),
+        ),
+      ),
+  );
+  const retainedLocationSamples = new Set(
+    (state.locationRoutes ?? [])
+      .filter((entry) => entry.route.draftId !== draftId)
+      .flatMap((entry) =>
+        entry.route.segments.flatMap((segment) =>
+          segment.samples.map(sampleKey),
+        ),
+      ),
+  );
+  return {
+    ...state,
+    drafts: state.drafts.filter((draft) => draft.id !== draftId),
+    songs: state.songs.filter((song) => song.draftId !== draftId),
+    recoveryFiles: (state.recoveryFiles ?? []).filter(
+      (recording) =>
+        recording.purpose === "speaker" || recording.draftId !== draftId,
+    ),
+    pendingRecording:
+      state.pendingRecording?.purpose !== "speaker" &&
+      state.pendingRecording?.draftId === draftId
+        ? null
+        : state.pendingRecording,
+    locationRoutes: (state.locationRoutes ?? []).filter(
+      (route) => route.route.draftId !== draftId,
+    ),
+    locationPlaceCache: (state.locationPlaceCache ?? []).filter((cached) => {
+      const sample = sampleKey(cached);
+      return (
+        !deletedLocationSamples.has(sample) ||
+        retainedLocationSamples.has(sample)
+      );
+    }),
+  };
+}
+
 export function sourceContext(
   clip: AudioClip,
   offsetMs = 0,

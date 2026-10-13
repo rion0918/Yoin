@@ -1,10 +1,12 @@
 export type WorkflowParams = { jobId: string };
+export type MemoryDeletionParams = { uid: string; draftId: string };
 export type Env = {
   DB: D1Database;
   AUDIO: R2Bucket;
   PREPARE: Workflow<WorkflowParams>;
   GENERATE: Workflow<WorkflowParams>;
   DELETE_ACCOUNT: Workflow<{ uid: string }>;
+  DELETE_MEMORY: Workflow<MemoryDeletionParams>;
   MEDIA_SERVICE_URL: string;
   FIREBASE_PROJECT_ID: string;
   ALLOWED_TESTER_EMAILS: string;

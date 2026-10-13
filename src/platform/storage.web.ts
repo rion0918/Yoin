@@ -64,6 +64,12 @@ export async function preserveRecording(_uid: string, clip: SavedRecording) {
 export async function eraseLibrary(uid: string) {
   localStorage.removeItem(`yoin.library.${accountStorageKey(uid)}`);
 }
+export async function eraseMemory(
+  _uid: string,
+  _draftId: string,
+  _clipIds: string[],
+  _localUris: string[],
+) {}
 export async function readSpeakerAudio(_uri: string): Promise<Uint8Array> {
   throw nativeOnly();
 }

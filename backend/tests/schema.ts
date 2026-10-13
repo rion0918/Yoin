@@ -5,6 +5,7 @@ import songTitleSchema from "../migrations/0008_song_title.sql?raw";
 import timingReviewSchema from "../migrations/0009_transcript_timing_review.sql?raw";
 import musicSchema from "../migrations/0010_music_generation_input.sql?raw";
 import speakerMatchingSchema from "../migrations/0011_speaker_matching_input.sql?raw";
+import memoryDeletionSchema from "../migrations/0012_memory_deletion.sql?raw";
 
 export async function applyAccountSchema(db: D1Database) {
   const [tables, ...triggers] = accountSchema.split("CREATE TRIGGER ");
@@ -57,5 +58,16 @@ export async function applyAccountSchema(db: D1Database) {
       .map((sql) => sql.trim())
       .filter(Boolean)
       .map((sql) => db.prepare(sql)),
+  );
+  const [memoryTables, ...memoryTriggers] =
+    memoryDeletionSchema.split("CREATE TRIGGER ");
+  await db.batch(
+    [
+      ...memoryTables
+        .split(";")
+        .map((sql) => sql.trim())
+        .filter(Boolean),
+      ...memoryTriggers.map((sql) => `CREATE TRIGGER ${sql}`),
+    ].map((sql) => db.prepare(sql)),
   );
 }

@@ -192,6 +192,15 @@ export function createApi(
           ? { speakerProfileIds: draft.speakerProfileIds }
           : {}),
       }),
+    deleteMemory: (id: string) =>
+      request<{ status: "deleting" | "deleted" }>(
+        `/drafts/${encodeURIComponent(id)}`,
+        "DELETE",
+      ),
+    memoryDeletion: (id: string) =>
+      request<{ status: "deleting" | "deleted" | "failed" }>(
+        `/drafts/${encodeURIComponent(id)}/deletion`,
+      ),
     createUpload: (clip: AudioClip) =>
       request<UploadCreated>(
         `/drafts/${encodeURIComponent(clip.draftId)}/clips`,

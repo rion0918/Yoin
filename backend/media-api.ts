@@ -167,6 +167,6 @@ export async function uploadMediaChunk(
   await fixedBody(request, size, (body) =>
     env.AUDIO.put(key, body, { httpMetadata: { contentType: "audio/mp4" } }),
   );
-  await finishOwnedUpload(env, owner, key);
+  await finishOwnedUpload(env, owner, key, job.draft_id);
   return Response.json({ key });
 }

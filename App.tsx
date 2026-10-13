@@ -116,10 +116,16 @@ function LibraryRoute({
   navigation,
 }: NativeStackScreenProps<Routes, "Library">) {
   const app = useController();
+  const deletionIds = new Set(
+    (app.state.pendingMemoryDeletions ?? []).map(
+      (deletion) => deletion.draftId,
+    ),
+  );
   const screenProps = {
-    songs: app.state.songs,
-    drafts: app.state.drafts,
+    songs: app.state.songs.filter((song) => !deletionIds.has(song.draftId)),
+    drafts: app.state.drafts.filter((draft) => !deletionIds.has(draft.id)),
     speakers: app.state.speakerProfiles ?? [],
+    pendingMemoryDeletions: app.state.pendingMemoryDeletions ?? [],
     onSettings: () => app.show({ kind: "settings" }),
     onSpeakerSettings: () => app.show({ kind: "speakers" }),
     onNewRecording: async (speakerProfileIds: string[]) => {
@@ -155,6 +161,12 @@ function LibraryRoute({
       void app
         .openSong(song)
         .then(() => navigation.navigate("Music", { songId: song.id }));
+    },
+    onDeleteMemory: (draftId: string) => {
+      void app.deleteMemory(draftId);
+    },
+    onRetryMemoryDeletion: (draftId: string) => {
+      void app.retryMemoryDeletion(draftId);
     },
   };
   return (
@@ -405,6 +417,7 @@ function SessionApp({
     setActiveSourceClipId(null);
     setActiveTranscriptUtteranceId(null);
     setSheetOpen(false);
+    setOverlay(null);
   };
   const show = useCallback(
     (next: Overlay) => {
@@ -485,6 +498,34 @@ function SessionApp({
     draft?.lyrics,
     draft?.songTitle,
   ]);
+  useEffect(() => {
+    const route = navigationRef.isReady()
+      ? navigationRef.getCurrentRoute()
+      : undefined;
+    if (route?.name === "Recording") {
+      const draftId = (route.params as Routes["Recording"]).draftId;
+      if (app.deletedMemoryIds.includes(draftId))
+        navigationRef.navigate("Library");
+    } else if (route?.name === "Music") {
+      const songId = (route.params as Routes["Music"]).songId;
+      if (!app.state.songs.some((song) => song.id === songId))
+        navigationRef.navigate("Library");
+    }
+    const overlayDraftId =
+      overlay && "draftId" in overlay
+        ? overlay.draftId
+        : overlay?.kind === "source" && "draftId" in overlay.document
+          ? overlay.document.draftId
+          : undefined;
+    if (overlayDraftId && app.deletedMemoryIds.includes(overlayDraftId)) {
+      Keyboard.dismiss();
+      void app.closeSource();
+      setActiveSourceClipId(null);
+      setActiveTranscriptUtteranceId(null);
+      setSheetOpen(false);
+      setOverlay(null);
+    }
+  }, [app.closeSource, app.deletedMemoryIds, app.state.songs, overlay]);
   useEffect(() => {
     const route = navigationRef.isReady()
       ? navigationRef.getCurrentRoute()

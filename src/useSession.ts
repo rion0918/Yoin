@@ -12,6 +12,7 @@ import {
   MAX_SPEAKER_SAMPLE_MS,
   MIN_SPEAKER_SAMPLE_MS,
   type MusicPreferences,
+  type PendingMemoryDeletion,
   type SavedRecording,
   type SongDocument,
   type SpeakerProfile,
@@ -34,6 +35,7 @@ import {
   editSingingText,
   markLocationUploaded,
   mergeRemoteDraft,
+  removeMemoryReferences,
   restoreRecording,
 } from "./pipeline/library";
 import {
@@ -55,6 +57,7 @@ import {
 import {
   deleteSpeakerAudio,
   eraseLibrary,
+  eraseMemory,
   importAudio,
   loadLibrary,
   preserveRecording,
@@ -65,6 +68,7 @@ import {
   useAudioEngine,
 } from "./platform";
 import { createAccountScope } from "./platform/account";
+import { eraseMemoryLocationCapture } from "./platform/locationTask";
 
 function id(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
@@ -97,9 +101,13 @@ export function useSession(identity: SessionIdentity) {
     },
   });
   const [accountDeleted, setAccountDeleted] = useState(false);
+  const [deletedMemoryIds, setDeletedMemoryIds] = useState<string[]>([]);
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  const memoryDeletionLocks = useRef(new Set<string>());
+  const confirmedMemoryDeletions = useRef(new Set<string>());
+  const activeSourceClipId = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const clearError = useCallback(() => setError(null), []);
   const queue = useRef(Promise.resolve());
@@ -122,7 +130,9 @@ export function useSession(identity: SessionIdentity) {
     (change: (current: LibraryDocument) => LibraryDocument) => {
       const operation = queue.current.then(async () => {
         scope.assertActive();
-        const next = change(stateRef.current);
+        let next = change(stateRef.current);
+        for (const draftId of confirmedMemoryDeletions.current)
+          next = removeMemoryReferences(next, draftId);
         await saveLibrary(identity.uid, next);
         scope.assertActive();
         stateRef.current = next;
@@ -169,6 +179,12 @@ export function useSession(identity: SessionIdentity) {
       .then(() => loadLibrary(identity.uid))
       .then(async (stored) => {
         let restored = stored;
+        const pendingDeletions = stored.pendingMemoryDeletions ?? [];
+        for (const deletion of pendingDeletions) {
+          if (!deletion.remote || deletion.status !== "requesting")
+            confirmedMemoryDeletions.current.add(deletion.draftId);
+        }
+        const hiddenMemoryIds = new Set(confirmedMemoryDeletions.current);
         if (stored.pendingRecording) {
           const pending = stored.pendingRecording;
           const canRecover =
@@ -176,7 +192,11 @@ export function useSession(identity: SessionIdentity) {
               ? stored.speakerProfiles?.some(
                   (profile) => profile.id === pending.speakerProfileId,
                 )
-              : stored.drafts.some((draft) => draft.id === pending.draftId);
+              : stored.drafts.some(
+                  (draft) =>
+                    draft.id === pending.draftId &&
+                    !hiddenMemoryIds.has(pending.draftId),
+                );
           const recovered = canRecover
             ? await recoverRecording(identity.uid, stored.pendingRecording)
             : null;
@@ -188,6 +208,11 @@ export function useSession(identity: SessionIdentity) {
           await saveLibrary(identity.uid, restored);
         }
         for (const pending of stored.recoveryFiles ?? []) {
+          if (
+            pending.purpose !== "speaker" &&
+            hiddenMemoryIds.has(pending.draftId)
+          )
+            continue;
           const exists =
             pending.purpose === "speaker"
               ? restored.speakerProfiles?.some(
@@ -206,9 +231,12 @@ export function useSession(identity: SessionIdentity) {
           }
         }
         if (!alive) return;
+        for (const draftId of hiddenMemoryIds)
+          restored = removeMemoryReferences(restored, draftId);
         stateRef.current = restored;
         setState(restored);
         setReady(true);
+        if (hiddenMemoryIds.size > 0) await saveLibrary(identity.uid, restored);
       })
       .catch((failure) => {
         if (alive) setError(`保存データを読み込めません。${message(failure)}`);
@@ -998,19 +1026,25 @@ export function useSession(identity: SessionIdentity) {
       return true;
     });
   }
+  const reconcileMemoryDeletionRef = useRef<
+    (deletion: PendingMemoryDeletion) => Promise<void>
+  >(async () => {});
   const polling = useRef(false);
   const refresh = useCallback(async () => {
     if (polling.current || busyRef.current || scope.signal.aborted) return;
     polling.current = true;
     try {
+      for (const deletion of stateRef.current.pendingMemoryDeletions ?? [])
+        await reconcileMemoryDeletionRef.current(deletion);
       const api = createApi(connectionRef.current);
       for (const draft of stateRef.current.drafts.filter(
         (value) =>
-          value.status === "updating_readings" ||
-          value.status === "preparing" ||
-          value.status === "generating" ||
-          value.status === "needs_audio_review" ||
-          value.status === "needs_reconciliation",
+          !confirmedMemoryDeletions.current.has(value.id) &&
+          (value.status === "updating_readings" ||
+            value.status === "preparing" ||
+            value.status === "generating" ||
+            value.status === "needs_audio_review" ||
+            value.status === "needs_reconciliation"),
       )) {
         let jobId = draft.jobId;
         if (!jobId) {
@@ -1169,6 +1203,7 @@ export function useSession(identity: SessionIdentity) {
     async (song: SongDocument) => {
       playbackRequest.current++;
       activeSong.current = song;
+      activeSourceClipId.current = null;
       setActiveSongId(song.id);
       changePlayback({ type: "selectSong", durationMs: song.durationMs });
       await audioRef.current.stopPlayback();
@@ -1216,6 +1251,7 @@ export function useSession(identity: SessionIdentity) {
   ) {
     return run(async () => {
       const request = ++playbackRequest.current;
+      activeSourceClipId.current = clipId;
       changePlayback({
         type: "playSource",
         currentMs: audioRef.current.state.positionMs,
@@ -1289,10 +1325,315 @@ export function useSession(identity: SessionIdentity) {
       return true;
     });
   }
+  function memoryLocalAssets(draftId: string, stopped?: SavedRecording) {
+    const current = stateRef.current;
+    const draft = current.drafts.find((value) => value.id === draftId);
+    const song = current.songs.find((value) => value.draftId === draftId);
+    const clips = [...(draft?.clips ?? []), ...(song?.clips ?? [])];
+    const recoveryFiles = (current.recoveryFiles ?? []).filter(
+      (recording) =>
+        recording.purpose !== "speaker" && recording.draftId === draftId,
+    );
+    const pendingRecording = current.pendingRecording;
+    const pending =
+      pendingRecording &&
+      pendingRecording.purpose !== "speaker" &&
+      pendingRecording.draftId === draftId
+        ? pendingRecording
+        : null;
+    const allClipIds = [
+      ...clips.map((clip) => clip.id),
+      ...recoveryFiles.map((recording) => recording.clipId),
+      ...(pending ? [pending.clipId] : []),
+      ...(stopped?.purpose !== "speaker" && stopped?.draftId === draftId
+        ? [stopped.id]
+        : []),
+    ];
+    const localUris = [
+      ...clips.flatMap((clip) =>
+        "localUri" in clip && clip.localUri ? [clip.localUri] : [],
+      ),
+      ...recoveryFiles.map((recording) => recording.localUri),
+      ...(pending?.localUri ? [pending.localUri] : []),
+      ...(stopped?.purpose !== "speaker" &&
+      stopped?.draftId === draftId &&
+      stopped.localUri
+        ? [stopped.localUri]
+        : []),
+      ...(unsavedClip.current?.purpose !== "speaker" &&
+      unsavedClip.current?.draftId === draftId
+        ? [unsavedClip.current.localUri]
+        : []),
+    ].filter((uri): uri is string => typeof uri === "string");
+    return {
+      clipIds: [...new Set(allClipIds)],
+      localUris: [...new Set(localUris)],
+    };
+  }
+  async function stopMemoryAudio(draftId: string, clipIds: string[]) {
+    const ownsSong = activeSong.current?.draftId === draftId;
+    const ownsSource = Boolean(
+      activeSourceClipId.current &&
+        clipIds.includes(activeSourceClipId.current),
+    );
+    if (!ownsSong && !ownsSource) return;
+    playbackRequest.current++;
+    await audioRef.current.stopPlayback();
+    if (ownsSong) {
+      activeSong.current = null;
+      setActiveSongId(null);
+      changePlayback({ type: "selectSong", durationMs: 0 });
+    } else if (ownsSource) {
+      changePlayback({ type: "closeSource" });
+    }
+    if (ownsSource) activeSourceClipId.current = null;
+  }
+  async function eraseLocalMemory(
+    deletion: PendingMemoryDeletion,
+    status: PendingMemoryDeletion["status"],
+  ) {
+    confirmMemoryDeletion(deletion.draftId);
+    await commit((current) => {
+      const hidden = removeMemoryReferences(current, deletion.draftId);
+      return {
+        ...hidden,
+        pendingMemoryDeletions: (hidden.pendingMemoryDeletions ?? []).map(
+          (item) =>
+            item.draftId === deletion.draftId
+              ? { ...item, status, localCleanupComplete: false }
+              : item,
+        ),
+      };
+    });
+    try {
+      await eraseMemoryLocationCapture(identity.uid, deletion.draftId);
+      await eraseMemory(
+        identity.uid,
+        deletion.draftId,
+        deletion.clipIds,
+        deletion.localUris,
+      );
+      await commit((current) => ({
+        ...current,
+        pendingMemoryDeletions: (current.pendingMemoryDeletions ?? []).map(
+          (item) =>
+            item.draftId === deletion.draftId
+              ? { ...item, localCleanupComplete: true }
+              : item,
+        ),
+      }));
+    } catch (failure) {
+      await commit((current) => ({
+        ...current,
+        pendingMemoryDeletions: (current.pendingMemoryDeletions ?? []).map(
+          (item) =>
+            item.draftId === deletion.draftId
+              ? { ...item, status: "local_failed" }
+              : item,
+        ),
+      }));
+      throw new Error(message(failure));
+    }
+  }
+  function confirmMemoryDeletion(draftId: string) {
+    confirmedMemoryDeletions.current.add(draftId);
+    setDeletedMemoryIds((current) =>
+      current.includes(draftId) ? current : [...current, draftId],
+    );
+  }
+  async function updateDeletionStatus(
+    draftId: string,
+    status: PendingMemoryDeletion["status"],
+  ) {
+    await commit((current) => ({
+      ...current,
+      pendingMemoryDeletions: (current.pendingMemoryDeletions ?? []).map(
+        (item) => (item.draftId === draftId ? { ...item, status } : item),
+      ),
+    }));
+  }
+  async function removeDeletionRecord(draftId: string) {
+    await commit((current) => ({
+      ...current,
+      pendingMemoryDeletions: (current.pendingMemoryDeletions ?? []).filter(
+        (item) => item.draftId !== draftId,
+      ),
+    }));
+  }
+  async function requestRemoteMemoryDeletion(deletion: PendingMemoryDeletion) {
+    const api = createApi(connectionRef.current);
+    let remoteStatus: "deleting" | "deleted" | "failed";
+    try {
+      const response = await api.deleteMemory(deletion.draftId);
+      remoteStatus = response.status;
+    } catch (failure) {
+      try {
+        const response = await api.memoryDeletion(deletion.draftId);
+        remoteStatus = response.status;
+      } catch (lookupFailure) {
+        if (lookupFailure instanceof ApiError && lookupFailure.status === 404) {
+          confirmedMemoryDeletions.current.delete(deletion.draftId);
+          await removeDeletionRecord(deletion.draftId);
+          throw failure;
+        }
+        throw new Error(
+          "削除の受付状況を確認できません。通信を確認して再試行してください。",
+        );
+      }
+    }
+    confirmMemoryDeletion(deletion.draftId);
+    await stopMemoryAudio(deletion.draftId, deletion.clipIds);
+    await eraseLocalMemory(
+      deletion,
+      remoteStatus === "failed" ? "failed" : "deleting",
+    );
+    if (remoteStatus === "deleted")
+      await removeDeletionRecord(deletion.draftId);
+    else if (remoteStatus === "failed")
+      await updateDeletionStatus(deletion.draftId, "failed");
+  }
+  async function reconcileMemoryDeletion(deletion: PendingMemoryDeletion) {
+    if (memoryDeletionLocks.current.has(deletion.draftId)) return;
+    memoryDeletionLocks.current.add(deletion.draftId);
+    try {
+      if (!deletion.remote) {
+        confirmMemoryDeletion(deletion.draftId);
+        if (!deletion.localCleanupComplete) {
+          await stopMemoryAudio(deletion.draftId, deletion.clipIds);
+          await eraseLocalMemory(deletion, "deleting");
+        }
+        await removeDeletionRecord(deletion.draftId);
+        return;
+      }
+      const api = createApi(connectionRef.current);
+      let remoteStatus: "deleting" | "deleted" | "failed";
+      try {
+        remoteStatus = (await api.memoryDeletion(deletion.draftId)).status;
+      } catch (failure) {
+        if (failure instanceof ApiError && failure.status === 404) {
+          if (deletion.status === "requesting") {
+            confirmedMemoryDeletions.current.delete(deletion.draftId);
+            await removeDeletionRecord(deletion.draftId);
+          }
+          return;
+        }
+        return;
+      }
+      confirmMemoryDeletion(deletion.draftId);
+      if (remoteStatus === "deleted") {
+        if (!deletion.localCleanupComplete) {
+          await stopMemoryAudio(deletion.draftId, deletion.clipIds);
+          await eraseLocalMemory(deletion, "deleting");
+        }
+        await removeDeletionRecord(deletion.draftId);
+      } else {
+        if (deletion.status !== "failed" && !deletion.localCleanupComplete) {
+          await stopMemoryAudio(deletion.draftId, deletion.clipIds);
+          await eraseLocalMemory(
+            deletion,
+            remoteStatus === "failed" ? "failed" : "deleting",
+          );
+        }
+        if (remoteStatus === "failed" && deletion.status !== "failed")
+          await updateDeletionStatus(deletion.draftId, "failed");
+      }
+    } catch {
+      // Keep the durable journal so the next foreground refresh can retry.
+    } finally {
+      memoryDeletionLocks.current.delete(deletion.draftId);
+    }
+  }
+  reconcileMemoryDeletionRef.current = reconcileMemoryDeletion;
+  async function deleteMemory(draftId: string) {
+    return run(async () => {
+      if (memoryDeletionLocks.current.has(draftId)) return true;
+      memoryDeletionLocks.current.add(draftId);
+      try {
+        const current = stateRef.current;
+        let draft = current.drafts.find((value) => value.id === draftId);
+        const song = current.songs.find((value) => value.draftId === draftId);
+        if (!draft && !song) throw new Error("思い出が見つかりません。");
+        const pending = current.pendingRecording;
+        let stopped: SavedRecording | undefined;
+        if (
+          pending?.purpose !== "speaker" &&
+          pending?.draftId === draftId &&
+          audioRef.current.state.recorderState !== "off"
+        ) {
+          const recording = await audioRef.current.stopRecording();
+          if (recording?.purpose !== "speaker")
+            stopped = recording ?? undefined;
+          if (
+            unsavedClip.current?.purpose !== "speaker" &&
+            unsavedClip.current?.draftId === draftId
+          )
+            unsavedClip.current = null;
+        }
+        draft = stateRef.current.drafts.find((value) => value.id === draftId);
+        const assets = memoryLocalAssets(draftId, stopped);
+        const localOnly = Boolean(
+          draft &&
+            draft.status === "local" &&
+            !draft.prepareKey &&
+            !draft.jobId &&
+            !song,
+        );
+        const deletion: PendingMemoryDeletion = {
+          draftId,
+          ...assets,
+          remote: !localOnly,
+          status: localOnly ? "deleting" : "requesting",
+        };
+        await commit((state) => ({
+          ...state,
+          pendingMemoryDeletions: [
+            ...(state.pendingMemoryDeletions ?? []).filter(
+              (item) => item.draftId !== draftId,
+            ),
+            deletion,
+          ],
+        }));
+        if (!localOnly) {
+          await requestRemoteMemoryDeletion(deletion);
+        } else {
+          confirmMemoryDeletion(draftId);
+          await stopMemoryAudio(draftId, deletion.clipIds);
+          await eraseLocalMemory(deletion, "deleting");
+          await removeDeletionRecord(draftId);
+        }
+        return true;
+      } finally {
+        memoryDeletionLocks.current.delete(draftId);
+      }
+    });
+  }
+  async function retryMemoryDeletion(draftId: string) {
+    return run(async () => {
+      const deletion = (stateRef.current.pendingMemoryDeletions ?? []).find(
+        (item) => item.draftId === draftId,
+      );
+      if (!deletion) return false;
+      if (memoryDeletionLocks.current.has(draftId)) return true;
+      memoryDeletionLocks.current.add(draftId);
+      try {
+        if (!deletion.remote) {
+          await stopMemoryAudio(draftId, deletion.clipIds);
+          await eraseLocalMemory(deletion, "deleting");
+          await removeDeletionRecord(draftId);
+        } else {
+          await requestRemoteMemoryDeletion(deletion);
+        }
+        return true;
+      } finally {
+        memoryDeletionLocks.current.delete(draftId);
+      }
+    });
+  }
   async function closeSource() {
     if (playbackRef.current.target !== "source") return;
     playbackRequest.current++;
     changePlayback({ type: "closeSource" });
+    activeSourceClipId.current = null;
     await audioRef.current.stopPlayback();
   }
   const pause = useCallback(async () => {
@@ -1357,11 +1698,14 @@ export function useSession(identity: SessionIdentity) {
     state,
     ready,
     accountDeleted,
+    deletedMemoryIds,
     busy,
     error: error || audio.state.error,
     clearError,
     suspend,
     deleteAccount,
+    deleteMemory,
+    retryMemoryDeletion,
     recorder: audio.state,
     newRecording,
     toggleRecording,

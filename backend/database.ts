@@ -9,6 +9,7 @@ import type {
   SongDocument,
   Utterance,
 } from "../shared/contracts.ts";
+import { assertMemoryActive } from "./accounts.ts";
 import { musicRecoveryAvailable } from "./music-recovery.ts";
 import { type Env, HttpError } from "./types.ts";
 
@@ -86,6 +87,7 @@ export async function ownedDraft(env: Env, draftId: string, owner: string) {
     .bind(draftId, owner)
     .first<DraftRow>();
   if (!row) throw new HttpError(404, "draft_not_found");
+  await assertMemoryActive(env, owner, draftId);
   return row;
 }
 export async function ownedClip(env: Env, clipId: string, owner: string) {
@@ -95,6 +97,7 @@ export async function ownedClip(env: Env, clipId: string, owner: string) {
     .bind(clipId, owner)
     .first<ClipRow>();
   if (!row) throw new HttpError(404, "clip_not_found");
+  await assertMemoryActive(env, owner, row.draft_id);
   return row;
 }
 export async function ownedJob(env: Env, jobId: string, owner: string) {
@@ -104,6 +107,7 @@ export async function ownedJob(env: Env, jobId: string, owner: string) {
     .bind(jobId, owner)
     .first<JobRow>();
   if (!row) throw new HttpError(404, "job_not_found");
+  await assertMemoryActive(env, owner, row.draft_id);
   return row;
 }
 export async function ownedAudio(env: Env, audioId: string, owner: string) {
@@ -113,6 +117,7 @@ export async function ownedAudio(env: Env, audioId: string, owner: string) {
     .bind(audioId, owner)
     .first<AudioRow>();
   if (!row) throw new HttpError(404, "audio_not_found");
+  await assertMemoryActive(env, owner, row.draft_id);
   return row;
 }
 export async function clips(env: Env, draftId: string, owner: string) {

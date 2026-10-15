@@ -49,7 +49,7 @@ npm --prefix backend ci
 
 ### Androidの開発接続
 
-`npm run android:device` と `npm run android` は開発サーバーの接続先を `127.0.0.1` に固定します。Expoが `adb reverse` で端末のMetro用ポートをPCへ転送するため、MacのLANアドレスが変わっても起動URLは変わりません。実機はUSB接続とUSBデバッグの許可が必要です。エミュレーターも同じ経路を使います。
+`npm run android` は接続済み端末ごとに `adb reverse tcp:8081 tcp:8081` を設定してから、Metroを `127.0.0.1:8081` 固定で起動します。端末が再起動してADB転送が消えた場合も、コマンドを実行し直せば設定されます。実機はUSB接続とUSBデバッグの許可が必要です。エミュレーターも同じ経路を使います。`npm run android:device` は初回ビルド・インストール用です。
 
 PC・端末の再起動後は、エミュレーターを起動するか実機を接続し、Nix環境で次を実行してください。
 

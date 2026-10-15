@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "expo start",
-    "android": "REACT_NATIVE_PACKAGER_HOSTNAME=127.0.0.1 expo start --android --localhost",
+    "android": "node scripts/android-start.mjs",
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "biome lint .",
